@@ -1,0 +1,4 @@
+debian/tmp/usr/bin/kitty
+debian/tmp/usr/lib/
+debian/tmp/usr/share/applications/
+debian/tmp/usr/share/icons/
