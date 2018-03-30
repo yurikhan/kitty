@@ -2,16 +2,16 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
+import os
 import re
 import subprocess
 import sys
 from collections import deque
 
-from .config import load_config
-from .constants import appname, defconf, is_macos, str_version
+from .config import defaults, load_config
+from .constants import appname, defconf, is_macos, is_wayland, str_version
 from .layout import all_layouts
 
-is_macos
 OPTIONS = '''
 --class
 dest=cls
@@ -32,9 +32,21 @@ only use this if you are running a program that does not set titles.
 
 --config
 type=list
-default={config_path}
 Specify a path to the configuration file(s) to use.
-Can be specified multiple times to read multiple configuration files in sequence, which are merged.
+Can be specified multiple times to read multiple configuration files in
+sequence, which are merged.  Use the special value NONE to not load a config
+file.
+
+If this option is not specified, config files are searched for in the order:
+"$XDG_CONFIG_HOME/kitty/kitty.conf", "~/.config/kitty/kitty.conf", {macos_confpath}
+"$XDG_CONFIG_DIRS/kitty/kitty.conf". The first one that exists is used as the
+config file.
+
+If the environment variable "KITTY_CONFIG_DIRECTORY" is specified, that
+directory is always used and the above searching does not happen.
+
+If "/etc/xdg/kitty/kitty.conf" exists it is used as a base config file onto
+which any user config files are merged.
 
 
 --override -o
@@ -122,6 +134,11 @@ Debug OpenGL commands. This will cause all OpenGL calls to check for errors inst
 --debug-font-fallback
 type=bool-set
 Print out information about the selection of fallback fonts for characters not present in the main font.
+
+
+--debug-config
+type=bool-set
+Print out information about the system and kitty configuration.
 '''
 
 
@@ -201,10 +218,10 @@ def parse_option_spec(spec=OPTIONS):
                     current_cmd['choices'] = {x.strip() for x in current_cmd['choices'].split(',')}
         elif state is HELP:
             if line:
-                current_cmd['help'] += ' ' + line
+                current_cmd['help'] += ' ' + line.lstrip()
             else:
                 if prev_line:
-                    current_cmd['help'] += '\n'
+                    current_cmd['help'] += '\n\n\t'
                 else:
                     state = NORMAL
                     (seq if current_cmd.get('condition', True) else disabled).append(current_cmd)
@@ -453,7 +470,7 @@ def parse_cmdline(oc, disabled, args=None):
 def options_spec():
     if not hasattr(options_spec, 'ans'):
         options_spec.ans = OPTIONS.format(
-            appname=appname, config_path=defconf,
+            appname=appname, macos_confpath='~/Library/Preferences/kitty/kitty.conf' if is_macos else '',
             window_layout_choices=', '.join(all_layouts)
         )
     return options_spec.ans
@@ -466,8 +483,85 @@ def parse_args(args=None, ospec=options_spec, usage=None, message=None, appname=
     return parse_cmdline(oc, disabled, args=args)
 
 
-def create_opts(args):
-    config = args.config or (defconf, )
+SYSTEM_CONF = '/etc/xdg/kitty/kitty.conf'
+
+
+def resolve_config(config_files_on_cmd_line):
+    if config_files_on_cmd_line:
+        if 'NONE' not in config_files_on_cmd_line:
+            yield SYSTEM_CONF
+            for cf in config_files_on_cmd_line:
+                yield cf
+    else:
+        yield SYSTEM_CONF
+        yield defconf
+
+
+def print_shortcut(key, action):
+    if not getattr(print_shortcut, 'maps', None):
+        from kitty.keys import defines
+        v = vars(defines)
+        mmap = {m.split('_')[-1].lower(): x for m, x in v.items() if m.startswith('GLFW_MOD_')}
+        kmap = {k.split('_')[-1].lower(): x for k, x in v.items() if k.startswith('GLFW_KEY_')}
+        krmap = {v: k for k, v in kmap.items()}
+        print_shortcut.maps = mmap, krmap
+    mmap, krmap = print_shortcut.maps
+    names = []
+    mods, key = key
+    for name, val in mmap.items():
+        if mods & val:
+            names.append(name)
+    if key:
+        names.append(krmap[key])
+    print('\t', '+'.join(names), action)
+
+
+def compare_keymaps(final, initial):
+    added = set(final) - set(initial)
+    removed = set(initial) - set(final)
+    changed = {k for k in set(final) & set(initial) if final[k] != initial[k]}
+    if added:
+        print(title('Added shortcuts:'))
+        for k in added:
+            print_shortcut(k, final[k])
+    if removed:
+        print(title('Removed shortcuts:'))
+        for k in removed:
+            print_shortcut(k, initial[k])
+    if changed:
+        print(title('Changed shortcuts:'))
+        for k in changed:
+            print_shortcut(k, final[k])
+
+
+def compare_opts(opts):
+    print('\nConfig options different from defaults:')
+    for f in sorted(defaults._fields):
+        if getattr(opts, f) != getattr(defaults, f):
+            if f == 'keymap':
+                compare_keymaps(opts.keymap, defaults.keymap)
+            else:
+                print(title('{:20s}'.format(f)), getattr(opts, f))
+
+
+def create_opts(args, debug_config=False):
+    config = tuple(resolve_config(args.config))
+    if debug_config:
+        print(version())
+        print(' '.join(os.uname()))
+        if is_macos:
+            print(' '.join(subprocess.check_output(['sw_vers']).decode('utf-8').splitlines()).strip())
+        else:
+            print('Running under:', green('Wayland' if is_wayland else 'X11'))
+        if os.path.exists('/etc/issue'):
+            print(open('/etc/issue', encoding='utf-8', errors='replace').read().strip())
+        if os.path.exists('/etc/lsb-release'):
+            print(open('/etc/lsb-release', encoding='utf-8', errors='replace').read().strip())
+        config = tuple(x for x in config if os.path.exists(x))
+        if config:
+            print(green('Loaded config files:'), ', '.join(config))
     overrides = (a.replace('=', ' ', 1) for a in args.override or ())
     opts = load_config(*config, overrides=overrides)
+    if debug_config:
+        compare_opts(opts)
     return opts

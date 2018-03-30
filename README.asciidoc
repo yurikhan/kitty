@@ -39,6 +39,7 @@
 :sc_scroll_page_down: pass:quotes[`ctrl+shift+page_down`]
 :sc_scroll_page_up: pass:quotes[`ctrl+shift+page_up`]
 :sc_second_window: pass:quotes[`ctrl+shift+2`]
+:sc_set_tab_title: pass:quotes[`ctrl+shift+alt+t`]
 :sc_seventh_window: pass:quotes[`ctrl+shift+7`]
 :sc_show_scrollback: pass:quotes[`ctrl+shift+h`]
 :sc_sixth_window: pass:quotes[`ctrl+shift+6`]
@@ -132,6 +133,8 @@ python3 .
 
 * Gentoo: https://packages.gentoo.org/packages/x11-terms/kitty
 
+* openSUSE: https://build.opensuse.org/package/show/X11:terminals/kitty
+
 === macOS packages
 
 kitty is available as a macOS `dmg` file for easy installation from the
@@ -200,6 +203,7 @@ windows are:
 |Next layout | {sc_next_layout}
 |Move tab forward | {sc_move_tab_forward}
 |Move tab backward | {sc_move_tab_backward}
+|Set tab title | {sc_set_tab_title}
 
 |===
 
@@ -317,11 +321,15 @@ a pull request!
 
 kitty is highly customizable, everything from keyboard shortcuts, to painting
 frames-per-second. See the heavily commented link:kitty/kitty.conf[default
-config file]. By default kitty looks for a config file in the OS config
-directory (usually `~/.config/kitty/kitty.conf` on Linux and
+config file] for an overview of all customization possibilities.
+
+By default kitty looks for a config file in the OS config directories (usually
+`~/.config/kitty/kitty.conf` and additionally
 `~/Library/Preferences/kitty/kitty.conf` on macOS) but you can pass a specific
 path via the `--config` option or use the `KITTY_CONFIG_DIRECTORY` environment
-variable.
+variable. See the help for the `--config` option in `kitty --help` for full
+details.
+
 
 == Startup Sessions
 
@@ -438,6 +446,8 @@ installs the terminfo file and `kitty` that installs the main program.
 This allows users to install the terminfo file on servers into which they ssh,
 without needing to install all of kitty.
 
+You also need `tic` to compile the terminfo files, it is usually found in the development package of `ncurses`
+
 This applies to creating packages for kitty for macOS package managers such as
 brew or MacPorts as well.
 
@@ -464,7 +474,7 @@ makes use of the extra cell to render them in two cells.
 
 === How do I build kitty.app on macOS?
 
-Install `optipng` and `librsvg` using `brew` or similar (needed for the logo generation step).
+Install `imagemagick`, `optipng` and `librsvg` using `brew` or similar (needed for the logo generation step).
 
 And run:
 ```

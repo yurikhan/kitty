@@ -3188,13 +3188,9 @@ GLFWAPI void glfwRequestWindowAttention(GLFWwindow* window);
 /*! @brief Sounds an audible bell associated with the window
  *
  *  This function sounds an audible bell, on platforms where it is
- *  supported. Currently (macOS, Windows and X11).
+ *  supported. Currently (macOS, Windows, X11 and Wayland).
  *
  *  @param[in] window The window with which the bell is associated.
- *  @param[in] param The meaning of this parameter is platform dependent. On
- *  X11 it corresponds to the percentage controlling bell volume (see man
- *  XBell). On Windows it is the type of sound to make, see the MSDN docs for
- *  MessageBeep. On macOS, it is ignored.
  *  @return GLFW_TRUE if the bell succeeded otherwise GLFW_FALSE
  *
  *  @errors Possible errors include @ref GLFW_NOT_INITIALIZED and @ref
@@ -3209,7 +3205,7 @@ GLFWAPI void glfwRequestWindowAttention(GLFWwindow* window);
  *
  *  @ingroup window
  */
-GLFWAPI int glfwWindowBell(GLFWwindow* window, int64_t param);
+GLFWAPI int glfwWindowBell(GLFWwindow* window);
 
 
 /*! @brief Returns the monitor that the window uses for full screen mode.
@@ -4901,7 +4897,7 @@ GLFWAPI const char* glfwGetGamepadName(int jid);
  *
  *  Not all devices have all the buttons or axes provided by @ref
  *  GLFWgamepadstate.  Unavailable buttons and axes will always report
- *  `GLFW_RELEASE` and 1.0 respectively.
+ *  `GLFW_RELEASE` and 0.0 respectively.
  *
  *  @param[in] jid The [joystick](@ref joysticks) to query.
  *  @param[out] state The gamepad input state of the joystick.
@@ -5546,4 +5542,3 @@ GLFWAPI VkResult glfwCreateWindowSurface(VkInstance instance, GLFWwindow* window
 #endif
 
 #endif /* _glfw3_h_ */
-

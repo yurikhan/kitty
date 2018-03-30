@@ -35,7 +35,6 @@
 #include <string.h>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <sys/timerfd.h>
 #include <poll.h>
 
 
@@ -691,15 +690,33 @@ static GLFWbool createXdgSurface(_GLFWwindow* window)
 }
 
 static void
+dispatchPendingKeyRepeats() {
+    if (_glfw.wl.keyRepeatInfo.nextRepeatAt <= 0 || _glfw.wl.keyRepeatInfo.keyboardFocus != _glfw.wl.keyboardFocus || _glfw.wl.keyboardRepeatRate == 0) return;
+    double now = glfwGetTime();
+    const int mods = _glfw.wl.xkb.modifiers;
+    while (_glfw.wl.keyRepeatInfo.nextRepeatAt <= now) {
+        _glfwInputKey(_glfw.wl.keyRepeatInfo.keyboardFocus, _glfw.wl.keyRepeatInfo.glfwKeyCode, _glfw.wl.keyRepeatInfo.scancode, GLFW_REPEAT, mods);
+        if (_glfw.wl.keyRepeatInfo.codepoint > -1) _glfwInputChar(_glfw.wl.keyRepeatInfo.keyboardFocus, _glfw.wl.keyRepeatInfo.codepoint, mods, _glfw.wl.keyRepeatInfo.plain);
+        _glfw.wl.keyRepeatInfo.nextRepeatAt += 1.0 / _glfw.wl.keyboardRepeatRate;
+        now = glfwGetTime();
+    }
+}
+
+static int
+adjustTimeoutForKeyRepeat(int timeout) {
+    if (_glfw.wl.keyRepeatInfo.nextRepeatAt <= 0 || _glfw.wl.keyRepeatInfo.keyboardFocus != _glfw.wl.keyboardFocus || _glfw.wl.keyboardRepeatRate == 0) return timeout;
+    double now = glfwGetTime();
+    if (timeout < 0 || now + timeout / 1000. > _glfw.wl.keyRepeatInfo.nextRepeatAt) {
+        timeout = _glfw.wl.keyRepeatInfo.nextRepeatAt <= now ? 0 : ( (_glfw.wl.keyRepeatInfo.nextRepeatAt - now) * 1000 + 1 );
+    }
+    return timeout;
+}
+
+static void
 handleEvents(int timeout)
 {
     struct wl_display* display = _glfw.wl.display;
-    struct pollfd fds[] = {
-        { wl_display_get_fd(display), POLLIN },
-        { _glfw.wl.timerfd, POLLIN },
-    };
-    ssize_t read_ret;
-    uint64_t repeats, i;
+    struct pollfd pfd = { wl_display_get_fd(display), POLLIN };
 
     while (wl_display_prepare_read(display) != 0)
         wl_display_dispatch_pending(display);
@@ -719,9 +736,12 @@ handleEvents(int timeout)
         return;
     }
 
-    if (poll(fds, 2, timeout) > 0)
+    dispatchPendingKeyRepeats();
+    timeout = adjustTimeoutForKeyRepeat(timeout);
+
+    if (poll(&pfd, 1, timeout) > 0)
     {
-        if (fds[0].revents & POLLIN)
+        if (pfd.revents & POLLIN)
         {
             wl_display_read_events(display);
             wl_display_dispatch_pending(display);
@@ -731,22 +751,12 @@ handleEvents(int timeout)
             wl_display_cancel_read(display);
         }
 
-        if (fds[1].revents & POLLIN)
-        {
-            read_ret = read(_glfw.wl.timerfd, &repeats, sizeof(repeats));
-            if (read_ret != 8)
-                return;
-
-            for (i = 0; i < repeats; ++i)
-                _glfwInputKey(_glfw.wl.keyboardFocus, _glfw.wl.keyboardLastKey,
-                              _glfw.wl.keyboardLastScancode, GLFW_REPEAT,
-                              _glfw.wl.xkb.modifiers);
-        }
     }
     else
     {
         wl_display_cancel_read(display);
     }
+    dispatchPendingKeyRepeats();
 }
 
 // Translates a GLFW standard cursor to a theme cursor name
@@ -1079,11 +1089,15 @@ void _glfwPlatformRequestWindowAttention(_GLFWwindow* window)
                     "Wayland: Window attention request not implemented yet");
 }
 
-int _glfwPlatformWindowBell(_GLFWwindow* window, int64_t param)
+int _glfwPlatformWindowBell(_GLFWwindow* window)
 {
-    // TODO
-    _glfwInputError(GLFW_PLATFORM_ERROR,
-                    "Wayland: Window bell request not implemented yet");
+    // TODO: Use an actual Wayland API to implement this when one becomes available
+    int fd = open("/dev/tty", O_WRONLY | O_CLOEXEC);
+    if (fd > -1) {
+        int ret = write(fd, "\x07", 1) == 1 ? GLFW_TRUE : GLFW_FALSE;
+        close(fd);
+        return ret;
+    }
     return GLFW_FALSE;
 }
 
@@ -1236,7 +1250,7 @@ const char* _glfwPlatformGetScancodeName(int scancode)
 
 int _glfwPlatformGetKeyScancode(int key)
 {
-    return _glfw.wl.scancodes[key];
+    return _glfw.wl.xkb.scancodes[key];
 }
 
 int _glfwPlatformCreateCursor(_GLFWcursor* cursor,
@@ -1547,4 +1561,3 @@ GLFWAPI struct wl_surface* glfwGetWaylandWindow(GLFWwindow* handle)
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
     return window->wl.surface;
 }
-

@@ -10,6 +10,10 @@ import sys
 
 _plat = sys.platform.lower()
 is_macos = 'darwin' in _plat
+is_freebsd = 'freebsd' in _plat
+is_netbsd = 'netbsd' in _plat
+is_dragonflybsd = 'dragonfly' in _plat
+is_bsd = is_freebsd or is_netbsd or is_dragonflybsd
 base = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -100,13 +104,14 @@ def collect_source_information():
         'common': dict(extract_sources('common')),
         'wayland_protocols': wayland_protocols,
     }
+    joystick = 'null' if is_bsd else 'linux'
     for group in 'cocoa win32 x11 wayland osmesa'.split():
         m = re.search('_GLFW_' + group.upper(), raw)
         ans[group] = dict(extract_sources('glfw', m.start()))
-        if group == 'x11':
-            ans[group]['headers'].append('linux_joystick.h')
-            ans[group]['sources'].append('linux_joystick.c')
-        elif group == 'wayland':
+        if group in ('x11', 'wayland'):
+            ans[group]['headers'].append('{}_joystick.h'.format(joystick))
+            ans[group]['sources'].append('{}_joystick.c'.format(joystick))
+        if group == 'wayland':
             ans[group]['protocols'] = p = []
             for m in re.finditer(r'WAYLAND_PROTOCOLS_PKGDATADIR\}/(.+?)"?$', raw, flags=re.M):
                 p.append(m.group(1))

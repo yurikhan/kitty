@@ -26,7 +26,6 @@ typedef struct {
     bool macos_option_as_alt, macos_hide_titlebar;
     int adjust_line_height_px, adjust_column_width_px;
     float adjust_line_height_frac, adjust_column_width_frac;
-    int x11_bell_volume;
     float background_opacity;
     float inactive_text_alpha;
     Edge tab_bar_edge;
@@ -137,7 +136,7 @@ typedef struct {
 
 extern GlobalState global_state;
 
-#define call_boss(name, ...) { \
+#define call_boss(name, ...) if (global_state.boss) { \
     PyObject *cret_ = PyObject_CallMethod(global_state.boss, #name, __VA_ARGS__); \
     if (cret_ == NULL) { PyErr_Print(); } \
     else Py_DECREF(cret_); \

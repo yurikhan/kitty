@@ -1066,7 +1066,7 @@ bool
 screen_invert_colors(Screen *self) {
     bool inverted = false;
     if (self->start_visual_bell_at > 0) {
-        if (monotonic() - self->start_visual_bell_at <= global_state.opts.visual_bell_duration) inverted = true;
+        if (monotonic() - self->start_visual_bell_at <= OPT(visual_bell_duration)) inverted = true;
         else self->start_visual_bell_at = 0;
     }
     if (self->modes.mDECSCNM) inverted = inverted ? false : true;
@@ -1076,6 +1076,7 @@ screen_invert_colors(Screen *self) {
 void
 screen_bell(Screen *self) {
     request_window_attention(self->window_id, OPT(enable_audio_bell));
+    if (OPT(visual_bell_duration) > 0.0f) self->start_visual_bell_at = monotonic();
 }
 
 void
@@ -1410,7 +1411,7 @@ screen_apply_selection(Screen *self, void *address, size_t size) {
     self->last_selection_scrolled_by = self->scrolled_by;
     self->selection_updated_once = true;
     selection_limits_(selection, &self->last_rendered_selection_start, &self->last_rendered_selection_end);
-    apply_selection(self, address, &self->last_rendered_selection_start, &self->last_rendered_selection_end, 1, self->rectangle_select);
+    apply_selection(self, address, &self->last_rendered_selection_start, &self->last_rendered_selection_end, 1, self->selection.rectangle_select);
     selection_limits_(url_range, &self->last_rendered_url_start, &self->last_rendered_url_end);
     apply_selection(self, address, &self->last_rendered_url_start, &self->last_rendered_url_end, 2, false);
 }
@@ -1626,8 +1627,16 @@ WRAP0(carriage_return)
 WRAP2(resize, 1, 1)
 WRAP2(set_margins, 1, 1)
 WRAP2(rescale_images, 1, 1)
-WRAP2B(start_selection)
 WRAP2B(update_selection)
+
+static PyObject*
+start_selection(Screen *self, PyObject *args) {
+    unsigned int x, y;
+    int rectangle_select = 0, extend_mode = EXTEND_CELL;
+    if (!PyArg_ParseTuple(args, "II|pp", &x, &y, &rectangle_select, &extend_mode)) return NULL;
+    screen_start_selection(self, x, y, rectangle_select, extend_mode);
+    Py_RETURN_NONE;
+}
 
 static PyObject*
 change_scrollback_size(Screen *self, PyObject *args) {
@@ -1643,7 +1652,7 @@ text_for_selection(Screen *self, PyObject *a UNUSED) {
     full_selection_limits_(selection, &start, &end);
     PyObject *ans = NULL;
     if (start.y == end.y && start.x == end.x) ans = PyTuple_New(0);
-    else text_for_range(ans, start, end, self->rectangle_select, true, range_line_, int);
+    else text_for_range(ans, start, end, self->selection.rectangle_select, true, range_line_, int);
     return ans;
 }
 
@@ -1733,10 +1742,10 @@ screen_is_selection_dirty(Screen *self) {
 }
 
 void
-screen_start_selection(Screen *self, index_type x, index_type y, bool rectangle_select) {
-    self->rectangle_select = rectangle_select;
+screen_start_selection(Screen *self, index_type x, index_type y, bool rectangle_select, SelectionExtendMode extend_mode) {
 #define A(attr, val) self->selection.attr = val;
-    A(start_x, x); A(end_x, x); A(start_y, y); A(end_y, y); A(start_scrolled_by, self->scrolled_by); A(end_scrolled_by, self->scrolled_by); A(in_progress, true);
+    A(start_x, x); A(end_x, x); A(start_y, y); A(end_y, y); A(start_scrolled_by, self->scrolled_by); A(end_scrolled_by, self->scrolled_by);
+    A(in_progress, true); A(rectangle_select, rectangle_select); A(extend_mode, extend_mode);
 #undef A
 }
 
@@ -1751,6 +1760,20 @@ void
 screen_update_selection(Screen *self, index_type x, index_type y, bool ended) {
     self->selection.end_x = x; self->selection.end_y = y; self->selection.end_scrolled_by = self->scrolled_by;
     if (ended) self->selection.in_progress = false;
+    index_type start, end;
+    bool found = false;
+    switch(self->selection.extend_mode) {
+        case EXTEND_WORD:
+            found = screen_selection_range_for_word(self, x, y, &start, &end);
+            break;
+        case EXTEND_LINE:
+            found = screen_selection_range_for_line(self, y, &start, &end);
+            break;
+        case EXTEND_CELL:
+            break;
+    }
+    if (found) self->selection.end_x = end;
+    call_boss(set_primary_selection, NULL);
 }
 
 static PyObject*

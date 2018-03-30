@@ -141,10 +141,17 @@ def _main():
     if is_macos and os.environ.pop('KITTY_LAUNCHED_BY_LAUNCH_SERVICES', None) == '1':
         os.chdir(os.path.expanduser('~'))
         args = macos_cmdline()
-    if not os.path.isdir(os.getcwd()):
+    try:
+        cwd_ok = os.path.isdir(os.getcwd())
+    except Exception:
+        cwd_ok = False
+    if not cwd_ok:
         os.chdir(os.path.expanduser('~'))
     args, rest = parse_args(args=args)
     args.args = rest
+    if args.debug_config:
+        create_opts(args, debug_config=True)
+        return
     if getattr(args, 'detach', False):
         detach()
     if args.cmd:

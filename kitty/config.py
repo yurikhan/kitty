@@ -50,7 +50,7 @@ def to_cursor_shape(x):
 def parse_mods(parts):
 
     def map_mod(m):
-        return {'CTRL': 'CONTROL', 'CMD': 'SUPER', 'OPTION': 'ALT'}.get(m, m)
+        return {'CTRL': 'CONTROL', 'CMD': 'SUPER', '⌘': 'SUPER', '⌥': 'ALT', 'OPTION': 'ALT'}.get(m, m)
 
     mods = 0
     for m in parts:
@@ -293,7 +293,6 @@ type_map = {
     'macos_option_as_alt': to_bool,
     'macos_titlebar_color': macos_titlebar_color,
     'box_drawing_scale': box_drawing_scale,
-    'x11_bell_volume': int,
     'background_opacity': unit_float,
     'tab_separator': tab_separator,
     'active_tab_font_style': tab_font_style,
