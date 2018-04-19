@@ -1,5 +1,5 @@
-kitty (0.9.0-1) UNRELEASED; urgency=medium
+kitty (0.9.0-1) unstable; urgency=medium
 
   * Initial release. (Closes: #886311)
 
- -- James McCoy <jamessan@debian.org>  Thu, 08 Mar 2018 21:08:26 -0500
+ -- James McCoy <jamessan@debian.org>  Wed, 18 Apr 2018 23:46:22 -0400
