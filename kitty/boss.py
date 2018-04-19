@@ -4,6 +4,7 @@
 
 import atexit
 import json
+import os
 import re
 import socket
 from functools import partial
@@ -14,17 +15,18 @@ from .cli import create_opts, parse_args
 from .config import (
     MINIMUM_FONT_SIZE, initial_window_size, prepare_config_file_for_editing
 )
-from .constants import appname, editor, set_boss
+from .constants import appname, editor, set_boss, config_dir
 from .fast_data_types import (
     ChildMonitor, create_os_window, current_os_window, destroy_global_data,
     destroy_sprite_map, get_clipboard_string, glfw_post_empty_event,
     layout_sprite_map, mark_os_window_for_close, set_clipboard_string,
-    set_dpi_from_os_window, show_window, toggle_fullscreen,
-    viewport_for_window
+    set_dpi_from_os_window, set_in_sequence_mode, show_window,
+    toggle_fullscreen, viewport_for_window
 )
 from .fonts.render import prerender, resize_fonts, set_font_family
-from .keys import get_shortcut
+from .keys import get_shortcut, shortcut_matches
 from .remote_control import handle_cmd
+from .rgb import Color, color_from_int
 from .session import create_session
 from .tabs import SpecialWindow, SpecialWindowInstance, TabManager
 from .utils import (
@@ -79,6 +81,8 @@ class Boss:
 
     def __init__(self, os_window_id, opts, args, cached_values):
         self.window_id_map = WeakValueDictionary()
+        self.startup_colors = {k: opts[k] for k in opts if isinstance(opts[k], Color)}
+        self.pending_sequences = None
         self.cached_values = cached_values
         self.os_window_map = {}
         self.cursor_blinking = True
@@ -116,6 +120,7 @@ class Boss:
         self.os_window_map[os_window_id] = tm
         if dpi_changed:
             self.on_dpi_change(os_window_id)
+        return os_window_id
 
     def list_os_windows(self):
         for os_window_id, tm in self.os_window_map.items():
@@ -124,24 +129,35 @@ class Boss:
                 'tabs': list(tm.list_tabs()),
             }
 
+    @property
+    def all_tab_managers(self):
+        yield from self.os_window_map.values()
+
+    @property
+    def all_tabs(self):
+        for tm in self.all_tab_managers:
+            yield from tm
+
+    @property
+    def all_windows(self):
+        for tab in self.all_tabs:
+            yield from tab
+
     def match_windows(self, match):
         try:
             field, exp = match.split(':', 1)
         except ValueError:
             return
         pat = re.compile(exp)
-        for tm in self.os_window_map.values():
-            for tab in tm:
-                for window in tab:
-                    if window.matches(field, pat):
-                        yield window
+        for window in self.all_windows:
+            if window.matches(field, pat):
+                yield window
 
     def tab_for_window(self, window):
-        for tm in self.os_window_map.values():
-            for tab in tm:
-                for w in tab:
-                    if w.id == window.id:
-                        return tab
+        for tab in self.all_tabs:
+            for w in tab:
+                if w.id == window.id:
+                    return tab
 
     def match_tabs(self, match):
         try:
@@ -149,14 +165,12 @@ class Boss:
         except ValueError:
             return
         pat = re.compile(exp)
-        tms = tuple(self.os_window_map.values())
         found = False
         if field in ('title', 'id'):
-            for tm in tms:
-                for tab in tm:
-                    if tab.matches(field, pat):
-                        yield tab
-                        found = True
+            for tab in self.all_tabs:
+                if tab.matches(field, pat):
+                    yield tab
+                    found = True
         if not found:
             tabs = {self.tab_for_window(w) for w in self.match_windows(match)}
             for tab in tabs:
@@ -176,7 +190,7 @@ class Boss:
     def _new_os_window(self, args, cwd_from=None):
         sw = self.args_to_special_window(args, cwd_from) if args else None
         startup_session = create_session(self.opts, special_window=sw, cwd_from=cwd_from)
-        self.add_os_window(startup_session)
+        return self.add_os_window(startup_session)
 
     def new_os_window(self, *args):
         self._new_os_window(args)
@@ -192,7 +206,7 @@ class Boss:
 
     def _handle_remote_command(self, cmd, window=None):
         response = None
-        if self.opts.allow_remote_control:
+        if self.opts.allow_remote_control or getattr(window, 'allow_remote_control', False):
             try:
                 response = handle_cmd(self, window, cmd)
             except Exception as err:
@@ -220,7 +234,9 @@ class Boss:
                 args, rest = parse_args(msg['args'][1:])
                 args.args = rest
                 opts = create_opts(args)
-                session = create_session(opts, args)
+                if not os.path.isabs(args.directory):
+                    args.directory = os.path.join(msg['cwd'], args.directory)
+                session = create_session(opts, args, respect_cwd=True)
                 self.add_os_window(session, wclass=args.cls, wname=args.name, size=initial_window_size(opts, self.cached_values), startup_id=startup_id)
             else:
                 log_error('Unknown message received from peer, ignoring')
@@ -352,8 +368,37 @@ class Boss:
     def dispatch_special_key(self, key, scancode, action, mods):
         # Handles shortcuts, return True if the key was consumed
         key_action = get_shortcut(self.opts.keymap, mods, key, scancode)
-        self.current_key_press_info = key, scancode, action, mods
-        return self.dispatch_action(key_action)
+        if key_action is None:
+            sequences = get_shortcut(self.opts.sequence_map, mods, key, scancode)
+            if sequences:
+                self.pending_sequences = sequences
+                set_in_sequence_mode(True)
+                return True
+        else:
+            self.current_key_press_info = key, scancode, action, mods
+            return self.dispatch_action(key_action)
+
+    def process_sequence(self, key, scancode, action, mods):
+        if not self.pending_sequences:
+            set_in_sequence_mode(False)
+
+        remaining = {}
+        matched_action = None
+        for seq, key_action in self.pending_sequences.items():
+            if shortcut_matches(seq[0], mods, key, scancode):
+                seq = seq[1:]
+                if seq:
+                    remaining[seq] = key_action
+                else:
+                    matched_action = key_action
+
+        if remaining:
+            self.pending_sequences = remaining
+        else:
+            self.pending_sequences = None
+            set_in_sequence_mode(False)
+            if matched_action is not None:
+                self.dispatch_action(matched_action)
 
     def default_bg_changed_for(self, window_id):
         w = self.window_id_map.get(window_id)
@@ -425,78 +470,86 @@ class Boss:
         cmd = ['kitty', '+runpy', 'import os, sys, time; time.sleep(0.05); os.execvp(sys.argv[1], sys.argv[1:])'] + editor + [confpath]
         self.new_os_window(*cmd)
 
-    def input_unicode_character(self):
-        w = self.active_window
-        tab = self.active_tab
-        if w is not None and tab is not None and w.overlay_for is None:
-            overlay_window = tab.new_special_window(
-                SpecialWindow(
-                    ['kitty', '+runpy', 'from kittens.unicode_input.main import main; main()'],
-                    overlay_for=w.id))
-            overlay_window.action_on_close = partial(self.send_unicode_character, w.id)
-
     def get_output(self, source_window, num_lines=1):
         output = ''
         s = source_window.screen
+        if num_lines is None:
+            num_lines = s.lines
         for i in range(min(num_lines, s.lines)):
             output += str(s.linebuf.line(i))
         return output
 
-    def send_unicode_character(self, target_window_id, source_window):
-        w = self.window_id_map.get(target_window_id)
-        if w is not None:
-            output = self.get_output(source_window)
-            if output.startswith('OK: '):
-                try:
-                    text = chr(int(output.partition(' ')[2], 16))
-                except Exception:
-                    import traceback
-                    traceback.print_exc()
-                else:
-                    w.paste(text)
-
-    def set_tab_title(self):
+    def _run_kitten(self, kitten, args=(), type_of_input='none'):
         w = self.active_window
         tab = self.active_tab
         if w is not None and tab is not None and w.overlay_for is None:
-            args = ['--name=tab-title', '--message', _('Enter the new title for this tab below.')]
-            overlay_window = tab.new_special_window(
-                SpecialWindow(
-                    ['kitty', '+runpy', 'from kittens.ask.main import main; main()'] + args,
-                    overlay_for=w.id))
-            overlay_window.action_on_close = partial(self.do_set_tab_title, tab.id)
-
-    def do_set_tab_title(self, tab_id, source_window):
-        output = self.get_output(source_window)
-        if output.startswith('OK: '):
-            title = json.loads(output.partition(' ')[2].strip())
-            tm = self.active_tab_manager
-            if tm is not None and title:
-                for tab in tm.tabs:
-                    if tab.id == tab_id:
-                        tab.set_title(title)
-                        break
-
-    def run_simple_kitten(self, type_of_input, kitten, *args):
-        import shlex
-        w = self.active_window
-        tab = self.active_tab
-        if w is not None and tab is not None and w.overlay_for is None:
-            cmdline = args[0] if args else ''
-            args = shlex.split(cmdline) if cmdline else []
-            if '--program' not in cmdline:
-                args.extend(('--program', self.opts.open_url_with))
+            orig_args, args = list(args), list(args)
+            args[0:0] = [config_dir, kitten]
             if type_of_input in ('text', 'history', 'ansi', 'ansi-history'):
                 data = w.as_text(as_ansi='ansi' in type_of_input, add_history='history' in type_of_input).encode('utf-8')
             elif type_of_input == 'none':
                 data = None
             else:
                 raise ValueError('Unknown type_of_input: {}'.format(type_of_input))
-            tab.new_special_window(
+            from kittens.runner import create_kitten_handler
+            end_kitten = create_kitten_handler(kitten, orig_args)
+            copts = {k: self.opts[k] for k in ('select_by_word_characters', 'open_url_with')}
+            overlay_window = tab.new_special_window(
                 SpecialWindow(
-                    ['kitty', '+runpy', 'from kittens.{}.main import main; main()'.format(kitten)] + args,
+                    ['kitty', '+runpy', 'from kittens.runner import main; main()'] + args,
                     stdin=data,
+                    env={'KITTY_COMMON_OPTS': json.dumps(copts)},
                     overlay_for=w.id))
+            overlay_window.action_on_close = partial(self.on_kitten_finish, w.id, end_kitten)
+
+    def run_kitten(self, type_of_input, kitten, *args):
+        import shlex
+        cmdline = args[0] if args else ''
+        args = shlex.split(cmdline) if cmdline else []
+        self._run_kitten(kitten, args, type_of_input)
+
+    def on_kitten_finish(self, target_window_id, end_kitten, source_window):
+        output = self.get_output(source_window, num_lines=None)
+        if output.startswith('OK: '):
+            data = json.loads(output.partition(' ')[2].strip())
+            end_kitten(data, target_window_id, self)
+
+    def input_unicode_character(self):
+        self._run_kitten('unicode_input')
+
+    def set_tab_title(self):
+        tab = self.active_tab
+        if tab:
+            args = ['--name=tab-title', '--message', _('Enter the new title for this tab below.'), 'do_set_tab_title', str(tab.id)]
+            self._run_kitten('ask', args)
+
+    def do_set_tab_title(self, title, tab_id):
+        tm = self.active_tab_manager
+        if tm is not None and title:
+            tab_id = int(tab_id)
+            for tab in tm.tabs:
+                if tab.id == tab_id:
+                    tab.set_title(title)
+                    break
+
+    def kitty_shell(self, window_type):
+        cmd = ['kitty', '@']
+        if window_type == 'tab':
+            window = self._new_tab(cmd).active_window
+        elif window_type == 'os_window':
+            os_window_id = self._new_os_window(cmd)
+            window = self.os_window_map[os_window_id].active_window
+        elif window_type == 'overlay':
+            w = self.active_window
+            tab = self.active_tab
+            if w is not None and tab is not None and w.overlay_for is None:
+                window = tab.new_special_window(SpecialWindow(cmd, overlay_for=w.id))
+            else:
+                window = None
+        else:
+            window = self._new_window(cmd)
+        if window is not None:
+            window.allow_remote_control = True
 
     def switch_focus_to(self, window_idx):
         tab = self.active_tab
@@ -506,12 +559,12 @@ class Boss:
             old_focus.focus_changed(False)
         tab.active_window.focus_changed(True)
 
-    def open_url(self, url):
+    def open_url(self, url, program=None):
         if url:
-            open_url(url, self.opts.open_url_with)
+            open_url(url, program or self.opts.open_url_with)
 
-    def open_url_lines(self, lines):
-        self.open_url(''.join(lines))
+    def open_url_lines(self, lines, program=None):
+        self.open_url(''.join(lines), program)
 
     def destroy(self):
         self.shutting_down = True
@@ -607,7 +660,7 @@ class Boss:
                 special_window = self.args_to_special_window(args, cwd_from=cwd_from)
         tm = self.active_tab_manager
         if tm is not None:
-            tm.new_tab(special_window=special_window, cwd_from=cwd_from)
+            return tm.new_tab(special_window=special_window, cwd_from=cwd_from)
 
     def new_tab(self, *args):
         self._new_tab(args)
@@ -621,9 +674,9 @@ class Boss:
         tab = self.active_tab
         if tab is not None:
             if args:
-                tab.new_special_window(self.args_to_special_window(args, cwd_from=cwd_from))
+                return tab.new_special_window(self.args_to_special_window(args, cwd_from=cwd_from))
             else:
-                tab.new_window(cwd_from=cwd_from)
+                return tab.new_window(cwd_from=cwd_from)
 
     def new_window(self, *args):
         self._new_window(args)
@@ -644,3 +697,11 @@ class Boss:
         tm = self.active_tab_manager
         if tm is not None:
             tm.move_tab(-1)
+
+    def patch_colors(self, spec, configured=False):
+        if configured:
+            for k, v in spec.items():
+                if hasattr(self.opts, k):
+                    setattr(self.opts, k, color_from_int(v))
+        for tm in self.all_tab_managers:
+            tm.tab_bar.patch_colors(spec)

@@ -182,6 +182,9 @@ def init_env(
     cflags = shlex.split(cflags) + shlex.split(
         sysconfig.get_config_var('CCSHARED')
     )
+    if os.path.exists('.git'):
+        rev = subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
+        cflags.append('-DKITTY_VCS_REV="{}"'.format(rev))
     ldflags = os.environ.get(
         'OVERRIDE_LDFLAGS',
         '-Wall ' + ' '.join(sanitize_args) + ('' if debug else ' -O3')
@@ -367,7 +370,12 @@ def compile_c_extension(kenv, module, incremental, compilation_database, all_key
         parallel_run(todo)
     dest = os.path.join(base, module + '.so')
     if not incremental or newer(dest, *objects):
-        run_tool([kenv.cc] + kenv.ldflags + objects + kenv.ldpaths + ['-o', dest], desc='Linking {} ...'.format(emphasis(module)))
+        # Old versions of clang dont like -pthread being passed to the linker
+        # Dont treat linker warnings as errors (linker generates spurious
+        # warnings on some old systems)
+        unsafe = {'-pthread', '-Werror', '-pedantic-errors'}
+        linker_cflags = list(filter(lambda x: x not in unsafe, kenv.cflags))
+        run_tool([kenv.cc] + linker_cflags + kenv.ldflags + objects + kenv.ldpaths + ['-o', dest], desc='Linking {} ...'.format(emphasis(module)))
 
 
 def find_c_files():

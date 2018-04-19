@@ -2,15 +2,14 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
-import json
 import os
-import readline
-import sys
 
 from kitty.cli import parse_args
 from kitty.constants import cache_dir
 
 from ..tui.operations import alternate_screen, styled
+
+readline = None
 
 
 def get_history_items():
@@ -81,16 +80,24 @@ be used for completions and via the browse history readline bindings.
 '''
 
 
-def real_main(args):
+def main(args):
+    # For some reason importing readline in a key handler in the main kitty process
+    # causes a crash of the python interpreter, probably because of some global
+    # lock
+    global readline
+    import readline as rl
+    readline = rl
     msg = 'Ask the user for input'
     try:
         args, items = parse_args(args[1:], option_text, '', msg, 'kitty ask')
     except SystemExit as e:
-        print(e.args[0])
-        input('Press enter to quit...')
-        raise SystemExit(1)
+        if e.code != 0:
+            print(e.args[0])
+            input('Press enter to quit...')
+        raise SystemExit(e.code)
 
     readline.read_init_file()
+    ans = {'items': items}
 
     with alternate_screen(), HistoryCompleter(args.name):
         if args.message:
@@ -98,17 +105,20 @@ def real_main(args):
 
         prompt = '> '
         try:
-            ans = input(prompt)
+            ans['response'] = input(prompt)
         except (KeyboardInterrupt, EOFError):
-            return
-    print('OK:', json.dumps(ans))
+            pass
+    return ans
 
 
-def main(args=sys.argv):
-    try:
-        real_main(args)
-    except Exception as e:
-        import traceback
-        traceback.print_exc(file=sys.stdout)
-        input('Press enter to quit...')
-        raise SystemExit(1)
+def handle_result(args, data, target_window_id, boss):
+    if 'response' in data:
+        func, *args = data['items']
+        getattr(boss, func)(data['response'], *args)
+
+
+if __name__ == '__main__':
+    import sys
+    ans = main(sys.argv)
+    if ans:
+        print(ans)

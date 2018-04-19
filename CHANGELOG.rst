@@ -3,6 +3,60 @@ Changelog
 
 kitty is a feature full, cross-platform, *fast*, GPU based terminal emulator.
 
+version 0.9.0 [2018-04-15]
+------------------------------
+
+- A new kitty command shell to allow controlling kitty via commands. Press
+  `ctrl+shift+escape` to run the shell.
+
+- The hints kitten has become much more powerful. Now in addition to URLs you
+  can use it to select word, paths, filenames, lines, etc. from the screen.
+  These can be inserted into the terminal, copied to clipboard or sent to
+  external programs.
+
+- Linux: Switch to libxkbcommon for keyboard handling. It allows kitty to
+  support XCompose and dead keys and also react to keyboard remapping/layout
+  change without needing a restart.
+
+- Add support for multiple-key-sequence shortcuts
+
+- A new remote control command `set-colors` to change the current and/or
+  configured colors.
+
+- When double-clicking to select a word, select words that continue onto the
+  next/prev line as well.
+
+- Add an `include` directive for the config files to read multiple config files
+
+- Improve mouse selection for windows with padding. Moving the mouse into the
+  padding area now acts as if the mouse is over the nearest cell.
+
+- Allow setting all 256 terminal colors in the config file
+
+- Fix using `kitty --single-instance` to open a new window in a running kitty
+  instance, not respecting the `--directory` flag
+
+- URL hints: Exclude trailing punctuation from URLs
+
+- URL hints: Launch the browser from the kitty parent process rather than the
+  hints kitten. Fixes launching on some systems where xdg-open doesn't like
+  being run from a kitten.
+
+- Allow using rectangle select mode by pressing shift in addition to the
+  rectangle select modifiers even when the terminal program has grabbed the
+  mouse.
+
+
+version 0.8.4 [2018-03-31]
+-----------------------------
+
+- Fix presence of XDG_CONFIG_DIRS and absence of XDG_CONFIG_HOME preventing
+  kitty from starting
+
+- Revert change in last release to cell width calculation. Instead just clip
+  the right edges of characters that overflow the cell by at most two pixels
+
+
 version 0.8.3 [2018-03-29]
 -----------------------------
 

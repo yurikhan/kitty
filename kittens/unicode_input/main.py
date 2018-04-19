@@ -5,7 +5,6 @@
 import os
 import string
 import subprocess
-import sys
 from functools import lru_cache
 from gettext import gettext as _
 
@@ -43,7 +42,7 @@ def codepoint_ok(code):
 @lru_cache(maxsize=256)
 def points_for_word(w):
     from .unicode_names import codepoints_for_word
-    return codepoints_for_word(w)
+    return codepoints_for_word(w.lower())
 
 
 @lru_cache(maxsize=4096)
@@ -223,6 +222,8 @@ class Table:
         return self.text
 
     def move_current(self, rows=0, cols=0):
+        if len(self.codepoints) == 0:
+            return
         if cols:
             self.current_idx = (self.current_idx + len(self.codepoints) + cols) % len(self.codepoints)
             self.layout_dirty = True
@@ -452,26 +453,34 @@ class UnicodeInput(Handler):
         self.refresh()
 
 
-def run_loop(args):
+def main(args):
     loop = Loop()
     with cached_values_for('unicode-input') as cached_values:
         handler = UnicodeInput(cached_values)
         loop.loop(handler)
         if handler.current_char and loop.return_code == 0:
-            print('OK:', hex(ord(handler.current_char))[2:])
             try:
                 handler.recent.remove(ord(handler.current_char))
             except Exception:
                 pass
             recent = [ord(handler.current_char)] + handler.recent
             cached_values['recent'] = recent[:len(DEFAULT_SET)]
-    return loop.return_code
+            return handler.current_char
+    if loop.return_code != 0:
+        raise SystemExit(loop.return_code)
 
 
-def main(args=sys.argv):
-    try:
-        raise SystemExit(run_loop(args))
-    except Exception:
-        import traceback
-        traceback.print_exc()
-        input(_('Press Enter to quit.'))
+def handle_result(args, current_char, target_window_id, boss):
+    w = boss.window_id_map.get(target_window_id)
+    if w is not None:
+        w.paste(current_char)
+
+
+if __name__ == '__main__':
+    import sys
+    if '-h' in sys.argv or '--help' in sys.argv:
+        print('Choose a unicode character to input into the terminal')
+        raise SystemExit(0)
+    ans = main(sys.argv)
+    if ans:
+        print(ans)

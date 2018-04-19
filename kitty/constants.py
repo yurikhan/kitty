@@ -11,7 +11,7 @@ from collections import namedtuple
 from .fast_data_types import set_boss as set_c_boss
 
 appname = 'kitty'
-version = (0, 8, 3)
+version = (0, 9, 0)
 str_version = '.'.join(map(str, version))
 _plat = sys.platform.lower()
 is_macos = 'darwin' in _plat
@@ -35,7 +35,7 @@ def _get_config_dir():
         locations.append(os.path.expanduser('~/Library/Preferences'))
     if 'XDG_CONFIG_DIRS' in os.environ:
         for loc in os.environ['XDG_CONFIG_DIRS'].split(os.pathsep):
-            locations.append(os.path.abspath(os.path.expanduser(os.environ['XDG_CONFIG_HOME'])))
+            locations.append(os.path.abspath(os.path.expanduser(loc)))
     for loc in locations:
         if loc:
             q = os.path.join(loc, appname)

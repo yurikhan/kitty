@@ -93,24 +93,51 @@ encode_mouse_event(Window *w, int button, MouseAction action, int mods) {
 
 // }}}
 
+static inline double
+window_left(Window *w) {
+    return w->geometry.left - OPT(window_padding_width) * (global_state.logical_dpi_x / 72.0);
+}
+
+static inline double
+window_right(Window *w) {
+    return w->geometry.right + OPT(window_padding_width) * (global_state.logical_dpi_x / 72.0);
+}
+
+static inline double
+window_top(Window *w) {
+    return w->geometry.top - OPT(window_padding_width) * (global_state.logical_dpi_y / 72.0);
+}
+
+static inline double
+window_bottom(Window *w) {
+    return w->geometry.bottom + OPT(window_padding_width) * (global_state.logical_dpi_y / 72.0);
+}
+
 static inline bool
 contains_mouse(Window *w) {
-    WindowGeometry *g = &w->geometry;
     double x = global_state.callback_os_window->mouse_x, y = global_state.callback_os_window->mouse_y;
-    return (w->visible && g->left <= x && x <= g->right && g->top <= y && y <= g->bottom);
+    return (w->visible && window_left(w) <= x && x <= window_right(w) && window_top(w) <= y && y <= window_bottom(w));
 }
 
 static inline bool
 cell_for_pos(Window *w, unsigned int *x, unsigned int *y) {
     WindowGeometry *g = &w->geometry;
-    unsigned int qx = (unsigned int)((double)(global_state.callback_os_window->mouse_x - g->left) / global_state.cell_width);
-    unsigned int qy = (unsigned int)((double)(global_state.callback_os_window->mouse_y - g->top) / global_state.cell_height);
-    bool ret = false;
     Screen *screen = w->render_data.screen;
-    if (screen && qx <= screen->columns && qy <= screen->lines) {
-        *x = qx; *y = qy; ret = true;
+    if (!screen) return false;
+    unsigned int qx = 0, qy = 0;
+    double mouse_x = global_state.callback_os_window->mouse_x;
+    double mouse_y = global_state.callback_os_window->mouse_y;
+    double left = window_left(w), top = window_top(w), right = window_right(w), bottom = window_bottom(w);
+    if (mouse_x < left || mouse_y < top || mouse_x > right || mouse_y > bottom) return false;
+    if (mouse_x >= g->right) qx = screen->columns - 1;
+    else if (mouse_x >= g->left) qx = (unsigned int)((double)(mouse_x - g->left) / global_state.cell_width);
+    if (mouse_y >= g->bottom) qy = screen->lines - 1;
+    else if (mouse_y >= g->top) qy = (unsigned int)((double)(mouse_y - g->top) / global_state.cell_height);
+    if (qx < screen->columns && qy < screen->lines) {
+        *x = qx; *y = qy;
+        return true;
     }
-    return ret;
+    return false;
 }
 
 #define HANDLER(name) static inline void name(Window UNUSED *w, int UNUSED button, int UNUSED modifiers, unsigned int UNUSED window_idx)
@@ -120,7 +147,7 @@ update_drag(bool from_button, Window *w, bool is_release, int modifiers) {
     Screen *screen = w->render_data.screen;
     if (from_button) {
         if (is_release) screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, true);
-        else screen_start_selection(screen, w->mouse_cell_x, w->mouse_cell_y, modifiers == (int)OPT(rectangle_select_modifiers), EXTEND_CELL);
+        else screen_start_selection(screen, w->mouse_cell_x, w->mouse_cell_y, modifiers == (int)OPT(rectangle_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | GLFW_MOD_SHIFT), EXTEND_CELL);
     } else if (screen->selection.in_progress) {
         screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, false);
     }
@@ -130,9 +157,10 @@ update_drag(bool from_button, Window *w, bool is_release, int modifiers) {
 bool
 drag_scroll(Window *w, OSWindow *frame) {
     unsigned int margin = global_state.cell_height / 2;
+    double left = window_left(w), top = window_top(w), right = window_right(w), bottom = window_bottom(w);
     double x = frame->mouse_x, y = frame->mouse_y;
-    if (y < w->geometry.top || y > w->geometry.bottom) return false;
-    if (x < w->geometry.left || x > w->geometry.right) return false;
+    if (y < top || y > bottom) return false;
+    if (x < left || x > right) return false;
     bool upwards = y <= (w->geometry.top + margin);
     if (upwards || y >= w->geometry.bottom - margin) {
         Screen *screen = w->render_data.screen;
@@ -232,9 +260,10 @@ multi_click(Window *w, unsigned int count) {
     index_type start, end;
     bool found_selection = false;
     SelectionExtendMode mode = EXTEND_CELL;
+    unsigned int y1 = w->mouse_cell_y, y2 = w->mouse_cell_y;
     switch(count) {
         case 2:
-            found_selection = screen_selection_range_for_word(screen, w->mouse_cell_x, w->mouse_cell_y, &start, &end);
+            found_selection = screen_selection_range_for_word(screen, w->mouse_cell_x, &y1, &y2, &start, &end);
             mode = EXTEND_WORD;
             break;
         case 3:
@@ -245,8 +274,8 @@ multi_click(Window *w, unsigned int count) {
             break;
     }
     if (found_selection) {
-        screen_start_selection(screen, start, w->mouse_cell_y, false, mode);
-        screen_update_selection(screen, end, w->mouse_cell_y, false);
+        screen_start_selection(screen, start, y1, false, mode);
+        screen_update_selection(screen, end, y2, false);
     }
 }
 
@@ -282,7 +311,7 @@ HANDLER(handle_button_event) {
     Screen *screen = w->render_data.screen;
     if (!screen) return;
     bool handle_in_kitty = (
-            modifiers == GLFW_MOD_SHIFT ||
+            modifiers == GLFW_MOD_SHIFT || modifiers == ((int)OPT(rectangle_select_modifiers) | GLFW_MOD_SHIFT) ||
             screen->modes.mouse_tracking_mode == 0 ||
             button == GLFW_MOUSE_BUTTON_MIDDLE ||
             (modifiers == (int)OPT(open_url_modifiers) && button == GLFW_MOUSE_BUTTON_LEFT)

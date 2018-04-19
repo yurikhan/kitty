@@ -2,17 +2,16 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
+import os
 import re
 import string
-import subprocess
 import sys
-from collections import namedtuple
 from functools import lru_cache, partial
 from gettext import gettext as _
 
 from kitty.cli import parse_args
+from kitty.fast_data_types import set_clipboard_string
 from kitty.key_encoding import ESCAPE, backspace_key, enter_key
-from kitty.utils import command_for_open
 
 from ..tui.handler import Handler
 from ..tui.loop import Loop
@@ -20,9 +19,17 @@ from ..tui.operations import (
     clear_screen, faint, set_cursor_visible, set_window_title, styled
 )
 
-Mark = namedtuple('Mark', 'index start end text')
 URL_PREFIXES = 'http https file ftp'.split()
 HINT_ALPHABET = string.digits + string.ascii_lowercase
+
+
+class Mark(object):
+
+    __slots__ = ('index', 'start', 'end', 'text')
+
+    def __init__(self, index, start, end, text):
+        self.index, self.start, self.end = index, start, end
+        self.text = text
 
 
 @lru_cache(maxsize=2048)
@@ -79,17 +86,19 @@ def render(lines, current_input):
     return '\r\n'.join(ans)
 
 
-class URLHints(Handler):
+class Hints(Handler):
 
-    def __init__(self, lines, index_map):
+    def __init__(self, lines, index_map, args):
         self.lines, self.index_map = tuple(lines), index_map
         self.current_input = ''
         self.current_text = None
+        self.args = args
+        self.window_title = _('Choose URL') if args.type == 'url' else _('Choose text')
         self.chosen = None
 
     def init_terminal_state(self):
         self.write(set_cursor_visible(False))
-        self.write(set_window_title(_('Choose URL')))
+        self.write(set_window_title(self.window_title))
 
     def initialize(self, *args):
         Handler.initialize(self, *args)
@@ -104,7 +113,7 @@ class URLHints(Handler):
                 changed = True
         if changed:
             matches = [
-                t for idx, t in self.index_map.items()
+                m.text for idx, m in self.index_map.items()
                 if encode_hint(idx).startswith(self.current_input)
             ]
             if len(matches) == 1:
@@ -121,7 +130,7 @@ class URLHints(Handler):
             self.draw_screen()
         elif key_event is enter_key and self.current_input:
             idx = decode_hint(self.current_input)
-            self.chosen = self.index_map[idx]
+            self.chosen = self.index_map[idx].text
             self.quit_loop(0)
         elif key_event.key is ESCAPE:
             self.quit_loop(1)
@@ -143,10 +152,10 @@ class URLHints(Handler):
         self.write(self.current_text)
 
 
-def regex_finditer(pat, line):
+def regex_finditer(pat, minimum_match_length, line):
     for m in pat.finditer(line):
-        s, e = m.span()
-        if e - s > 2:
+        s, e = m.span(pat.groups)
+        if e - s >= minimum_match_length:
             yield s, e
 
 
@@ -158,90 +167,151 @@ def find_urls(pat, line):
             idx = url.rfind('[')
             if idx > -1:
                 e -= len(url) - idx
+        while line[e - 1] in '.,?!' and e > 1:  # remove trailing punctuation
+            e -= 1
         yield s, e
 
 
-def mark(finditer, line, index_map):
+def mark(finditer, line, all_marks):
     marks = []
     for s, e in finditer(line):
-        idx = len(index_map)
+        idx = len(all_marks)
         text = line[s:e]
         marks.append(Mark(idx, s, e, text))
-        index_map[idx] = text
+        all_marks.append(marks[-1])
     return line, marks
 
 
 def run_loop(args, lines, index_map):
     loop = Loop()
-    handler = URLHints(lines, index_map)
+    handler = Hints(lines, index_map, args)
     loop.loop(handler)
     if handler.chosen and loop.return_code == 0:
-        cmd = command_for_open(args.program)
-        ret = subprocess.Popen(cmd + [handler.chosen]).wait()
-        if ret != 0:
-            print('URL handler "{}" failed with return code: {}'.format(' '.join(cmd), ret), file=sys.stderr)
-            input('Press Enter to quit')
-            loop.return_code = ret
+        return {'match': handler.chosen, 'program': args.program}
     raise SystemExit(loop.return_code)
 
 
-def run(args, source_file=None):
-    if source_file is None:
-        text = sys.stdin.buffer.read().decode('utf-8')
-        sys.stdin = open('/dev/tty')
-    else:
-        with open(source_file, 'r') as f:
-            text = f.read()
-    if args.regex is None:
+def escape(chars):
+    return chars.replace('\\', '\\\\').replace('-', r'\-').replace(']', r'\]')
+
+
+def run(args, text):
+    if args.type == 'url':
         from .url_regex import url_delimiters
         url_pat = '(?:{})://[^{}]{{3,}}'.format(
             '|'.join(args.url_prefixes.split(',')), url_delimiters
         )
         finditer = partial(find_urls, re.compile(url_pat))
+    elif args.type == 'path':
+        finditer = partial(regex_finditer, re.compile(r'(?:\S*/\S+)|(?:\S+[.][a-zA-Z0-9]{2,5})'), args.minimum_match_length)
+    elif args.type == 'line':
+        finditer = partial(regex_finditer, re.compile(r'(?m)^\s*(.+)\s*$'), args.minimum_match_length)
+    elif args.type == 'word':
+        chars = args.word_characters
+        if chars is None:
+            import json
+            chars = json.loads(os.environ['KITTY_COMMON_OPTS'])['select_by_word_characters']
+        pat = re.compile('(?u)[{}\w]{{{},}}'.format(escape(chars), args.minimum_match_length))
+        finditer = partial(regex_finditer, pat, args.minimum_match_length)
     else:
-        finditer = partial(regex_finditer, re.compile(args.regex))
+        finditer = partial(regex_finditer, re.compile(args.regex), args.minimum_match_length)
     lines = []
-    index_map = {}
+    all_marks = []
     for line in text.splitlines():
-        marked = mark(finditer, line, index_map)
+        marked = mark(finditer, line, all_marks)
         lines.append(marked)
-    if not index_map:
-        input(_('No URLs found, press Enter to abort.'))
+    if not all_marks:
+        input(_('No {} found, press Enter to abort.').format(
+            'URLs' if args.type == 'url' else 'matches'
+            ))
         return
 
-    try:
-        run_loop(args, lines, index_map)
-    except Exception:
-        import traceback
-        traceback.print_exc()
-        input(_('Press Enter to quit'))
+    largest_index = all_marks[-1].index
+    for m in all_marks:
+        m.index = largest_index - m.index
+    index_map = {m.index: m for m in all_marks}
+
+    return run_loop(args, lines, index_map)
 
 
-OPTIONS = partial('''\
+OPTIONS = partial(r'''
 --program
 default=default
-What program to use to open matched URLs. Defaults
-to the default URL open program for the operating system.
+What program to use to open matched text. Defaults to the default open program
+for the operating system.  Use a value of - to paste the match into the
+terminal window instead. A value of @ will copy the match to the clipboard.
+
+
+--type
+default=url
+choices=url,regex,path,line,word
+The type of text to search for.
 
 
 --regex
-Instead of searching for URLs search for the specified regular
-expression instead.
+default=(?m)^\s*(.+)\s*$
+The regular expression to use when --type=regex.  If you specify a group in the
+regular expression only the group will be matched. This allow you to match text
+ignoring a prefix/suffix, as needed. The default expression matches lines.
 
 
 --url-prefixes
 default={0}
-Comma separated list of recognized URL prefixes. Defaults to:
-{0}
+Comma separated list of recognized URL prefixes.
+
+
+--word-characters
+Characters to consider as part of a word. In addition, all chacraters marked as
+alpha-numeric in the unicode database will be considered as word characters.
+Defaults to the select_by_word_characters setting from kitty.conf.
+
+
+--minimum-match-length
+default=3
+type=int
+The minimum number of characters to consider a match.
 '''.format, ','.join(sorted(URL_PREFIXES)))
 
 
-def main(args=sys.argv):
-    msg = 'Highlight URLs inside the specified text'
+def main(args):
+    msg = 'Select text from the screen using the keyboard. Defaults to searching for URLs.'
+    text = ''
+    if sys.stdin.isatty():
+        if '--help' not in args and '-h' not in args:
+            print('You must pass the text to be hinted on STDIN', file=sys.stderr)
+            input(_('Press Enter to quit'))
+            return
+    else:
+        text = sys.stdin.buffer.read().decode('utf-8')
+        sys.stdin = open('/dev/tty')
     try:
-        args, items = parse_args(args[1:], OPTIONS, '[path to file or omit to use stdin]', msg, 'url_hints')
+        args, items = parse_args(args[1:], OPTIONS, '', msg, 'hints')
     except SystemExit as e:
-        print(e.args[0], file=sys.stderr)
-        input('Press enter to quit...')
-        return 1
-    run(args, (items or [None])[0])
+        if e.code != 0:
+            print(e.args[0], file=sys.stderr)
+            input(_('Press Enter to quit'))
+        return
+    if items:
+        print('Extra command line arguments present: {}'.format(' '.join(items)), file=sys.stderr)
+        input(_('Press Enter to quit'))
+        return
+    return run(args, text)
+
+
+def handle_result(args, data, target_window_id, boss):
+    program = data['program']
+    if program == '-':
+        w = boss.window_id_map.get(target_window_id)
+        if w is not None:
+            w.paste(data['match'])
+    elif program == '@':
+        set_clipboard_string(data['match'])
+    else:
+        boss.open_url(data['match'], None if program == 'default' else program)
+
+
+if __name__ == '__main__':
+    # Run with kitty +kitten hints
+    ans = main(sys.argv)
+    if ans:
+        print(ans)

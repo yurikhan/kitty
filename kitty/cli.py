@@ -32,9 +32,10 @@ only use this if you are running a program that does not set titles.
 
 --config
 type=list
-Specify a path to the configuration file(s) to use.
-Can be specified multiple times to read multiple configuration files in
-sequence, which are merged.  Use the special value NONE to not load a config
+Specify a path to the configuration file(s) to use. All configuration files are
+merged onto the builtin kitty.conf, overriding the builtin values. This option
+can be specified multiple times to read multiple configuration files in
+sequence, which are merged. Use the special value NONE to not load a config
 file.
 
 If this option is not specified, config files are searched for in the order:
@@ -45,8 +46,9 @@ config file.
 If the environment variable "KITTY_CONFIG_DIRECTORY" is specified, that
 directory is always used and the above searching does not happen.
 
-If "/etc/xdg/kitty/kitty.conf" exists it is used as a base config file onto
-which any user config files are merged.
+If "/etc/xdg/kitty/kitty.conf" exists it is merged before (i.e. with lower
+priority) than any user config files. It can be used to specify system-wide
+defaults for all users.
 
 
 --override -o
@@ -245,8 +247,12 @@ def prettify(text):
     return text
 
 
-def version():
-    return '{} {} created by {}'.format(italic(appname), green(str_version), title('Kovid Goyal'))
+def version(add_rev=False):
+    rev = ''
+    from . import fast_data_types
+    if add_rev and hasattr(fast_data_types, 'KITTY_VCS_REV'):
+        rev = ' ({})'.format(fast_data_types.KITTY_VCS_REV[:10])
+    return '{} {}{} created by {}'.format(italic(appname), green(str_version), rev, title('Kovid Goyal'))
 
 
 def wrap(text, limit=80):
@@ -284,6 +290,7 @@ def wrap(text, limit=80):
 
 def print_help_for_seq(seq, usage, message, appname):
     from kitty.icat import screen_size
+    screen_size.changed = True
     try:
         linesz = min(screen_size().cols, 76)
     except EnvironmentError:
@@ -333,12 +340,15 @@ def print_help_for_seq(seq, usage, message, appname):
             a('')
 
     text = '\n'.join(blocks) + '\n\n' + version()
-    if sys.stdout.isatty():
+    if print_help_for_seq.allow_pager and sys.stdout.isatty():
         p = subprocess.Popen(['less', '-isRXF'], stdin=subprocess.PIPE)
         p.communicate(text.encode('utf-8'))
         raise SystemExit(p.wait())
     else:
         print(text)
+
+
+print_help_for_seq.allow_pager = True
 
 
 def defval_for_opt(opt):
@@ -470,7 +480,7 @@ def parse_cmdline(oc, disabled, args=None):
 def options_spec():
     if not hasattr(options_spec, 'ans'):
         options_spec.ans = OPTIONS.format(
-            appname=appname, macos_confpath='~/Library/Preferences/kitty/kitty.conf' if is_macos else '',
+            appname=appname, macos_confpath='~/Library/Preferences/kitty/kitty.conf, ' if is_macos else '',
             window_layout_choices=', '.join(all_layouts)
         )
     return options_spec.ans
@@ -547,7 +557,7 @@ def compare_opts(opts):
 def create_opts(args, debug_config=False):
     config = tuple(resolve_config(args.config))
     if debug_config:
-        print(version())
+        print(version(add_rev=True))
         print(' '.join(os.uname()))
         if is_macos:
             print(' '.join(subprocess.check_output(['sw_vers']).decode('utf-8').splitlines()).strip())

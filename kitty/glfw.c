@@ -16,6 +16,7 @@ extern void cocoa_set_titlebar_color(void *w);
 #endif
 
 static GLFWcursor *standard_cursor = NULL, *click_cursor = NULL, *arrow_cursor = NULL;
+static bool event_loop_blocking_with_no_timeout = false;
 
 void
 update_os_window_viewport(OSWindow *window, bool notify_boss) {
@@ -74,8 +75,19 @@ is_window_ready_for_callbacks() {
 
 static inline void
 show_mouse_cursor(GLFWwindow *w) {
-    if (glfwGetInputMode(w, GLFW_CURSOR) != GLFW_CURSOR_NORMAL) { glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL); }
+    glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 }
+
+// On Cocoa, glfwWaitEvents() can block indefinitely because of the way Cocoa
+// works. See https://github.com/glfw/glfw/issues/1251. I have noticed this
+// happening in particular with window resize events, when waiting with no
+// timeout. See https://github.com/kovidgoyal/kitty/issues/458
+// So we use an unlovely hack to workaround that case
+#ifdef __APPLE__
+#define unjam_event_loop() { if (event_loop_blocking_with_no_timeout) wakeup_main_loop(); }
+#else
+#define unjam_event_loop()
+#endif
 
 static void
 framebuffer_size_callback(GLFWwindow *w, int width, int height) {
@@ -84,6 +96,7 @@ framebuffer_size_callback(GLFWwindow *w, int width, int height) {
         OSWindow *window = global_state.callback_os_window;
         window->has_pending_resizes = true; global_state.has_pending_resizes = true;
         window->last_resize_event_at = monotonic();
+        unjam_event_loop();
     } else log_error("Ignoring resize request for tiny size: %dx%d", width, height);
     global_state.callback_os_window = NULL;
 }
@@ -96,21 +109,13 @@ refresh_callback(GLFWwindow *w) {
 }
 
 static void
-char_mods_callback(GLFWwindow *w, unsigned int codepoint, int mods) {
-    if (!set_callback_window(w)) return;
-    global_state.callback_os_window->cursor_blink_zero_time = monotonic();
-    if (is_window_ready_for_callbacks()) on_text_input(codepoint, mods);
-    global_state.callback_os_window = NULL;
-}
-
-static void
-key_callback(GLFWwindow *w, int key, int scancode, int action, int mods) {
+key_callback(GLFWwindow *w, int key, int scancode, int action, int mods, const char* text, int state) {
     if (!set_callback_window(w)) return;
     global_state.callback_os_window->cursor_blink_zero_time = monotonic();
     if (key >= 0 && key <= GLFW_KEY_LAST) {
         global_state.callback_os_window->is_key_pressed[key] = action == GLFW_RELEASE ? false : true;
-        if (is_window_ready_for_callbacks()) on_key_input(key, scancode, action, mods);
     }
+    if (is_window_ready_for_callbacks()) on_key_input(key, scancode, action, mods, text, state);
     global_state.callback_os_window = NULL;
 }
 
@@ -231,7 +236,11 @@ static GLFWimage logo = {0};
 static PyObject*
 set_default_window_icon(PyObject UNUSED *self, PyObject *args) {
     Py_ssize_t sz;
-    if(!PyArg_ParseTuple(args, "s#ii", &(logo.pixels), &sz, &(logo.width), &(logo.height))) return NULL;
+    const char *logo_data;
+    if(!PyArg_ParseTuple(args, "s#ii", &(logo_data), &sz, &(logo.width), &(logo.height))) return NULL;
+    sz = (MAX(logo.width * logo.height, sz));
+    logo.pixels = malloc(sz);
+    if (logo.pixels) memcpy(logo.pixels, logo_data, sz);
     Py_RETURN_NONE;
 }
 
@@ -338,7 +347,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
         PyErr_SetString(PyExc_ValueError, "Too many windows");
         return NULL;
     }
-    bool want_semi_transparent = (1.0 - OPT(background_opacity) > 0.1) ? true : false;
+    bool want_semi_transparent = (1.0 - OPT(background_opacity) >= 0.01) ? true : false;
     glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, want_semi_transparent);
     GLFWwindow *glfw_window = glfwCreateWindow(width, height, title, NULL, global_state.num_os_windows ? global_state.os_windows[0].handle : NULL);
     if (glfw_window == NULL) {
@@ -375,11 +384,10 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
     update_os_window_viewport(w, false);
     glfwSetFramebufferSizeCallback(glfw_window, framebuffer_size_callback);
     glfwSetWindowRefreshCallback(glfw_window, refresh_callback);
-    glfwSetCharModsCallback(glfw_window, char_mods_callback);
     glfwSetMouseButtonCallback(glfw_window, mouse_button_callback);
     glfwSetScrollCallback(glfw_window, scroll_callback);
     glfwSetCursorPosCallback(glfw_window, cursor_pos_callback);
-    glfwSetKeyCallback(glfw_window, key_callback);
+    glfwSetKeyboardCallback(glfw_window, key_callback);
     glfwSetWindowFocusCallback(glfw_window, window_focus_callback);
     glfwSetDropCallback(glfw_window, drop_callback);
 #ifdef __APPLE__
@@ -485,18 +493,6 @@ glfw_init(PyObject UNUSED *self, PyObject *args) {
 PyObject*
 glfw_terminate(PYNOARG) {
     glfwTerminate();
-    Py_RETURN_NONE;
-}
-
-PyObject*
-glfw_wait_events(PyObject UNUSED *self, PyObject *args) {
-    double time = -1;
-    if (PyTuple_GET_SIZE(args) > 0) {
-        time = PyFloat_AsDouble(PyTuple_GET_ITEM(args, 0));
-        if (PyErr_Occurred()) PyErr_Clear();
-    }
-    if (time < 0) glfwWaitEvents();
-    else glfwWaitEventsTimeout(time);
     Py_RETURN_NONE;
 }
 
@@ -625,9 +621,7 @@ set_os_window_title(OSWindow *w, const char *title) {
 
 void
 hide_mouse(OSWindow *w) {
-    if (glfwGetInputMode(w->handle, GLFW_CURSOR) != GLFW_CURSOR_HIDDEN) {
-        glfwSetInputMode(w->handle, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
-    }
+    glfwSetInputMode(w->handle, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
 }
 
 void
@@ -637,8 +631,8 @@ swap_window_buffers(OSWindow *w) {
 
 void
 event_loop_wait(double timeout) {
-    if (timeout < 0) glfwWaitEvents();
-    else if (timeout > 0) glfwWaitEventsTimeout(timeout);
+    if (timeout < 0) { event_loop_blocking_with_no_timeout = true; glfwWaitEvents(); event_loop_blocking_with_no_timeout = false; }
+    else glfwWaitEventsTimeout(timeout);
 }
 
 void
@@ -771,7 +765,6 @@ static PyMethodDef module_methods[] = {
     METHODB(glfw_poll_events, METH_NOARGS),
     {"glfw_init", (PyCFunction)glfw_init, METH_VARARGS, ""},
     {"glfw_terminate", (PyCFunction)glfw_terminate, METH_NOARGS, ""},
-    {"glfw_wait_events", (PyCFunction)glfw_wait_events, METH_VARARGS, ""},
     {"glfw_post_empty_event", (PyCFunction)glfw_post_empty_event, METH_NOARGS, ""},
     {"glfw_get_physical_dpi", (PyCFunction)glfw_get_physical_dpi, METH_NOARGS, ""},
     {"glfw_get_key_name", (PyCFunction)glfw_get_key_name, METH_VARARGS, ""},
@@ -780,10 +773,19 @@ static PyMethodDef module_methods[] = {
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 
+void cleanup_glfw(void) {
+    if (logo.pixels) free(logo.pixels);
+    logo.pixels = NULL;
+}
+
 // constants {{{
 bool
 init_glfw(PyObject *m) {
     if (PyModule_AddFunctions(m, module_methods) != 0) return false;
+    if (Py_AtExit(cleanup_glfw) != 0) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to register the glfw exit handler");
+        return false;
+    }
 #define ADDC(n) if(PyModule_AddIntConstant(m, #n, n) != 0) return false;
     ADDC(GLFW_RELEASE);
     ADDC(GLFW_PRESS);

@@ -1676,17 +1676,31 @@ is_opt_word_char(char_type ch) {
 }
 
 bool
-screen_selection_range_for_word(Screen *self, index_type x, index_type y, index_type *s, index_type *e) {
-    if (y >= self->lines || x >= self->columns) return false;
+screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, index_type *y2, index_type *s, index_type *e) {
+    if (*y1 >= self->lines || x >= self->columns) return false;
     index_type start, end;
-    Line *line = visual_line_(self, y);
+    Line *line = visual_line_(self, *y1);
+    *y2 = *y1;
 #define is_ok(x) (is_word_char((line->cells[x].ch)) || is_opt_word_char(line->cells[x].ch))
     if (!is_ok(x)) {
         start = x; end = x + 1;
     } else {
         start = x, end = x;
-        while(start > 0 && is_ok(start - 1)) start--;
-        while(end < self->columns - 1 && is_ok(end + 1)) end++;
+        while(true) {
+            while(start > 0 && is_ok(start - 1)) start--;
+            if (start > 0 || !line->continued || *y1 == 0) break;
+            line = visual_line_(self, *y1 - 1);
+            if (!is_ok(self->columns - 1)) break;
+            (*y1)--; start = self->columns - 1;
+        }
+        line = visual_line_(self, *y2);
+        while(true) {
+            while(end < self->columns - 1 && is_ok(end + 1)) end++;
+            if (end < self->columns - 1 || *y2 >= self->lines - 1) break;
+            line = visual_line_(self, *y2 + 1);
+            if (!line->continued || !is_ok(0)) break;
+            (*y2)++; end = 0;
+        }
     }
     *s = start; *e = end;
     return true;
@@ -1762,17 +1776,47 @@ screen_update_selection(Screen *self, index_type x, index_type y, bool ended) {
     if (ended) self->selection.in_progress = false;
     index_type start, end;
     bool found = false;
+    bool extending_leftwards = self->selection.end_y < self->selection.start_y || (self->selection.end_y == self->selection.start_y && self->selection.end_x < self->selection.start_x);
     switch(self->selection.extend_mode) {
-        case EXTEND_WORD:
-            found = screen_selection_range_for_word(self, x, y, &start, &end);
+        case EXTEND_WORD: {
+            index_type y1 = y, y2;
+            found = screen_selection_range_for_word(self, x, &y1, &y2, &start, &end);
+            if (found) {
+                if (extending_leftwards) {
+                    self->selection.end_x = start; self->selection.end_y = y1;
+                    y1 = self->selection.start_y;
+                    found = screen_selection_range_for_word(self, self->selection.start_x, &y1, &y2, &start, &end);
+                    if (found) {
+                        self->selection.start_x = end; self->selection.start_y = y2;
+                    }
+                } else {
+                    self->selection.end_x = end; self->selection.end_y = y2;
+                    y1 = self->selection.start_y;
+                    found = screen_selection_range_for_word(self, self->selection.start_x, &y1, &y2, &start, &end);
+                    if (found) {
+                        self->selection.start_x = start; self->selection.start_y = y1;
+                    }
+
+                }
+            }
             break;
+        }
         case EXTEND_LINE:
-            found = screen_selection_range_for_line(self, y, &start, &end);
+            if (extending_leftwards) {
+                found = screen_selection_range_for_line(self, self->selection.end_y, &start, &end);
+                if (found) { self->selection.end_x = start; }
+                found = screen_selection_range_for_line(self, self->selection.start_y, &start, &end);
+                if (found) { self->selection.start_x = end; }
+            } else {
+                found = screen_selection_range_for_line(self, self->selection.start_y, &start, &end);
+                if (found) { self->selection.start_x = start; }
+                found = screen_selection_range_for_line(self, self->selection.end_y, &start, &end);
+                if (found) { self->selection.end_x = end; }
+            }
             break;
         case EXTEND_CELL:
             break;
     }
-    if (found) self->selection.end_x = end;
     call_boss(set_primary_selection, NULL);
 }
 
