@@ -15,7 +15,7 @@ override_dh_auto_clean:
 	python3 setup.py --verbose clean
 
 override_dh_auto_build:
-	python3 setup.py --verbose build
+	python3 setup.py --verbose linux-package
 
 override_dh_auto_test: export HOME=$(CURDIR)/debian/fakehome
 override_dh_auto_test:
@@ -25,7 +25,8 @@ ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
 endif
 
 override_dh_auto_install:
-	python3 setup.py --verbose linux-package --prefix=$(CURDIR)/debian/tmp/usr
+	mkdir -p $(CURDIR)/debian/tmp/usr
+	cp -a linux-package/* $(CURDIR)/debian/tmp/usr/
 
 override_dh_install:
 	dh_install -Xlib/kitty/terminfo
