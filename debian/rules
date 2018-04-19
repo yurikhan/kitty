@@ -6,7 +6,10 @@ include /usr/share/dpkg/default.mk
 
 CFLAGS += $(CPPFLAGS)
 LDFLAGS += -Wl,--as-needed
-export CFLAGS LDFLAGS
+
+OVERRIDE_CFLAGS = $(CFLAGS)
+OVERRIDE_LDFLAGS = $(LDFLAGS)
+export OVERRIDE_CFLAGS OVERRIDE_LDFLAGS
 
 %:
 	dh $@ --with python3
