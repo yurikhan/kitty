@@ -21,7 +21,8 @@ Copyright: 2002-2006, Marcus Geelnard
 License: Zlib
 
 Files: glfw/glfw.py
-Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
+       glfw/xkb_glfw.*
+Copyright: 2014,2017-2018, Kovid Goyal <kovid at kovidgoyal.net>
 License: GPL-3+
 
 Files: kitty_tests/FiraCode-Medium.otf
@@ -33,7 +34,7 @@ Copyright: 2012, Red Hat, Inc.
 License: Liberation
 
 Files: kitty/khrplatform.h
-Copyright: 2008-2009, The Khronos Group Inc.
+Copyright: 2008-2018, The Khronos Group Inc.
 License: Expat
 
 License: Expat
