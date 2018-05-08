@@ -1,4 +1,4 @@
-kitty (0.9.1-1) UNRELEASED; urgency=medium
+kitty (0.9.1-1) unstable; urgency=medium
 
   [ upstream ]
   * Fix build failures related to unsigned char or big-endian platforms.
@@ -7,11 +7,22 @@ kitty (0.9.1-1) UNRELEASED; urgency=medium
   * Output GL version when running with --debug-gl (to help with #897381)
 
   [ James McCoy ]
-  * rules: Override upstream's CFLAGS instead of augmenting them
+  * rules:
+    + Override upstream's CFLAGS instead of augmenting them
+    + Export CPPFLAGS independently, now that upstream's buildsystem
+      explicitly handles them
   * Add a watch file
   * Update d/copyright for 0.9.1
+  * control:
+    + Add libx11-xcb-dev to Build-Depends instead of relying on it implicitly
+      being installed
+    * Recommend kitty-doc from kitty package so documentation is typically
+      available
+  * Convert asciidoc files into html documentation (Closes: #897003)
+    + Add asciidoctor to Build-Depends-Indep
+    + Create new kitty-doc package
 
- -- James McCoy <jamessan@debian.org>  Mon, 07 May 2018 20:56:33 -0400
+ -- James McCoy <jamessan@debian.org>  Mon, 07 May 2018 22:54:49 -0400
 
 kitty (0.9.0-1) unstable; urgency=medium
 
