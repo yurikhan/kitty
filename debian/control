@@ -34,6 +34,8 @@ Depends:
  ${misc:Depends},
  ${python3:Depends},
  ${shlibs:Depends},
+Recommends:
+ kitty-doc
 Description: fast, featureful, GPU based terminal emulator
  Kitty supports modern terminal features like: graphics, unicode,
  true-color, OpenType ligatures, mouse protocol, focus tracking, and
