@@ -4,12 +4,12 @@ export DEB_BUILD_MAINT_OPTIONS=hardening=+all
 
 include /usr/share/dpkg/default.mk
 
-CFLAGS += $(CPPFLAGS)
 LDFLAGS += -Wl,--as-needed
 
 OVERRIDE_CFLAGS = $(CFLAGS)
+OVERRIDE_CPPFLAGS = $(CPPFLAGS)
 OVERRIDE_LDFLAGS = $(LDFLAGS)
-export OVERRIDE_CFLAGS OVERRIDE_LDFLAGS
+export OVERRIDE_CFLAGS OVERRIDE_CPPFLAGS OVERRIDE_LDFLAGS
 
 %:
 	dh $@ --with python3
