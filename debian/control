@@ -24,6 +24,8 @@ Build-Depends:
  pkg-config,
  python3-dev (>= 3.5),
  zlib1g-dev,
+Build-Depends-Indep:
+ asciidoctor
 
 Package: kitty
 Architecture: any
@@ -46,3 +48,13 @@ Multi-Arch: foreign
 Description: fast, featureful, GPU based terminal emulator (terminfo file)
  This package provides the xterm-kitty terminfo definition for the kitty
  terminal emulator so that it can easily be installed on remote systems.
+
+Package: kitty-doc
+Architecture: all
+Multi-Arch: foreign
+Section: doc
+Breaks: kitty (<< 0.9.1-1~)
+Replaces: kitty (<< 0.9.1-1~)
+Description: fast, featureful, GPU based terminal emulator (documentation)
+ This package contains the AsciiDoc/HTML documentation for the kitty terminal
+ emulator.
