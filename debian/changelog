@@ -1,3 +1,18 @@
+kitty (0.9.1-1) UNRELEASED; urgency=medium
+
+  [ upstream ]
+  * Fix build failures related to unsigned char or big-endian platforms.
+    (Closes: #896099)
+  * New kitten for performing/viewing diffs
+  * Output GL version when running with --debug-gl (to help with #897381)
+
+  [ James McCoy ]
+  * rules: Override upstream's CFLAGS instead of augmenting them
+  * Add a watch file
+  * Update d/copyright for 0.9.1
+
+ -- James McCoy <jamessan@debian.org>  Mon, 07 May 2018 20:56:33 -0400
+
 kitty (0.9.0-1) unstable; urgency=medium
 
   * Initial release. (Closes: #886311)
