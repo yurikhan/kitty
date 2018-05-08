@@ -108,7 +108,7 @@ the following dependencies are installed first.
 * ImageMagick (optional, needed to use the `kitty icat` tool to display images in the terminal)
 * gcc or clang (required only for building)
 * pkg-config (required only for building)
-* For building on Linux in addition to the above dependencies you might also need to install the `-dev` packages for `xcursor`, `xrandr`, `xinerama`, `libgl1-mesa` and `xkbcommon-x11`, if they are not already installed by your distro.
+* For building on Linux in addition to the above dependencies you might also need to install the `-dev` packages for `xcursor`, `xrandr`, `libxi`, `xinerama`, `libgl1-mesa` and `xkbcommon-x11`, if they are not already installed by your distro.
 
 === Install and run from source
 
@@ -116,7 +116,7 @@ the following dependencies are installed first.
 git clone https://github.com/kovidgoyal/kitty && cd kitty
 ....
 
-Now build the C parts of kitty with the following command:
+Now build the native code parts of kitty with the following command:
 
 ....
 make
@@ -128,17 +128,31 @@ You can run kitty, as:
 python3 .
 ....
 
+If that works, you can create a script to launch kitty:
+
+....
+#!/usr/bin/env python3
+
+import runpy
+runpy.run_path('/path/to/kitty/dir', run_name='__main__')
+....
+
+And place it in `~/bin` or `/usr/bin` so that you can run kitty using
+just `kitty`.
+
 === Linux packages
 
-* Arch Linux: AUR git package https://aur.archlinux.org/packages/kitty-git/
+* Arch Linux: https://www.archlinux.org/packages/community/x86_64/kitty/
 
-* Arch Linux: AUR stable package https://aur.archlinux.org/packages/kitty/
+* Arch Linux: AUR git package https://aur.archlinux.org/packages/kitty-git/
 
 * NixOS / nixpkgs: https://github.com/NixOS/nixpkgs/blob/master/pkgs/applications/misc/kitty/default.nix
 
 * Gentoo: https://packages.gentoo.org/packages/x11-terms/kitty
 
 * openSUSE: https://build.opensuse.org/package/show/X11:terminals/kitty
+
+* Debian: https://packages.qa.debian.org/k/kitty/news/20180419T070013Z.html
 
 === macOS packages
 
@@ -535,6 +549,17 @@ infocmp xterm-kitty | ssh myserver tic -x -o \~/.terminfo /dev/stdin
 Really, the correct solution for this is to convince the OpenSSH maintainers to
 have ssh do this automatically when connecting to a server, so that all
 terminals work transparently.
+
+In the meantime, you can automate it by using a simple script called, for example,
+`~/bin/myssh`
+
+....
+#!/bin/sh
+infocmp xterm-kitty | ssh $1 tic -x -o \~/.terminfo /dev/stdin && ssh $1
+....
+
+Then you can use `myssh server` to log in to `server` with the terminfo file
+being automatically available.
 
 
 === How do I change the colors in a running kitty instance?

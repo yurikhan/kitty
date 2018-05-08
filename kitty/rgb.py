@@ -35,6 +35,14 @@ def color_as_int(x):
     return x.red << 16 | x.green << 8 | x.blue
 
 
+def color_as_sharp(x):
+    return '#{:02x}{:02x}{:02x}'.format(*x)
+
+
+def color_as_sgr(x):
+    return ':2:{}:{}:{}'.format(*x)
+
+
 def to_color(raw, validate=False):
     # See man XParseColor
     x = raw.strip().lower()

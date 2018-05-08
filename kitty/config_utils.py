@@ -4,6 +4,7 @@
 
 import os
 import re
+import shlex
 
 from .rgb import to_color as as_color
 from .utils import log_error
@@ -29,6 +30,12 @@ def unit_float(x):
 
 def to_bool(x):
     return x.lower() in 'y yes true'.split()
+
+
+def to_cmdline(x):
+    ans = shlex.split(x)
+    ans[0] = os.path.expandvars(os.path.expanduser(ans[0]))
+    return ans
 
 
 def parse_line(line, type_map, special_handling, ans, all_keys, base_path_for_includes):
@@ -115,6 +122,41 @@ def create_options_class(keys):
     })
     ans._fields = keys
     return ans
+
+
+def merge_dicts(defaults, newvals):
+    ans = defaults.copy()
+    ans.update(newvals)
+    return ans
+
+
+def resolve_config(SYSTEM_CONF, defconf, config_files_on_cmd_line):
+    if config_files_on_cmd_line:
+        if 'NONE' not in config_files_on_cmd_line:
+            yield SYSTEM_CONF
+            for cf in config_files_on_cmd_line:
+                yield cf
+    else:
+        yield SYSTEM_CONF
+        yield defconf
+
+
+def load_config(Options, defaults, parse_config, merge_configs, *paths, overrides=None):
+    ans = defaults._asdict()
+    for path in paths:
+        if not path:
+            continue
+        try:
+            f = open(path, encoding='utf-8', errors='replace')
+        except FileNotFoundError:
+            continue
+        with f:
+            vals = parse_config(f)
+            ans = merge_configs(ans, vals)
+    if overrides is not None:
+        vals = parse_config(overrides)
+        ans = merge_configs(ans, vals)
+    return Options(ans)
 
 
 def init_config(defaults_path, parse_config):

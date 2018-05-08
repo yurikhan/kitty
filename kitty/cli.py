@@ -4,13 +4,33 @@
 
 import os
 import re
-import subprocess
 import sys
 from collections import deque
 
 from .config import defaults, load_config
+from .config_utils import resolve_config
 from .constants import appname, defconf, is_macos, is_wayland, str_version
 from .layout import all_layouts
+
+CONFIG_HELP = '''\
+Specify a path to the configuration file(s) to use. All configuration files are
+merged onto the builtin {conf_name}.conf, overriding the builtin values. This option
+can be specified multiple times to read multiple configuration files in
+sequence, which are merged. Use the special value NONE to not load a config
+file.
+
+If this option is not specified, config files are searched for in the order:
+"$XDG_CONFIG_HOME/{appname}/{conf_name}.conf", "~/.config/{appname}/{conf_name}.conf", {macos_confpath}
+"$XDG_CONFIG_DIRS/{appname}/{conf_name}.conf". The first one that exists is used as the
+config file.
+
+If the environment variable "KITTY_CONFIG_DIRECTORY" is specified, that
+directory is always used and the above searching does not happen.
+
+If "/etc/xdg/{appname}/{conf_name}.conf" exists it is merged before (i.e. with lower
+priority) than any user config files. It can be used to specify system-wide
+defaults for all users.
+'''.replace('{macos_confpath}', '~/Library/Preferences/{appname}/{conf_name}.conf, ' if is_macos else '')
 
 OPTIONS = '''
 --class
@@ -30,35 +50,14 @@ Set the window title. This will override any title set by the program running in
 only use this if you are running a program that does not set titles.
 
 
---config
+--config -c
 type=list
-Specify a path to the configuration file(s) to use. All configuration files are
-merged onto the builtin kitty.conf, overriding the builtin values. This option
-can be specified multiple times to read multiple configuration files in
-sequence, which are merged. Use the special value NONE to not load a config
-file.
-
-If this option is not specified, config files are searched for in the order:
-"$XDG_CONFIG_HOME/kitty/kitty.conf", "~/.config/kitty/kitty.conf", {macos_confpath}
-"$XDG_CONFIG_DIRS/kitty/kitty.conf". The first one that exists is used as the
-config file.
-
-If the environment variable "KITTY_CONFIG_DIRECTORY" is specified, that
-directory is always used and the above searching does not happen.
-
-If "/etc/xdg/kitty/kitty.conf" exists it is merged before (i.e. with lower
-priority) than any user config files. It can be used to specify system-wide
-defaults for all users.
-
+{config_help}
 
 --override -o
 type=list
 Override individual configuration options, can be specified multiple times.
 Syntax: |_ name=value|. For example: |_ -o font_size=20|
-
-
---cmd -c
-Run python code in the kitty context
 
 
 --directory -d
@@ -141,6 +140,11 @@ Print out information about the selection of fallback fonts for characters not p
 --debug-config
 type=bool-set
 Print out information about the system and kitty configuration.
+
+
+--execute -e
+type=bool-set
+!
 '''
 
 
@@ -326,12 +330,15 @@ def print_help_for_seq(seq, usage, message, appname):
         if isinstance(opt, str):
             a('{}:'.format(title(opt)))
             continue
+        help_text = opt['help']
+        if help_text == '!':
+            continue  # hidden option
         a('  ' + ', '.join(map(green, sorted(opt['aliases']))))
         if not opt.get('type', '').startswith('bool-'):
             blocks[-1] += '={}'.format(italic(opt['dest'].upper()))
         if opt.get('help'):
             defval = opt.get('default')
-            t = opt['help'].replace('%default', str(defval))
+            t = help_text.replace('%default', str(defval))
             wa(prettify(t.strip()), indent=4)
             if defval is not None:
                 wa('Default: {}'.format(defval), indent=4)
@@ -341,6 +348,7 @@ def print_help_for_seq(seq, usage, message, appname):
 
     text = '\n'.join(blocks) + '\n\n' + version()
     if print_help_for_seq.allow_pager and sys.stdout.isatty():
+        import subprocess
         p = subprocess.Popen(['less', '-isRXF'], stdin=subprocess.PIPE)
         p.communicate(text.encode('utf-8'))
         raise SystemExit(p.wait())
@@ -480,7 +488,7 @@ def parse_cmdline(oc, disabled, args=None):
 def options_spec():
     if not hasattr(options_spec, 'ans'):
         options_spec.ans = OPTIONS.format(
-            appname=appname, macos_confpath='~/Library/Preferences/kitty/kitty.conf, ' if is_macos else '',
+            appname=appname, config_help=CONFIG_HELP.format(appname=appname, conf_name=appname),
             window_layout_choices=', '.join(all_layouts)
         )
     return options_spec.ans
@@ -496,70 +504,80 @@ def parse_args(args=None, ospec=options_spec, usage=None, message=None, appname=
 SYSTEM_CONF = '/etc/xdg/kitty/kitty.conf'
 
 
-def resolve_config(config_files_on_cmd_line):
-    if config_files_on_cmd_line:
-        if 'NONE' not in config_files_on_cmd_line:
-            yield SYSTEM_CONF
-            for cf in config_files_on_cmd_line:
-                yield cf
-    else:
-        yield SYSTEM_CONF
-        yield defconf
-
-
-def print_shortcut(key, action):
+def print_shortcut(key_sequence, action):
     if not getattr(print_shortcut, 'maps', None):
         from kitty.keys import defines
         v = vars(defines)
-        mmap = {m.split('_')[-1].lower(): x for m, x in v.items() if m.startswith('GLFW_MOD_')}
-        kmap = {k.split('_')[-1].lower(): x for k, x in v.items() if k.startswith('GLFW_KEY_')}
+        mmap = {m[len('GLFW_MOD_'):].lower(): x for m, x in v.items() if m.startswith('GLFW_MOD_')}
+        kmap = {k[len('GLFW_KEY_'):].lower(): x for k, x in v.items() if k.startswith('GLFW_KEY_')}
         krmap = {v: k for k, v in kmap.items()}
         print_shortcut.maps = mmap, krmap
     mmap, krmap = print_shortcut.maps
-    names = []
-    mods, key = key
-    for name, val in mmap.items():
-        if mods & val:
-            names.append(name)
-    if key:
-        names.append(krmap[key])
-    print('\t', '+'.join(names), action)
+    keys = []
+    for key in key_sequence:
+        names = []
+        mods, key = key
+        for name, val in mmap.items():
+            if mods & val:
+                names.append(name)
+        if key:
+            names.append(krmap[key])
+        keys.append('+'.join(names))
+
+    print('\t', ' > '.join(keys), action)
+
+
+def print_shortcut_changes(defns, text, changes):
+    if changes:
+        print(title(text))
+
+        for k in sorted(changes):
+            print_shortcut(k, defns[k])
 
 
 def compare_keymaps(final, initial):
     added = set(final) - set(initial)
     removed = set(initial) - set(final)
     changed = {k for k in set(final) & set(initial) if final[k] != initial[k]}
-    if added:
-        print(title('Added shortcuts:'))
-        for k in added:
-            print_shortcut(k, final[k])
-    if removed:
-        print(title('Removed shortcuts:'))
-        for k in removed:
-            print_shortcut(k, initial[k])
-    if changed:
-        print(title('Changed shortcuts:'))
-        for k in changed:
-            print_shortcut(k, final[k])
+    print_shortcut_changes(final, 'Added shortcuts:', added)
+    print_shortcut_changes(initial, 'Removed shortcuts:', removed)
+    print_shortcut_changes(final, 'Changed shortcuts:', changed)
+
+
+def flatten_sequence_map(m):
+    ans = {}
+    for k, rest_map in m.items():
+        for r, action in rest_map.items():
+            ans[(k,) + (r)] = action
+    return ans
 
 
 def compare_opts(opts):
     print('\nConfig options different from defaults:')
+    default_opts = load_config()
+
     for f in sorted(defaults._fields):
         if getattr(opts, f) != getattr(defaults, f):
-            if f == 'keymap':
-                compare_keymaps(opts.keymap, defaults.keymap)
-            else:
-                print(title('{:20s}'.format(f)), getattr(opts, f))
+            if f in ('key_definitions', 'keymap', 'sequence_map'):
+                continue
+            print(title('{:20s}'.format(f)), getattr(opts, f))
+
+    final, initial = opts.keymap, default_opts.keymap
+    final = {(k,): v for k, v in final.items()}
+    initial = {(k,): v for k, v in initial.items()}
+    final_s, initial_s = map(flatten_sequence_map, (opts.sequence_map, default_opts.sequence_map))
+    final.update(final_s)
+    initial.update(initial_s)
+    compare_keymaps(final, initial)
 
 
 def create_opts(args, debug_config=False):
-    config = tuple(resolve_config(args.config))
+    config = tuple(resolve_config(SYSTEM_CONF, defconf, args.config))
     if debug_config:
         print(version(add_rev=True))
         print(' '.join(os.uname()))
         if is_macos:
+            import subprocess
             print(' '.join(subprocess.check_output(['sw_vers']).decode('utf-8').splitlines()).strip())
         else:
             print('Running under:', green('Wayland' if is_wayland else 'X11'))

@@ -8,12 +8,8 @@ import fcntl
 import math
 import os
 import re
-import shlex
-import socket
 import string
-import subprocess
 import sys
-import tempfile
 from contextlib import contextmanager
 from time import monotonic
 
@@ -111,22 +107,26 @@ def base64_encode(
 
 
 def command_for_open(program='default'):
-    if program == 'default':
+    if isinstance(program, str):
+        from .config_utils import to_cmdline
+        program = to_cmdline(program)
+    if program == ['default']:
         cmd = ['open'] if is_macos else ['xdg-open']
     else:
-        cmd = shlex.split(program)
+        cmd = program
     return cmd
 
 
-def open_cmd(cmd, arg=None):
+def open_cmd(cmd, arg=None, cwd=None):
+    import subprocess
     if arg is not None:
         cmd = list(cmd)
         cmd.append(arg)
-    return subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd or None)
 
 
-def open_url(url, program='default'):
-    return open_cmd(command_for_open(program), url)
+def open_url(url, program='default', cwd=None):
+    return open_cmd(command_for_open(program), url, cwd=cwd)
 
 
 def detach(fork=True, setsid=True, redirect=True):
@@ -199,6 +199,8 @@ def remove_socket_file(s, path=None):
 
 
 def single_instance_unix(name):
+    import socket
+    import tempfile
     home = os.path.expanduser('~')
     candidates = [tempfile.gettempdir(), home]
     if is_macos:
@@ -237,6 +239,7 @@ def single_instance_unix(name):
 
 
 def single_instance(group_id=None):
+    import socket
     name = '{}-ipc-{}'.format(appname, os.geteuid())
     if group_id:
         name += '-{}'.format(group_id)
@@ -262,6 +265,7 @@ def single_instance(group_id=None):
 
 
 def parse_address_spec(spec):
+    import socket
     protocol, rest = spec.split(':', 1)
     socket_path = None
     if protocol == 'unix':

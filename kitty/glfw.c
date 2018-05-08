@@ -9,7 +9,8 @@
 #include "glfw-wrapper.h"
 extern bool cocoa_make_window_resizable(void *w);
 extern void cocoa_create_global_menu(void);
-extern void cocoa_set_titlebar_color(void *w);
+extern void cocoa_set_hide_from_tasks(void);
+extern void cocoa_set_titlebar_color(void *w, color_type color);
 
 #if GLFW_KEY_LAST >= MAX_KEY_COUNT
 #error "glfw has too many keys, you should increase MAX_KEY_COUNT"
@@ -309,12 +310,29 @@ set_dpi_from_os_window(OSWindow *w) {
 
 static bool is_first_window = true;
 
+#ifdef __APPLE__
+static int
+filter_option(int key UNUSED, int mods, unsigned int scancode UNUSED) {
+    return ((mods == GLFW_MOD_ALT) || (mods == (GLFW_MOD_ALT | GLFW_MOD_SHIFT))) ? 1 : 0;
+}
+#endif
+
+void
+set_titlebar_color(OSWindow *w, color_type color) {
+    if (w->handle && (!w->last_titlebar_color || (w->last_titlebar_color & 0xffffff) != (color & 0xffffff))) {
+        w->last_titlebar_color = (1 << 24) | (color & 0xffffff);
+#ifdef __APPLE__
+        cocoa_set_titlebar_color(glfwGetCocoaWindow(w->handle), color);
+#endif
+    }
+}
+
 static PyObject*
 create_os_window(PyObject UNUSED *self, PyObject *args) {
     int width, height, x = -1, y = -1;
     char *title, *wm_class_class, *wm_class_name;
     PyObject *load_programs = NULL;
-    if (!PyArg_ParseTuple(args, "iisss|Oiii", &width, &height, &title, &wm_class_name, &wm_class_class, &load_programs, &x, &y)) return NULL;
+    if (!PyArg_ParseTuple(args, "iisss|Oii", &width, &height, &title, &wm_class_name, &wm_class_class, &load_programs, &x, &y)) return NULL;
 
     if (is_first_window) {
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
@@ -367,6 +385,9 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
         Py_DECREF(ret);
 #ifdef __APPLE__
         cocoa_create_global_menu();
+        if (OPT(macos_option_as_alt)) glfwSetCocoaTextInputFilter(glfw_window, filter_option);
+        // This needs to be done only after the first window has been created, because glfw only sets the activation policy once upon initialization.
+        if (OPT(macos_hide_from_tasks)) cocoa_set_hide_from_tasks();
 #endif
         is_first_window = false;
     }
@@ -395,7 +416,6 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
         if (glfwGetCocoaWindow) { if (!cocoa_make_window_resizable(glfwGetCocoaWindow(glfw_window))) { PyErr_Print(); } }
         else log_error("Failed to load glfwGetCocoaWindow");
     }
-    cocoa_set_titlebar_color(glfwGetCocoaWindow(glfw_window));
 #endif
     double now = monotonic();
     w->is_focused = true;
@@ -609,7 +629,7 @@ request_window_attention(id_type kitty_window_id, bool audio_bell) {
     OSWindow *w = os_window_for_kitty_window(kitty_window_id);
     if (w) {
         if (audio_bell) ring_audio_bell(w);
-        glfwRequestWindowAttention(w->handle);
+        if (OPT(window_alert_on_bell)) glfwRequestWindowAttention(w->handle);
         glfwPostEmptyEvent();
     }
 }
@@ -927,6 +947,7 @@ init_glfw(PyObject *m) {
     ADDC(GLFW_MOD_CONTROL);
     ADDC(GLFW_MOD_ALT);
     ADDC(GLFW_MOD_SUPER);
+    ADDC(GLFW_MOD_KITTY);
 
 // --- Mouse -------------------------------------------------------------------
     ADDC(GLFW_MOUSE_BUTTON_1);

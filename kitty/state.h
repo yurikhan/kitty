@@ -20,10 +20,10 @@ typedef struct {
     unsigned int rectangle_select_modifiers;
     unsigned int url_style;
     char_type select_by_word_characters[256]; size_t select_by_word_characters_count;
-    color_type url_color, background, active_border_color, inactive_border_color;
+    color_type url_color, background, active_border_color, inactive_border_color, bell_border_color;
     double repaint_delay, input_delay;
     bool focus_follows_mouse;
-    bool macos_option_as_alt, macos_hide_titlebar;
+    bool macos_option_as_alt, macos_hide_titlebar, macos_hide_from_tasks;
     int adjust_line_height_px, adjust_column_width_px;
     float adjust_line_height_frac, adjust_column_width_frac;
     float background_opacity;
@@ -32,6 +32,7 @@ typedef struct {
     Edge tab_bar_edge;
     bool sync_to_monitor;
     bool close_on_child_death;
+    bool window_alert_on_bell;
 } Options;
 
 typedef struct {
@@ -104,6 +105,7 @@ typedef struct {
     unsigned int active_tab, num_tabs, capacity, last_active_tab, last_num_tabs, last_active_window_id;
     bool focused_at_last_render, needs_render;
     ScreenRenderData tab_bar_render_data;
+    bool tab_bar_data_updated;
     bool is_focused;
     double cursor_blink_zero_time, last_mouse_activity_at;
     double mouse_x, mouse_y;
@@ -115,6 +117,7 @@ typedef struct {
     bool has_pending_resizes, is_semi_transparent, shown_once, is_damaged;
     uint32_t offscreen_texture_id;
     unsigned int clear_count;
+    color_type last_titlebar_color;
 } OSWindow;
 
 
@@ -179,3 +182,4 @@ void update_surface_size(int, int, uint32_t);
 void free_texture(uint32_t*);
 void send_image_to_gpu(uint32_t*, const void*, int32_t, int32_t, bool, bool);
 void send_sprite_to_gpu(unsigned int, unsigned int, unsigned int, pixel*);
+void set_titlebar_color(OSWindow *w, color_type color);

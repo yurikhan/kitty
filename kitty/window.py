@@ -8,7 +8,8 @@ import weakref
 from collections import deque
 from enum import Enum
 
-from .config import build_ansi_color_table, parse_send_text_bytes
+from .child import cwd_of_process
+from .config import build_ansi_color_table
 from .constants import (
     ScreenGeometry, WindowGeometry, appname, get_boss, wakeup
 )
@@ -17,8 +18,9 @@ from .fast_data_types import (
     CELL_SPECIAL_PROGRAM, CSI, CURSOR_PROGRAM, DCS, GRAPHICS_PREMULT_PROGRAM,
     GRAPHICS_PROGRAM, OSC, SCROLL_FULL, SCROLL_LINE, SCROLL_PAGE, Screen,
     add_window, compile_program, glfw_post_empty_event, init_cell_program,
-    init_cursor_program, set_clipboard_string, set_window_render_data,
-    update_window_title, update_window_visibility, viewport_for_window
+    init_cursor_program, set_clipboard_string, set_titlebar_color,
+    set_window_render_data, update_window_title, update_window_visibility,
+    viewport_for_window
 )
 from .keys import keyboard_mode_name
 from .rgb import to_color
@@ -88,6 +90,7 @@ class Window:
 
     def __init__(self, tab, child, opts, args, override_title=None):
         self.action_on_close = None
+        self.needs_attention = False
         self.override_title = override_title
         self.overlay_window_id = None
         self.overlay_for = None
@@ -186,10 +189,9 @@ class Window:
         required_mode = frozenset(required_mode.split(','))
         if not required_mode & {mode, 'all'}:
             return True
-        data = parse_send_text_bytes(text)
-        if not data:
+        if not text:
             return True
-        self.write_to_child(data)
+        self.write_to_child(text)
 
     def write_to_child(self, data):
         if data:
@@ -213,6 +215,7 @@ class Window:
 
     def focus_changed(self, focused):
         if focused:
+            self.needs_attention = False
             if self.screen.focus_tracking_enabled:
                 self.screen.send_escape_code_to_child(CSI, 'I')
         else:
@@ -226,6 +229,26 @@ class Window:
 
     def icon_changed(self, new_icon):
         pass  # TODO: Implement this
+
+    @property
+    def is_active(self):
+        return get_boss().active_window is self
+
+    def on_bell(self):
+        if not self.is_active:
+            self.needs_attention = True
+            tab = self.tabref()
+            if tab is not None:
+                tab.on_bell(self)
+
+    def change_titlebar_color(self):
+        val = self.opts.macos_titlebar_color
+        if val:
+            if (val & 0xff) == 1:
+                val = self.screen.color_profile.default_bg
+            else:
+                val = val >> 8
+            set_titlebar_color(self.os_window_id, val)
 
     def change_colors(self, changes):
         dirtied = default_bg_changed = False
@@ -322,12 +345,22 @@ class Window:
 
     def as_text(self, as_ansi=False, add_history=False):
         lines = []
-        self.screen.as_text(lines.append, as_ansi)
-        if add_history and not self.screen.is_using_alternate_linebuf():
+        add_history = add_history and not self.screen.is_using_alternate_linebuf()
+        f = self.screen.as_text_non_visual if add_history else self.screen.as_text
+        f(lines.append, as_ansi)
+        if add_history:
             h = []
             self.screen.historybuf.as_text(h.append, as_ansi)
             lines = h + lines
         return ''.join(lines)
+
+    @property
+    def cwd_of_child(self):
+        # TODO: Maybe use the cwd of the leader of the foreground process
+        # group in the session of the child process?
+        pid = self.child.pid
+        if pid is not None:
+            return cwd_of_process(pid) or None
 
     # actions {{{
 
@@ -348,12 +381,13 @@ class Window:
             set_clipboard_string(text)
 
     def pass_selection_to_program(self, *args):
+        cwd = self.cwd_of_child
         text = self.text_for_selection()
         if text:
             if args:
-                open_cmd(args, text)
+                open_cmd(args, text, cwd=cwd)
             else:
-                open_url(text)
+                open_url(text, cwd=cwd)
 
     def scroll_line_up(self):
         if self.screen.is_main_linebuf():

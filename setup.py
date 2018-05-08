@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tempfile
 import time
 
 base = os.path.dirname(os.path.abspath(__file__))
@@ -140,13 +141,28 @@ def get_sanitize_args(cc, ccver):
     return sanitize_args
 
 
+def test_compile(cc, *cflags, src=None):
+    with tempfile.NamedTemporaryFile(suffix='.c') as f:
+        src = src or 'int main(void) { return 0; }'
+        f.write(src.encode('utf-8'))
+        f.flush()
+        return subprocess.Popen([cc] + list(cflags) + [f.name, '-o', os.devnull]).wait() == 0
+
+
+def first_successful_compile(cc, *cflags, src=None):
+    for x in cflags:
+        if test_compile(cc, *shlex.split(x), src=src):
+            return x
+    return ''
+
+
 class Env:
 
-    def __init__(self, cc, cflags, ldflags, ldpaths=[]):
-        self.cc, self.cflags, self.ldflags, self.ldpaths = cc, cflags, ldflags, ldpaths
+    def __init__(self, cc, cppflags, cflags, ldflags, ldpaths=[]):
+        self.cc, self.cppflags, self.cflags, self.ldflags, self.ldpaths = cc, cppflags, cflags, ldflags, ldpaths
 
     def copy(self):
-        return Env(self.cc, list(self.cflags), list(self.ldflags), list(self.ldflags))
+        return Env(self.cc, list(self.cppflags), list(self.cflags), list(self.ldflags), list(self.ldflags))
 
 
 def init_env(
@@ -155,9 +171,7 @@ def init_env(
     native_optimizations = native_optimizations and not sanitize and not debug
     cc, ccver = cc_version()
     print('CC:', cc, ccver)
-    stack_protector = '-fstack-protector'
-    if ccver >= (4, 9) and cc == 'gcc':
-        stack_protector += '-strong'
+    stack_protector = first_successful_compile(cc, '-fstack-protector-strong', '-fstack-protector')
     missing_braces = ''
     if ccver < (5, 2) and cc == 'gcc':
         missing_braces = '-Wno-missing-braces'
@@ -166,14 +180,21 @@ def init_env(
         df += ' -Og'
     optimize = df if debug or sanitize else '-O3'
     sanitize_args = get_sanitize_args(cc, ccver) if sanitize else set()
+    cppflags = os.environ.get(
+        'OVERRIDE_CPPFLAGS', (
+            '-D_XOPEN_SOURCE=700 -D{}DEBUG'
+        ).format(
+            ('' if debug else 'N'),
+        )
+    )
+    cppflags = shlex.split(cppflags)
     cflags = os.environ.get(
         'OVERRIDE_CFLAGS', (
-            '-Wextra -Wno-missing-field-initializers -Wall -std=c99 -D_XOPEN_SOURCE=700'
-            ' -pedantic-errors -Werror {} {} -D{}DEBUG -fwrapv {} {} -pipe {} -fvisibility=hidden'
+            '-Wextra -Wno-missing-field-initializers -Wall -std=c99'
+            ' -pedantic-errors -Werror {} {} -fwrapv {} {} -pipe {} -fvisibility=hidden'
         ).format(
             optimize,
             ' '.join(sanitize_args),
-            ('' if debug else 'N'),
             stack_protector,
             missing_braces,
             '-march=native' if native_optimizations else '',
@@ -182,15 +203,13 @@ def init_env(
     cflags = shlex.split(cflags) + shlex.split(
         sysconfig.get_config_var('CCSHARED')
     )
-    if os.path.exists('.git'):
-        rev = subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
-        cflags.append('-DKITTY_VCS_REV="{}"'.format(rev))
     ldflags = os.environ.get(
         'OVERRIDE_LDFLAGS',
         '-Wall ' + ' '.join(sanitize_args) + ('' if debug else ' -O3')
     )
     ldflags = shlex.split(ldflags)
     ldflags.append('-shared')
+    cppflags += shlex.split(os.environ.get('CPPFLAGS', ''))
     cflags += shlex.split(os.environ.get('CFLAGS', ''))
     ldflags += shlex.split(os.environ.get('LDFLAGS', ''))
     if not debug and not sanitize:
@@ -198,10 +217,10 @@ def init_env(
         cflags.append('-flto'), ldflags.append('-flto')
 
     if profile:
-        cflags.append('-DWITH_PROFILER')
+        cppflags.append('-DWITH_PROFILER')
         cflags.append('-g3')
         ldflags.append('-lprofiler')
-    return Env(cc, cflags, ldflags)
+    return Env(cc, cppflags, cflags, ldflags)
 
 
 def kitty_env():
@@ -210,8 +229,9 @@ def kitty_env():
     cflags.append('-pthread')
     # We add 4000 to the primary version because vim turns on SGR mouse mode
     # automatically if this version is high enough
-    cflags.append('-DPRIMARY_VERSION={}'.format(version[0] + 4000))
-    cflags.append('-DSECONDARY_VERSION={}'.format(version[1]))
+    cppflags = ans.cppflags
+    cppflags.append('-DPRIMARY_VERSION={}'.format(version[0] + 4000))
+    cppflags.append('-DSECONDARY_VERSION={}'.format(version[1]))
     at_least_version('harfbuzz', 1, 5)
     cflags.extend(pkg_config('libpng', '--cflags-only-I'))
     if is_macos:
@@ -348,13 +368,17 @@ def compile_c_extension(kenv, module, incremental, compilation_database, all_key
 
     for original_src, dest in zip(sources, objects):
         src = original_src
-        cflgs = kenv.cflags[:]
+        cppflags = kenv.cppflags[:]
         is_special = src in SPECIAL_SOURCES
         if is_special:
             src, defines = SPECIAL_SOURCES[src]
-            cflgs.extend(map(define, defines))
+            cppflags.extend(map(define, defines))
 
-        cmd = [kenv.cc, '-MMD'] + cflgs
+        if src == 'kitty/data-types.c':
+            if os.path.exists('.git'):
+                rev = subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
+                cppflags.append(define('KITTY_VCS_REV="{}"'.format(rev)))
+        cmd = [kenv.cc, '-MMD'] + cppflags + kenv.cflags
         key = original_src, os.path.basename(dest)
         all_keys.add(key)
         cmd_changed = compilation_database.get(key, [])[:-4] != cmd
@@ -429,9 +453,12 @@ def kittens_env():
 
 
 def compile_kittens(incremental, compilation_database, all_keys):
-    sources = ['kittens/unicode_input/unicode_names.c']
-    all_headers = ['kittens/unicode_input/names.h', 'kitty/data-types.h']
-    compile_c_extension(kittens_env(), 'kittens/unicode_input/unicode_names', incremental, compilation_database, all_keys, sources, all_headers)
+    kenv = kittens_env()
+    for sources, all_headers, dest in [
+        (['kittens/unicode_input/unicode_names.c'], ['kittens/unicode_input/names.h', 'kitty/data-types.h'],  'kittens/unicode_input/unicode_names'),
+        (['kittens/diff/speedup.c'], ['kitty/data-types.h'], 'kittens/diff/diff_speedup'),
+    ]:
+        compile_c_extension(kenv, dest, incremental, compilation_database, all_keys, sources, all_headers)
 
 
 def build(args, native_optimizations=True):
@@ -482,23 +509,25 @@ def build_asan_launcher(args):
 
 def build_linux_launcher(args, launcher_dir='.', for_bundle=False, sh_launcher=False):
     cflags = '-Wall -Werror -fpie'.split()
+    cppflags = []
     libs = []
     if args.profile:
-        cflags.append('-DWITH_PROFILER'), cflags.append('-g')
+        cppflags.append('-DWITH_PROFILER'), cflags.append('-g')
         libs.append('-lprofiler')
     else:
         cflags.append('-O3')
     if for_bundle:
-        cflags.append('-DFOR_BUNDLE')
-        cflags.append('-DPYVER="{}"'.format(sysconfig.get_python_version()))
+        cppflags.append('-DFOR_BUNDLE')
+        cppflags.append('-DPYVER="{}"'.format(sysconfig.get_python_version()))
     elif sh_launcher:
-        cflags.append('-DFOR_LAUNCHER')
-    cflags.append('-DLIB_DIR_NAME="{}"'.format(args.libdir_name.strip('/')))
+        cppflags.append('-DFOR_LAUNCHER')
+    cppflags.append('-DLIB_DIR_NAME="{}"'.format(args.libdir_name.strip('/')))
     pylib = get_python_flags(cflags)
     exe = 'kitty-profile' if args.profile else 'kitty'
+    cppflags += shlex.split(os.environ.get('CPPFLAGS', ''))
     cflags += shlex.split(os.environ.get('CFLAGS', ''))
     ldflags = shlex.split(os.environ.get('LDFLAGS', ''))
-    cmd = [env.cc] + cflags + [
+    cmd = [env.cc] + cppflags + cflags + [
         'linux-launcher.c', '-o',
         os.path.join(launcher_dir, exe)
     ] + ldflags + libs + pylib

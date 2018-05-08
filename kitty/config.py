@@ -6,21 +6,19 @@ import ast
 import json
 import os
 import re
-import shlex
 import sys
-import tempfile
 from collections import namedtuple
 from contextlib import contextmanager
 
 from . import fast_data_types as defines
 from .config_utils import (
-    init_config, parse_config_base, positive_float, positive_int, to_bool,
-    to_color, unit_float
+    init_config, load_config as _load_config, merge_dicts, parse_config_base,
+    positive_float, positive_int, to_bool, to_cmdline, to_color, unit_float
 )
 from .constants import cache_dir, defconf
 from .fast_data_types import CURSOR_BEAM, CURSOR_BLOCK, CURSOR_UNDERLINE
 from .layout import all_layouts
-from .rgb import color_from_int
+from .rgb import color_as_int, color_from_int
 from .utils import log_error
 
 MINIMUM_FONT_SIZE = 4
@@ -48,18 +46,20 @@ def to_cursor_shape(x):
         )
 
 
-def parse_mods(parts):
+mod_map = {'CTRL': 'CONTROL', 'CMD': 'SUPER', '⌘': 'SUPER', '⌥': 'ALT', 'OPTION': 'ALT', 'KITTY_MOD': 'KITTY'}
+
+
+def parse_mods(parts, sc):
 
     def map_mod(m):
-        return {'CTRL': 'CONTROL', 'CMD': 'SUPER', '⌘': 'SUPER', '⌥': 'ALT', 'OPTION': 'ALT'}.get(m, m)
+        return mod_map.get(m, m)
 
     mods = 0
     for m in parts:
         try:
             mods |= getattr(defines, 'GLFW_MOD_' + map_mod(m.upper()))
         except AttributeError:
-            log_error('Shortcut: {} has unknown modifier, ignoring'.format(
-                parts.join('+')))
+            log_error('Shortcut: {} has unknown modifier, ignoring'.format(sc))
             return
 
     return mods
@@ -81,12 +81,14 @@ named_keys = {
 
 def parse_shortcut(sc):
     parts = sc.split('+')
-    mods = parse_mods(parts[:-1])
+    mods = parse_mods(parts[:-1], sc)
+    if mods is None:
+        return None, None
     key = parts[-1].upper()
     key = getattr(defines, 'GLFW_KEY_' + named_keys.get(key, key), None)
     if key is not None:
         return mods, key
-    return None, None
+    return mods, None
 
 
 KeyAction = namedtuple('KeyAction', 'func args')
@@ -108,6 +110,12 @@ def parse_key_action(action):
         args = tuple(map(parse_key_action, filter(None, parts)))
     elif func == 'send_text':
         args = rest.split(' ', 1)
+        if len(args) > 0:
+            try:
+                args[1] = parse_send_text_bytes(args[1])
+            except Exception:
+                log_error('Ignoring invalid send_text string: ' + args[1])
+                args[1] = ''
     elif func in ('run_kitten', 'run_simple_kitten'):
         if func == 'run_simple_kitten':
             func = 'run_kitten'
@@ -119,7 +127,7 @@ def parse_key_action(action):
     elif func == 'set_font_size':
         args = (float(rest),)
     elif func in shlex_actions:
-        args = shlex.split(rest)
+        args = to_cmdline(rest)
     return KeyAction(func, args)
 
 
@@ -127,7 +135,20 @@ all_key_actions = set()
 sequence_sep = '>'
 
 
-def parse_key(val, keymap, sequence_map):
+class KeyDefinition:
+
+    def __init__(self, is_sequence, action, mods, key, rest=()):
+        self.is_sequence = is_sequence
+        self.action = action
+        self.trigger = mods, key
+        self.rest = rest
+
+    def resolve(self, kitty_mod):
+        self.trigger = defines.resolve_key_mods(kitty_mod, self.trigger[0]), self.trigger[1]
+        self.rest = tuple((defines.resolve_key_mods(kitty_mod, mods), key) for mods, key in self.rest)
+
+
+def parse_key(val, key_definitions):
     sc, action = val.partition(' ')[::2]
     sc, action = sc.strip().strip(sequence_sep), action.strip()
     if not sc or not action:
@@ -139,8 +160,8 @@ def parse_key(val, keymap, sequence_map):
         for part in sc.split(sequence_sep):
             mods, key = parse_shortcut(part)
             if key is None:
-                log_error('Shortcut: {} has unknown key, ignoring'.format(
-                    sc))
+                if mods is not None:
+                    log_error('Shortcut: {} has unknown key, ignoring'.format(sc))
                 return
             if trigger is None:
                 trigger = mods, key
@@ -150,8 +171,8 @@ def parse_key(val, keymap, sequence_map):
     else:
         mods, key = parse_shortcut(sc)
         if key is None:
-            log_error('Shortcut: {} has unknown key, ignoring'.format(
-                sc))
+            if mods is not None:
+                log_error('Shortcut: {} has unknown key, ignoring'.format(sc))
             return
     try:
         paction = parse_key_action(action)
@@ -162,10 +183,9 @@ def parse_key(val, keymap, sequence_map):
         if paction is not None:
             all_key_actions.add(paction.func)
             if is_sequence:
-                s = sequence_map.setdefault(trigger, {})
-                s[rest] = paction
+                key_definitions.append(KeyDefinition(True, paction, trigger[0], trigger[1], rest))
             else:
-                keymap[(mods, key)] = paction
+                key_definitions.append(KeyDefinition(False, paction, mods, key))
 
 
 def parse_symbol_map(val):
@@ -205,7 +225,7 @@ def parse_send_text_bytes(text):
                             ).encode('utf-8')
 
 
-def parse_send_text(val, keymap, sequence_map):
+def parse_send_text(val, key_definitions):
     parts = val.split(' ')
 
     def abort(msg):
@@ -218,11 +238,11 @@ def parse_send_text(val, keymap, sequence_map):
     mode, sc = parts[:2]
     text = ' '.join(parts[2:])
     key_str = '{} send_text {} {}'.format(sc, mode, text)
-    return parse_key(key_str, keymap, sequence_map)
+    return parse_key(key_str, key_definitions)
 
 
 def to_modifiers(val):
-    return parse_mods(val.split('+'))
+    return parse_mods(val.split('+'), val) or 0
 
 
 def to_layout_names(raw):
@@ -244,10 +264,10 @@ def adjust_line_height(x):
 def macos_titlebar_color(x):
     x = x.strip('"')
     if x == 'system':
-        return
+        return 0
     if x == 'background':
-        return True
-    return to_color(x)
+        return 1
+    return (color_as_int(to_color(x)) << 8) | 2
 
 
 def box_drawing_scale(x):
@@ -292,7 +312,8 @@ type_map = {
     'adjust_line_height': adjust_line_height,
     'adjust_column_width': adjust_line_height,
     'scrollback_lines': positive_int,
-    'scrollback_pager': shlex.split,
+    'scrollback_pager': to_cmdline,
+    'open_url_with': to_cmdline,
     'font_size': to_font_size,
     'font_size_delta': positive_float,
     'focus_follows_mouse': to_bool,
@@ -318,6 +339,7 @@ type_map = {
     'initial_window_width': positive_int,
     'initial_window_height': positive_int,
     'macos_hide_titlebar': to_bool,
+    'macos_hide_from_tasks': to_bool,
     'macos_option_as_alt': to_bool,
     'macos_titlebar_color': macos_titlebar_color,
     'box_drawing_scale': box_drawing_scale,
@@ -328,12 +350,16 @@ type_map = {
     'inactive_text_alpha': unit_float,
     'url_style': url_style,
     'copy_on_select': to_bool,
+    'window_alert_on_bell': to_bool,
     'tab_bar_edge': tab_bar_edge,
+    'bell_on_tab': to_bool,
+    'kitty_mod': to_modifiers,
+    'clear_all_shortcuts': to_bool,
 }
 
 for name in (
     'foreground background cursor active_border_color inactive_border_color'
-    ' selection_foreground selection_background url_color'
+    ' selection_foreground selection_background url_color bell_border_color'
 ).split():
     type_map[name] = to_color
 for i in range(256):
@@ -345,15 +371,19 @@ for a in ('active', 'inactive'):
 
 def special_handling(key, val, ans):
     if key == 'map':
-        parse_key(val, ans['keymap'], ans['sequence_map'])
+        parse_key(val, ans['key_definitions'])
         return True
     if key == 'symbol_map':
         ans['symbol_map'].update(parse_symbol_map(val))
         return True
     if key == 'send_text':
         # For legacy compatibility
-        parse_send_text(val, ans['keymap'], ans['sequence_map'])
+        parse_send_text(val, ans['key_definitions'])
         return True
+    if key == 'clear_all_shortcuts':
+        if to_bool(val):
+            ans['key_definitions'] = [None]
+        return
 
 
 defaults = None
@@ -363,11 +393,7 @@ default_config_path = os.path.join(
 
 
 def parse_config(lines, check_keys=True):
-    ans = {
-        'keymap': {},
-        'sequence_map': {},
-        'symbol_map': {},
-    }
+    ans = {'symbol_map': {}, 'keymap': {}, 'sequence_map': {}, 'key_definitions': []}
     parse_config_base(
         lines,
         defaults,
@@ -397,74 +423,20 @@ actions = frozenset(all_key_actions) | frozenset(
 no_op_actions = frozenset({'noop', 'no-op', 'no_op'})
 
 
-def merge_keys(ans, defaults, newvals):
-    ans['keymap'] = defaults['keymap'].copy()
-    ans['sequence_map'] = {t: r.copy() for t, r in defaults['sequence_map'].items()}
-    # Merge the keymap
-    for k, v in newvals['keymap'].items():
-        ans['sequence_map'].pop(k, None)
-        f = v.func
-        if f in no_op_actions:
-            ans['keymap'].pop(k, None)
-        elif f in actions:
-            ans['keymap'][k] = v
-    # Merge the sequence map
-    for trigger, rest_map in newvals['sequence_map'].items():
-        ans['keymap'].pop(trigger, None)
-        if trigger in newvals['keymap']:
-            log_error('The shortcut for {} has conflicting definitions'.format(newvals['keymap'][trigger].func))
-        s = ans['sequence_map'].setdefault(trigger, {})
-        for k, v in rest_map.items():
-            f = v.func
-            if f in no_op_actions:
-                s.pop(k, None)
-            elif f in actions:
-                s[k] = v
-    ans['sequence_map'] = {k: v for k, v in ans['sequence_map'].items() if v}
-
-
-def merge_dicts(defaults, newvals):
-    ans = defaults.copy()
-    ans.update(newvals)
-    return ans
-
-
 def merge_configs(defaults, vals):
     ans = {}
     for k, v in defaults.items():
         if isinstance(v, dict):
-            if k not in ('keymap', 'sequence_map'):
-                newvals = vals.get(k, {})
-                ans[k] = merge_dicts(v, newvals)
+            newvals = vals.get(k, {})
+            ans[k] = merge_dicts(v, newvals)
+        elif k == 'key_definitions':
+            ans['key_definitions'] = v + vals.get('key_definitions', [])
         else:
             ans[k] = vals.get(k, v)
-    merge_keys(
-            ans,
-            {'keymap': defaults.get('keymap', {}), 'sequence_map': defaults.get('sequence_map', {})},
-            {'keymap': vals.get('keymap', {}), 'sequence_map': vals.get('sequence_map', {})}
-    )
     return ans
 
 
-def load_config(*paths, overrides=None) -> Options:
-    ans = defaults._asdict()
-    for path in paths:
-        if not path:
-            continue
-        try:
-            f = open(path, encoding='utf-8', errors='replace')
-        except FileNotFoundError:
-            continue
-        with f:
-            vals = parse_config(f)
-            ans = merge_configs(ans, vals)
-    if overrides is not None:
-        vals = parse_config(overrides)
-        ans = merge_configs(ans, vals)
-    return Options(ans)
-
-
-def build_ansi_color_table(opts: Options = defaults):
+def build_ansi_color_table(opts=defaults):
 
     def as_int(x):
         return (x[0] << 16) | (x[1] << 8) | x[2]
@@ -476,6 +448,7 @@ def build_ansi_color_table(opts: Options = defaults):
 
 
 def atomic_save(data, path):
+    import tempfile
     fd, p = tempfile.mkstemp(dir=os.path.dirname(path), suffix='.tmp')
     try:
         with os.fdopen(fd, 'wb') as f:
@@ -547,3 +520,45 @@ def prepare_config_file_for_editing():
         with open(defconf, 'w') as f:
             f.write(commented_out_default_config())
     return defconf
+
+
+def finalize_keys(opts):
+    defns = []
+    for d in opts.key_definitions:
+        if d is None:  # clear_all_shortcuts
+            defns = []
+        else:
+            defns.append(d)
+    for d in defns:
+        d.resolve(opts.kitty_mod)
+    keymap = {}
+    sequence_map = {}
+
+    for defn in defns:
+        is_no_op = defn.action.func in no_op_actions
+        if defn.is_sequence:
+            keymap.pop(defn.trigger, None)
+            s = sequence_map.setdefault(defn.trigger, {})
+            if is_no_op:
+                s.pop(defn.rest, None)
+                if not s:
+                    del sequence_map[defn.trigger]
+            else:
+                s[defn.rest] = defn.action
+        else:
+            sequence_map.pop(defn.trigger, None)
+            if is_no_op:
+                keymap.pop(defn.trigger, None)
+            else:
+                keymap[defn.trigger] = defn.action
+    opts.keymap = keymap
+    opts.sequence_map = sequence_map
+
+
+def load_config(*paths, overrides=None):
+    opts = _load_config(Options, defaults, parse_config, merge_configs, *paths, overrides=overrides)
+    finalize_keys(opts)
+    if opts.background_opacity < 1.0 and opts.macos_titlebar_color:
+        log_error('Cannot use both macos_titlebar_color and background_opacity')
+        opts.macos_titlebar_color = 0
+    return opts

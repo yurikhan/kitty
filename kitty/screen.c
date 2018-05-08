@@ -212,12 +212,6 @@ screen_rescale_images(Screen *self, unsigned int old_cell_width, unsigned int ol
 }
 
 
-static bool
-screen_change_scrollback_size(Screen *self, unsigned int size) {
-    if (size != self->historybuf->ynum) return historybuf_resize(self->historybuf, size);
-    return true;
-}
-
 static PyObject*
 reset_callbacks(Screen *self, PyObject *a UNUSED) {
     Py_CLEAR(self->callbacks);
@@ -1077,6 +1071,7 @@ void
 screen_bell(Screen *self) {
     request_window_attention(self->window_id, OPT(enable_audio_bell));
     if (OPT(visual_bell_duration) > 0.0f) self->start_visual_bell_at = monotonic();
+    CALLBACK("on_bell", NULL);
 }
 
 void
@@ -1466,6 +1461,11 @@ as_text(Screen *self, PyObject *args) {
 }
 
 static PyObject*
+as_text_non_visual(Screen *self, PyObject *args) {
+    as_text_generic(args, self, range_line_, self->lines, self->columns, callback, as_ansi);
+}
+
+static PyObject*
 refresh_sprite_positions(Screen *self, PyObject *a UNUSED) {
     self->is_dirty = true;
     for (index_type i = 0; i < self->lines; i++) {
@@ -1515,6 +1515,52 @@ screen_wcswidth(PyObject UNUSED *self, PyObject *str) {
     }
     return PyLong_FromUnsignedLong(ans);
 }
+
+
+static PyObject*
+screen_truncate_point_for_length(PyObject UNUSED *self, PyObject *args) {
+    PyObject *str; unsigned int num_cells;
+    if (!PyArg_ParseTuple(args, "OI", &str, &num_cells)) return NULL;
+    if (PyUnicode_READY(str) != 0) return NULL;
+    int kind = PyUnicode_KIND(str);
+    void *data = PyUnicode_DATA(str);
+    Py_ssize_t len = PyUnicode_GET_LENGTH(str), i;
+    char_type prev_ch = 0;
+    int prev_width = 0;
+    bool in_sgr = false;
+    unsigned long width_so_far = 0;
+    for (i = 0; i < len && width_so_far < num_cells; i++) {
+        char_type ch = PyUnicode_READ(kind, data, i);
+        if (in_sgr) {
+            if (ch == 'm') in_sgr = false;
+            continue;
+        }
+        if (ch == 0x1b && i + 1 < len && PyUnicode_READ(kind, data, i + 1) == '[') { in_sgr = true; continue; }
+        if (ch == 0xfe0f) {
+            if (is_emoji_presentation_base(prev_ch) && prev_width == 1) {
+                width_so_far += 1;
+                prev_width = 2;
+            } else prev_width = 0;
+        } else {
+            int w = wcwidth_std(ch);
+            switch(w) {
+                case -1:
+                case 0:
+                    prev_width = 0; break;
+                case 2:
+                    prev_width = 2; break;
+                default:
+                    prev_width = 1; break;
+            }
+            if (width_so_far + prev_width > num_cells) { break; }
+            width_so_far += prev_width;
+        }
+        prev_ch = ch;
+
+    }
+    return PyLong_FromUnsignedLong(i);
+}
+
 
 static PyObject*
 line(Screen *self, PyObject *val) {
@@ -1633,16 +1679,8 @@ static PyObject*
 start_selection(Screen *self, PyObject *args) {
     unsigned int x, y;
     int rectangle_select = 0, extend_mode = EXTEND_CELL;
-    if (!PyArg_ParseTuple(args, "II|pp", &x, &y, &rectangle_select, &extend_mode)) return NULL;
+    if (!PyArg_ParseTuple(args, "II|pi", &x, &y, &rectangle_select, &extend_mode)) return NULL;
     screen_start_selection(self, x, y, rectangle_select, extend_mode);
-    Py_RETURN_NONE;
-}
-
-static PyObject*
-change_scrollback_size(Screen *self, PyObject *args) {
-    unsigned int count = 1;
-    if (!PyArg_ParseTuple(args, "|I", &count)) return NULL;
-    if (!screen_change_scrollback_size(self, MAX(self->lines, count))) return NULL;
     Py_RETURN_NONE;
 }
 
@@ -1801,19 +1839,29 @@ screen_update_selection(Screen *self, index_type x, index_type y, bool ended) {
             }
             break;
         }
-        case EXTEND_LINE:
-            if (extending_leftwards) {
-                found = screen_selection_range_for_line(self, self->selection.end_y, &start, &end);
-                if (found) { self->selection.end_x = start; }
-                found = screen_selection_range_for_line(self, self->selection.start_y, &start, &end);
-                if (found) { self->selection.start_x = end; }
-            } else {
-                found = screen_selection_range_for_line(self, self->selection.start_y, &start, &end);
-                if (found) { self->selection.start_x = start; }
-                found = screen_selection_range_for_line(self, self->selection.end_y, &start, &end);
-                if (found) { self->selection.end_x = end; }
+        case EXTEND_LINE: {
+            index_type top_line = extending_leftwards ? self->selection.end_y : self->selection.start_y;
+            index_type bottom_line = extending_leftwards ? self->selection.start_y : self->selection.end_y;
+            while(top_line > 0 && visual_line_(self, top_line)->continued) top_line--;
+            while(bottom_line < self->lines - 1 && visual_line_(self, bottom_line + 1)->continued) bottom_line++;
+            found = screen_selection_range_for_line(self, top_line, &start, &end);
+            if (found) {
+                if (extending_leftwards) {
+                    self->selection.end_x = start; self->selection.end_y = top_line;
+                } else {
+                    self->selection.start_x = start; self->selection.start_y = top_line;
+                }
+            }
+            found = screen_selection_range_for_line(self, bottom_line, &start, &end);
+            if (found) {
+                if (extending_leftwards) {
+                    self->selection.start_x = end; self->selection.start_y = bottom_line;
+                } else {
+                    self->selection.end_x = end; self->selection.end_y = bottom_line;
+                }
             }
             break;
+        }
         case EXTEND_CELL:
             break;
     }
@@ -1903,7 +1951,6 @@ static PyMethodDef methods[] = {
     MND(delete_lines, METH_VARARGS)
     MND(insert_characters, METH_VARARGS)
     MND(delete_characters, METH_VARARGS)
-    MND(change_scrollback_size, METH_VARARGS)
     MND(erase_characters, METH_VARARGS)
     MND(cursor_up, METH_VARARGS)
     MND(cursor_up1, METH_VARARGS)
@@ -1912,6 +1959,7 @@ static PyMethodDef methods[] = {
     MND(cursor_forward, METH_VARARGS)
     {"index", (PyCFunction)xxx_index, METH_VARARGS, ""},
     MND(as_text, METH_VARARGS)
+    MND(as_text_non_visual, METH_VARARGS)
     MND(refresh_sprite_positions, METH_NOARGS)
     MND(tab, METH_NOARGS)
     MND(backspace, METH_NOARGS)
@@ -1987,6 +2035,7 @@ PyTypeObject Screen_Type = {
 static PyMethodDef module_methods[] = {
     {"wcwidth", (PyCFunction)wcwidth_wrap, METH_O, ""},
     {"wcswidth", (PyCFunction)screen_wcswidth, METH_O, ""},
+    {"truncate_point_for_length", (PyCFunction)screen_truncate_point_for_length, METH_VARARGS, ""},
     {NULL}  /* Sentinel */
 };
 

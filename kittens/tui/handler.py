@@ -5,9 +5,23 @@
 
 class Handler:
 
-    def initialize(self, screen_size, quit_loop, wakeup):
+    def _initialize(self, screen_size, quit_loop, wakeup, start_job):
         self.screen_size, self.quit_loop = screen_size, quit_loop
         self.wakeup = wakeup
+        self.start_job = start_job
+
+    def __enter__(self):
+        self.initialize()
+
+    def __exit__(self, *a):
+        del self.write_buf[:]
+        self.finalize()
+
+    def initialize(self):
+        pass
+
+    def finalize(self):
+        pass
 
     def on_resize(self, screen_size):
         self.screen_size = screen_size
@@ -28,6 +42,12 @@ class Handler:
         pass
 
     def on_eot(self):
+        pass
+
+    def on_wakeup(self):
+        pass
+
+    def on_job_done(self, job_id, job_result):
         pass
 
     def write(self, data):

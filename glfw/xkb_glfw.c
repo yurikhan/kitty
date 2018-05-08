@@ -263,12 +263,14 @@ glfw_xkb_compile_keymap(_GLFWXKBData *xkb, const char *map_str) {
         S(super, XKB_MOD_NAME_LOGO);
         S(capsLock, XKB_MOD_NAME_CAPS);
         S(numLock, XKB_MOD_NAME_NUM);
+#undef S
         size_t capacity = sizeof(xkb->unknownModifiers)/sizeof(xkb->unknownModifiers[0]), j = 0;
         for (xkb_mod_index_t i = 0; i < capacity; i++) xkb->unknownModifiers[i] = XKB_MOD_INVALID;
         for (xkb_mod_index_t i = 0; i < xkb_keymap_num_mods(xkb->keymap) && j < capacity - 1; i++) {
             if (i != xkb->controlIdx && i != xkb->altIdx && i != xkb->shiftIdx && i != xkb->superIdx && i != xkb->capsLockIdx && i != xkb->numLockIdx) xkb->unknownModifiers[j++] = i;
         }
-#undef S
+        xkb->modifiers = 0;
+        xkb->activeUnknownModifiers = 0;
     }
     return ok;
 }
@@ -290,6 +292,9 @@ glfw_xkb_update_modifiers(_GLFWXKBData *xkb, xkb_mod_mask_t depressed, xkb_mod_m
     if (!xkb->keymap) return;
     xkb->modifiers = 0;
     xkb_state_update_mask(xkb->state, depressed, latched, locked, base_group, latched_group, locked_group);
+    // We have to update the groups in clean_state, as they change for
+    // different keyboard layouts, see https://github.com/kovidgoyal/kitty/issues/488
+    xkb_state_update_mask(xkb->clean_state, 0, 0, 0, base_group, latched_group, locked_group);
 #define S(attr, name) if (xkb_state_mod_index_is_active(xkb->state, xkb->attr##Idx, XKB_STATE_MODS_EFFECTIVE)) xkb->modifiers |= GLFW_MOD_##name
     S(control, CONTROL); S(alt, ALT); S(shift, SHIFT); S(super, SUPER); S(capsLock, CAPS_LOCK); S(numLock, NUM_LOCK);
 #undef S

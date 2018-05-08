@@ -128,6 +128,32 @@ static void updateCursorImage(_GLFWwindow* window)
         hideCursor(window);
 }
 
+// Apply chosen cursor mode to a focused window
+//
+static void updateCursorMode(_GLFWwindow* window)
+{
+    if (window->cursorMode == GLFW_CURSOR_DISABLED)
+    {
+        _glfw.ns.disabledCursorWindow = window;
+        _glfwPlatformGetCursorPos(window,
+                                  &_glfw.ns.restoreCursorPosX,
+                                  &_glfw.ns.restoreCursorPosY);
+        centerCursor(window);
+        CGAssociateMouseAndMouseCursorPosition(false);
+    }
+    else if (_glfw.ns.disabledCursorWindow == window)
+    {
+        _glfw.ns.disabledCursorWindow = NULL;
+        CGAssociateMouseAndMouseCursorPosition(true);
+        _glfwPlatformSetCursorPos(window,
+                                  _glfw.ns.restoreCursorPosX,
+                                  _glfw.ns.restoreCursorPosY);
+    }
+
+    if (cursorInClientArea(window))
+        updateCursorImage(window);
+}
+
 // Transforms the specified y-coordinate between the CG display and NS screen
 // coordinate systems
 //
@@ -423,7 +449,7 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
         centerCursor(window);
 
     _glfwInputWindowFocus(window, GLFW_TRUE);
-    _glfwPlatformSetCursorMode(window, window->cursorMode);
+    updateCursorMode(window);
 }
 
 - (void)windowDidResignKey:(NSNotification *)notification
@@ -719,18 +745,98 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
     [super updateTrackingAreas];
 }
 
+static inline UInt32
+convert_cocoa_to_carbon_modifiers(NSUInteger flags) {
+    UInt32 mods = 0;
+    if (flags & NSEventModifierFlagShift)
+        mods |= shiftKey;
+    if (flags & NSEventModifierFlagControl)
+        mods |= controlKey;
+    if (flags & NSEventModifierFlagOption)
+        mods |= optionKey;
+    if (flags & NSEventModifierFlagCommand)
+        mods |= cmdKey;
+    if (flags & NSEventModifierFlagCapsLock)
+        mods |= alphaLock;
+
+    return (mods >> 8) & 0xFF;
+}
+
+static inline void
+convert_utf16_to_utf8(UniChar *src, UniCharCount src_length, char *dest, size_t dest_sz) {
+    CFStringRef string = CFStringCreateWithCharactersNoCopy(kCFAllocatorDefault,
+                                                            src,
+                                                            src_length,
+                                                            kCFAllocatorNull);
+    CFStringGetCString(string,
+                       dest,
+                       dest_sz,
+                       kCFStringEncodingUTF8);
+    CFRelease(string);
+}
+
+static inline GLFWbool
+is_ascii_control_char(char x) {
+    return x == 0 || (1 <= x && x <= 31) || x == 127;
+}
+
 - (void)keyDown:(NSEvent *)event
 {
     const unsigned int scancode = [event keyCode];
+    const NSUInteger flags = [event modifierFlags];
+    const int mods = translateFlags(flags);
     const int key = translateKey(scancode, GLFW_TRUE);
-    const int mods = translateFlags([event modifierFlags]);
+    const GLFWbool process_text = !window->ns.textInputFilterCallback || window->ns.textInputFilterCallback(key, mods, scancode) != 1;
     _glfw.ns.text[0] = 0;
-    // this will call insertText with the text for this event, if any
-    [self interpretKeyEvents:[NSArray arrayWithObject:event]];
-    if ((1 <= _glfw.ns.text[0] && _glfw.ns.text[0] <= 31) || (unsigned)_glfw.ns.text[0] == 127) _glfw.ns.text[0] = 0;  // dont send text for ascii control codes
-    debug_key(@"scancode: 0x%x (%s) mods: %stext: %s glfw_key: %s\n",
+    if (!_glfw.ns.unicodeData) {
+        // Using the cocoa API for key handling is disabled, as there is no
+        // reliable way to handle dead keys using it. Only use it if the
+        // keyboard unicode data is not available.
+        if (process_text) {
+            // this will call insertText with the text for this event, if any
+            [self interpretKeyEvents:[NSArray arrayWithObject:event]];
+        }
+    } else {
+        static UniChar text[256];
+        UniCharCount char_count = 0;
+        if (UCKeyTranslate(
+                    [(NSData*) _glfw.ns.unicodeData bytes],
+                    scancode,
+                    kUCKeyActionDown,
+                    convert_cocoa_to_carbon_modifiers(flags),
+                    LMGetKbdType(),
+                    (process_text ? 0 : kUCKeyTranslateNoDeadKeysMask),
+                    &(window->ns.deadKeyState),
+                    sizeof(text)/sizeof(text[0]),
+                    &char_count,
+                    text
+                    ) != noErr) {
+            debug_key(@"UCKeyTranslate failed for scancode: 0x%x (%s) %s\n", scancode, safe_name_for_scancode(scancode), format_mods(mods));
+            window->ns.deadKeyState = 0;
+            return;
+        }
+        if (process_text) {
+            // We check if cocoa wants to insert text, as UCKeyTranslate
+            // inserts text even when the cmd key is pressed. For instance,
+            // cmd+a will result in the text a.
+            [self interpretKeyEvents:[NSArray arrayWithObject:event]];
+            debug_key(@"char_count: %lu cocoa text: %s\n", char_count, format_text(_glfw.ns.text));
+            GLFWbool cocoa_wants_to_insert_text = !is_ascii_control_char(_glfw.ns.text[0]);
+            _glfw.ns.text[0] = 0;
+            if (char_count && cocoa_wants_to_insert_text) convert_utf16_to_utf8(text, char_count, _glfw.ns.text, sizeof(_glfw.ns.text));
+        } else {
+            window->ns.deadKeyState = 0;
+        }
+        if (window->ns.deadKeyState && char_count == 0) {
+            debug_key(@"Ignoring dead key. deadKeyState: 0x%x scancode: 0x%x (%s) %s\n",
+                    window->ns.deadKeyState, scancode, safe_name_for_scancode(scancode), format_mods(mods));
+            return;
+        }
+    }
+    debug_key(@"scancode: 0x%x (%s) %stext: %s glfw_key: %s\n",
             scancode, safe_name_for_scancode(scancode), format_mods(mods),
             format_text(_glfw.ns.text), _glfwGetKeyName(key));
+    if (is_ascii_control_char(_glfw.ns.text[0])) _glfw.ns.text[0] = 0;  // dont send text for ascii control codes
     _glfwInputKeyboard(window, key, scancode, GLFW_PRESS, mods, _glfw.ns.text, 0);
 }
 
@@ -1233,6 +1339,7 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window,
                               const _GLFWctxconfig* ctxconfig,
                               const _GLFWfbconfig* fbconfig)
 {
+    window->ns.deadKeyState = 0;
     if (!initializeAppKit())
         return GLFW_FALSE;
 
@@ -1732,26 +1839,8 @@ void _glfwPlatformSetCursorPos(_GLFWwindow* window, double x, double y)
 
 void _glfwPlatformSetCursorMode(_GLFWwindow* window, int mode)
 {
-    if (mode == GLFW_CURSOR_DISABLED)
-    {
-        _glfw.ns.disabledCursorWindow = window;
-        _glfwPlatformGetCursorPos(window,
-                                  &_glfw.ns.restoreCursorPosX,
-                                  &_glfw.ns.restoreCursorPosY);
-        centerCursor(window);
-        CGAssociateMouseAndMouseCursorPosition(false);
-    }
-    else if (_glfw.ns.disabledCursorWindow == window)
-    {
-        _glfw.ns.disabledCursorWindow = NULL;
-        CGAssociateMouseAndMouseCursorPosition(true);
-        _glfwPlatformSetCursorPos(window,
-                                  _glfw.ns.restoreCursorPosX,
-                                  _glfw.ns.restoreCursorPosY);
-    }
-
-    if (cursorInClientArea(window))
-        updateCursorImage(window);
+    if (_glfwPlatformWindowFocused(window))
+        updateCursorMode(window);
 }
 
 const char* _glfwPlatformGetScancodeName(int scancode)
@@ -1777,16 +1866,7 @@ const char* _glfwPlatformGetScancodeName(int scancode)
     if (!characterCount)
         return NULL;
 
-    CFStringRef string = CFStringCreateWithCharactersNoCopy(kCFAllocatorDefault,
-                                                            characters,
-                                                            characterCount,
-                                                            kCFAllocatorNull);
-    CFStringGetCString(string,
-                       _glfw.ns.keyName,
-                       sizeof(_glfw.ns.keyName),
-                       kCFStringEncodingUTF8);
-    CFRelease(string);
-
+    convert_utf16_to_utf8(characters, characterCount, _glfw.ns.keyName, sizeof(_glfw.ns.keyName));
     return _glfw.ns.keyName;
 }
 
@@ -1999,4 +2079,12 @@ GLFWAPI id glfwGetCocoaWindow(GLFWwindow* handle)
     _GLFWwindow* window = (_GLFWwindow*) handle;
     _GLFW_REQUIRE_INIT_OR_RETURN(nil);
     return window->ns.object;
+}
+
+GLFWAPI GLFWcocoatextinputfilterfun glfwSetCocoaTextInputFilter(GLFWwindow *handle, GLFWcocoatextinputfilterfun callback) {
+    _GLFWwindow* window = (_GLFWwindow*) handle;
+    _GLFW_REQUIRE_INIT_OR_RETURN(nil);
+    GLFWcocoatextinputfilterfun previous = window->ns.textInputFilterCallback;
+    window->ns.textInputFilterCallback = callback;
+    return previous;
 }

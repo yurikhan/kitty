@@ -56,7 +56,7 @@ def name(cp):
 @lru_cache(maxsize=256)
 def codepoints_matching_search(parts):
     ans = []
-    if parts and parts[0]:
+    if parts and parts[0] and len(parts[0]) > 1:
         codepoints = points_for_word(parts[0])
         for word in parts[1:]:
             pts = points_for_word(word)
@@ -327,8 +327,7 @@ class UnicodeInput(Handler):
         self.write(set_line_wrapping(False))
         self.write(set_window_title(_('Unicode input')))
 
-    def initialize(self, *args):
-        Handler.initialize(self, *args)
+    def initialize(self):
         self.init_terminal_state()
         self.draw_screen()
 

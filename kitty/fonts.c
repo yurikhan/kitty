@@ -852,7 +852,7 @@ test_shape(PyObject UNUSED *self, PyObject *args) {
 
         PyObject *eg = PyTuple_New(MAX_NUM_EXTRA_GLYPHS);
         for (size_t g = 0; g < MAX_NUM_EXTRA_GLYPHS; g++) PyTuple_SET_ITEM(eg, g, Py_BuildValue("H", g + 1 < group->num_glyphs ? G(info)[group->first_glyph_idx + g].codepoint : 0));
-        PyList_Append(ans, Py_BuildValue("IIIN", group->num_cells, group->num_glyphs, first_glyph, eg));
+        PyList_Append(ans, Py_BuildValue("IIHN", group->num_cells, group->num_glyphs, first_glyph, eg));
         idx++;
     }
     if (face) { Py_CLEAR(face); free(font); }
@@ -897,6 +897,12 @@ render_line(Line *line) {
         ssize_t cell_font_idx = font_for_cell(cell);
         if (is_private_use(cell->ch) && i + 1 < line->xnum && (line->cells[i+1].ch == ' ' || line->cells[i+1].ch == 0) && cell_font_idx != BOX_FONT && cell_font_idx != MISSING_FONT) {
             // We have a private use char followed by a space char, render it as a two cell ligature.
+            Cell *space_cell = line->cells + i+1;
+            // Ensure the space cell uses the foreground colors from the PUA cell
+            // This is needed because there are stupid applications like
+            // powerline that use PUA+space with different foreground colors
+            // for the space and the PUA. See for example: https://github.com/kovidgoyal/kitty/issues/467
+            space_cell->fg = cell->fg; space_cell->decoration_fg = cell->decoration_fg;
             RENDER;
             render_run(line->cells + i, 2, cell_font_idx, true);
             run_font_idx = NO_FONT;
@@ -982,7 +988,7 @@ static PyObject*
 test_sprite_position_for(PyObject UNUSED *self, PyObject *args) {
     glyph_index glyph;
     ExtraGlyphs extra_glyphs = {{0}};
-    if (!PyArg_ParseTuple(args, "H|I", &glyph, &extra_glyphs.data)) return NULL;
+    if (!PyArg_ParseTuple(args, "H|H", &glyph, &extra_glyphs.data)) return NULL;
     int error;
     SpritePosition *pos = sprite_position_for(&fonts.fonts[fonts.medium_font_idx], glyph, &extra_glyphs, 0, &error);
     if (pos == NULL) { sprite_map_set_error(error); return NULL; }

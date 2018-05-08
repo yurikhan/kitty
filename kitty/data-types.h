@@ -17,6 +17,7 @@
 // Required minimum OpenGL version
 #define OPENGL_REQUIRED_VERSION_MAJOR 3
 #define OPENGL_REQUIRED_VERSION_MINOR 3
+#define GLFW_MOD_KITTY 1024
 #define UNUSED __attribute__ ((unused))
 #define PYNOARG PyObject *__a1 UNUSED, PyObject *__a2 UNUSED
 #define EXPORTED __attribute__ ((visibility ("default")))
@@ -160,15 +161,18 @@ typedef struct {
     Line *line;
 } LineBuf;
 
+typedef struct {
+    Cell *cells;
+    line_attrs_type *line_attrs;
+} HistoryBufSegment;
 
 typedef struct {
     PyObject_HEAD
 
-    Cell *buf;
-    index_type xnum, ynum;
+    index_type xnum, ynum, num_segments;
+    HistoryBufSegment* segments;
     Line *line;
     index_type start_of_data, count;
-    line_attrs_type *line_attrs;
 } HistoryBuf;
 
 typedef struct {

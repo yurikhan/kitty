@@ -100,8 +100,7 @@ class Hints(Handler):
         self.write(set_cursor_visible(False))
         self.write(set_window_title(self.window_title))
 
-    def initialize(self, *args):
-        Handler.initialize(self, *args)
+    def initialize(self):
         self.init_terminal_state()
         self.draw_screen()
 
@@ -159,6 +158,9 @@ def regex_finditer(pat, minimum_match_length, line):
             yield s, e
 
 
+closing_bracket_map = {'(': ')', '[': ']', '{': '}', '<': '>'}
+
+
 def find_urls(pat, line):
     for m in pat.finditer(line):
         s, e = m.span()
@@ -168,6 +170,9 @@ def find_urls(pat, line):
             if idx > -1:
                 e -= len(url) - idx
         while line[e - 1] in '.,?!' and e > 1:  # remove trailing punctuation
+            e -= 1
+        # Detect a bracketed URL
+        if s > 0 and e > s + 4 and line[s-1] in '({[<' and line[e-1] == closing_bracket_map[line[s-1]]:
             e -= 1
         yield s, e
 
@@ -211,7 +216,7 @@ def run(args, text):
         if chars is None:
             import json
             chars = json.loads(os.environ['KITTY_COMMON_OPTS'])['select_by_word_characters']
-        pat = re.compile('(?u)[{}\w]{{{},}}'.format(escape(chars), args.minimum_match_length))
+        pat = re.compile(r'(?u)[{}\w]{{{},}}'.format(escape(chars), args.minimum_match_length))
         finditer = partial(regex_finditer, pat, args.minimum_match_length)
     else:
         finditer = partial(regex_finditer, re.compile(args.regex), args.minimum_match_length)
@@ -261,7 +266,7 @@ Comma separated list of recognized URL prefixes.
 
 
 --word-characters
-Characters to consider as part of a word. In addition, all chacraters marked as
+Characters to consider as part of a word. In addition, all characters marked as
 alpha-numeric in the unicode database will be considered as word characters.
 Defaults to the select_by_word_characters setting from kitty.conf.
 
@@ -307,7 +312,11 @@ def handle_result(args, data, target_window_id, boss):
     elif program == '@':
         set_clipboard_string(data['match'])
     else:
-        boss.open_url(data['match'], None if program == 'default' else program)
+        cwd = None
+        w = boss.window_id_map.get(target_window_id)
+        if w is not None:
+            cwd = w.cwd_of_child
+        boss.open_url(data['match'], None if program == 'default' else program, cwd=cwd)
 
 
 if __name__ == '__main__':

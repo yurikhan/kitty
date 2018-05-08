@@ -15,6 +15,7 @@ import tty
 from collections import namedtuple
 from contextlib import closing, contextmanager
 from functools import partial
+from queue import Empty, Queue
 
 from kitty.fast_data_types import parse_input_from_terminal, safe_pipe
 from kitty.icat import screen_size
@@ -24,7 +25,7 @@ from kitty.key_encoding import (
 )
 
 from .handler import Handler
-from .operations import init_state, reset_state, clear_screen
+from .operations import clear_screen, init_state, reset_state
 
 
 def log(*a, **kw):
@@ -120,8 +121,7 @@ class UnhandledException(Handler):
     def __init__(self, tb):
         self.tb = tb
 
-    def initialize(self, screen_size, quit_loop, wakeup):
-        Handler.initialize(self, screen_size, quit_loop, wakeup)
+    def initialize(self):
         self.write(clear_screen())
         self.write(self.tb.replace('\n', '\r\n'))
         self.write('\r\n')
@@ -167,6 +167,24 @@ class Loop:
         self.sanitize_bracketed_paste = bool(sanitize_bracketed_paste)
         if self.sanitize_bracketed_paste:
             self.sanitize_ibp_pat = re.compile(sanitize_bracketed_paste)
+        self.jobs_queue = Queue()
+
+    def start_job(self, job_id, func, *args, **kw):
+        from threading import Thread
+        t = Thread(target=partial(self._run_job, job_id, func), args=args, kwargs=kw, name='LoopJob')
+        t.daemon = True
+        t.start()
+
+    def _run_job(self, job_id, func, *args, **kw):
+        try:
+            result = func(*args, **kw)
+        except Exception as err:
+            import traceback
+            entry = {'id': job_id, 'exception': err, 'tb': traceback.format_exc()}
+        else:
+            entry = {'id': job_id, 'result': result}
+        self.jobs_queue.put(entry)
+        self._wakeup_write(b'j')
 
     def _read_ready(self, handler):
         if not self.read_allowed:
@@ -283,6 +301,17 @@ class Loop:
             handler.on_term()
         if b'i' in data:
             handler.on_interrupt()
+        if b'j' in data:
+            while True:
+                try:
+                    entry = self.jobs_queue.get_nowait()
+                except Empty:
+                    break
+                else:
+                    job_id = entry.pop('id')
+                    handler.on_job_done(job_id, entry)
+        if b'1' in data:
+            handler.on_wakeup()
 
     def _wakeup_write(self, val):
         while not os.write(self.wakeup_write_fd, val):
@@ -329,13 +358,40 @@ class Loop:
             handler._term_manager = term_manager
             keep_going = True
             try:
-                handler.initialize(screen_size(), self.quit, self.wakeup)
+                handler._initialize(screen_size(), self.quit, self.wakeup, self.start_job)
+                with handler:
+                    while keep_going:
+                        has_data_to_write = bool(handler.write_buf)
+                        if not has_data_to_write and not self.read_allowed:
+                            break
+                        if has_data_to_write != waiting_for_write:
+                            waiting_for_write = has_data_to_write
+                            self._modify_output_selector(waiting_for_write)
+                        events = select()
+                        for key, mask in events:
+                            key.data(handler)
             except Exception:
                 import traceback
                 tb = traceback.format_exc()
                 self.return_code = 1
                 keep_going = False
-            while keep_going:
+
+            finalize_output = b''.join(handler.write_buf).decode('utf-8')
+
+            if tb is not None:
+                self._report_error_loop(finalize_output + tb, term_manager)
+        if tb is None:
+            os.write(self.output_fd, finalize_output.encode('utf-8'))
+
+    def _report_error_loop(self, tb, term_manager):
+        select = self.sel.select
+        waiting_for_write = False
+        handler = UnhandledException(tb)
+        handler.write_buf = []
+        handler._term_manager = term_manager
+        handler._initialize(screen_size(), self.quit, self.wakeup, self.start_job)
+        with handler:
+            while True:
                 has_data_to_write = bool(handler.write_buf)
                 if not has_data_to_write and not self.read_allowed:
                     break
@@ -344,31 +400,4 @@ class Loop:
                     self._modify_output_selector(waiting_for_write)
                 events = select()
                 for key, mask in events:
-                    try:
-                        key.data(handler)
-                    except Exception:
-                        import traceback
-                        tb = traceback.format_exc()
-                        self.return_code = 1
-                        keep_going = False
-                        break
-            if tb is not None:
-                self._report_error_loop(tb, term_manager)
-
-    def _report_error_loop(self, tb, term_manager):
-        select = self.sel.select
-        waiting_for_write = False
-        handler = UnhandledException(tb)
-        handler.write_buf = []
-        handler._term_manager = term_manager
-        handler.initialize(screen_size(), self.quit, self.wakeup)
-        while True:
-            has_data_to_write = bool(handler.write_buf)
-            if not has_data_to_write and not self.read_allowed:
-                break
-            if has_data_to_write != waiting_for_write:
-                waiting_for_write = has_data_to_write
-                self._modify_output_selector(waiting_for_write)
-            events = select()
-            for key, mask in events:
-                key.data(handler)
+                    key.data(handler)

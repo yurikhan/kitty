@@ -3,6 +3,74 @@ Changelog
 
 kitty is a feature full, cross-platform, *fast*, GPU based terminal emulator.
 
+version 0.9.1 [2018-05-05]
+------------------------------
+
+- Show a bell symbol on the tab if a bell occurs in one of the windows in the tab and
+  the window is not the currently focused window
+
+- Change the window border color if a bell occurs in an unfocused window. Can
+  be disabled by setting the bell_border_color to be the same as the
+  inactive_border_color.
+
+- macOS: Add support for dead keys
+
+- Unicode input: When searching by name search for prefix matches as well as
+  whole word matches
+
+- Dynamically allocate the memory used for the scrollback history buffer.
+  Reduces startup memory consumption when using very large scrollback
+  buffer sizes.
+
+- Add an option to not request window attention on bell.
+
+- Remote control: Allow matching windows by number (visible position).
+
+- macOS: Fix changing tab title and kitty shell not working
+
+- When triple-clicking select all wrapped lines belonging to a single logical line.
+
+- hints kitten: Detect bracketed URLs and dont include the closing bracket in the URL.
+
+- When calling pass_selection_to_program use the current directory of the child
+  process as the cwd of the program.
+
+- Add macos_hide_from_tasks option to hide kitty from the macOS task switcher
+
+- macOS: When the macos_titlebar_color is set to background change the titlebar
+  colors to match the current background color of the active kitty window
+
+- Add a setting to clear all shortcuts defined up to that point in the config
+  file(s)
+
+- Add a setting (kitty_mod) to change the modifier used by all the default
+  kitty shortcuts, globally
+
+- Fix Shift+function key not working
+
+- Support the F13 to F25 function keys
+  
+- Don't fail to start if the user deletes the hintstyle key from their
+  fontconfig configuration.
+
+- When rendering a private use unicode codepoint and a space as a two cell
+  ligature, set the foreground colors of the space cell to match the colors of
+  the first cell. Works around applications like powerline that use different
+  colors for the two cells.
+
+- Fix passing @text to other programs such as when viewing the scrollback
+  buffer not working correctly if kitty is itself scrolled up.
+
+- Fix window focus gained/lost events not being reported to child programs when
+  switching windows/tabs using the various keyboard shortcuts.
+
+- Fix tab title not changing to reflect the window title when switching between different windows in a tab
+
+- Ignore -e if it is specified on the command line. This is for compatibility
+  with broken software that assumes terminals should run with an -e option to
+  execute commands instead of just passing the commands as arguments. 
+
+
 version 0.9.0 [2018-04-15]
 ------------------------------
 

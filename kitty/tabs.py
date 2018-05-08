@@ -11,16 +11,16 @@ from .child import Child
 from .config import build_ansi_color_table
 from .constants import WindowGeometry, appname, get_boss, is_macos, is_wayland
 from .fast_data_types import (
-    DECAWM, Screen, add_tab, glfw_post_empty_event, remove_tab, remove_window,
-    set_active_tab, set_tab_bar_render_data, swap_tabs, viewport_for_window,
-    x11_window_id
+    DECAWM, Screen, add_tab, glfw_post_empty_event, mark_tab_bar_dirty,
+    remove_tab, remove_window, set_active_tab, set_tab_bar_render_data,
+    swap_tabs, viewport_for_window, x11_window_id
 )
 from .layout import Rect, all_layouts
 from .session import resolved_shell
 from .utils import color_as_int, log_error
 from .window import Window, calculate_gl_geometry
 
-TabbarData = namedtuple('TabbarData', 'title is_active is_last')
+TabbarData = namedtuple('TabbarData', 'title is_active is_last needs_attention')
 SpecialWindowInstance = namedtuple('SpecialWindow', 'cmd stdin override_title cwd_from cwd overlay_for env')
 
 
@@ -31,6 +31,7 @@ def SpecialWindow(cmd, stdin=None, override_title=None, cwd_from=None, cwd=None,
 class Tab:  # {{{
 
     def __init__(self, tab_manager, session_tab=None, special_window=None, cwd_from=None):
+        self._active_window_idx = 0
         self.tab_manager_ref = weakref.ref(tab_manager)
         self.os_window_id = tab_manager.os_window_id
         self.id = add_tab(self.os_window_id)
@@ -41,7 +42,6 @@ class Tab:  # {{{
         self.enabled_layouts = [x.lower() for x in getattr(session_tab, 'enabled_layouts', None) or self.opts.enabled_layouts]
         self.borders = Borders(self.os_window_id, self.id, self.opts)
         self.windows = deque()
-        self.active_window_idx = 0
         for i, which in enumerate('first second third fourth fifth sixth seventh eighth ninth tenth'.split()):
             setattr(self, which + '_window', partial(self.nth_window, num=i))
         if session_tab is None:
@@ -67,6 +67,31 @@ class Tab:  # {{{
         self.set_active_window_idx(session_tab.active_window_idx)
 
     @property
+    def active_window_idx(self):
+        return self._active_window_idx
+
+    @active_window_idx.setter
+    def active_window_idx(self, val):
+        try:
+            old_active_window = self.windows[self._active_window_idx]
+        except Exception:
+            old_active_window = None
+        self._active_window_idx = max(0, min(val, len(self.windows) - 1))
+        try:
+            new_active_window = self.windows[self._active_window_idx]
+        except Exception:
+            new_active_window = None
+        if old_active_window is not new_active_window:
+            if old_active_window is not None:
+                old_active_window.focus_changed(False)
+            if new_active_window is not None:
+                new_active_window.focus_changed(True)
+            tm = self.tab_manager_ref()
+            if tm is not None:
+                self.relayout_borders()
+                tm.mark_tab_bar_dirty()
+
+    @property
     def active_window(self):
         return self.windows[self.active_window_idx] if self.windows else None
 
@@ -78,13 +103,19 @@ class Tab:  # {{{
         self.name = title or ''
         tm = self.tab_manager_ref()
         if tm is not None:
-            tm.title_changed(self.name)
+            tm.mark_tab_bar_dirty()
 
     def title_changed(self, window):
         if window is self.active_window:
             tm = self.tab_manager_ref()
             if tm is not None:
-                tm.title_changed(window.title)
+                tm.mark_tab_bar_dirty()
+
+    def on_bell(self, window):
+        tm = self.tab_manager_ref()
+        if tm is not None:
+            self.relayout_borders()
+            tm.mark_tab_bar_dirty()
 
     def visible_windows(self):
         for w in self.windows:
@@ -100,8 +131,11 @@ class Tab:  # {{{
         tm = self.tab_manager_ref()
         if tm is not None:
             visible_windows = [w for w in self.windows if w.is_visible_in_layout]
-            self.borders(visible_windows, self.active_window, self.current_layout,
+            w = self.active_window
+            self.borders(visible_windows, w, self.current_layout,
                          tm.blank_rects, self.current_layout.needs_window_borders and len(visible_windows) > 1)
+            if w is not None:
+                w.change_titlebar_color()
 
     def create_layout_object(self, idx):
         return all_layouts[idx](self.os_window_id, self.id, self.opts, self.borders.border_width)
@@ -183,6 +217,10 @@ class Tab:  # {{{
             return
         self.set_active_window_idx(idx)
 
+    def get_nth_window(self, n):
+        if self.windows:
+            return self.current_layout.nth_window(self.windows, n, make_active=False)
+
     def nth_window(self, num=0):
         if self.windows:
             self.active_window_idx = self.current_layout.nth_window(self.windows, num)
@@ -227,7 +265,7 @@ class Tab:  # {{{
         return False
 
     def __iter__(self):
-        yield from iter(self.windows)
+        return iter(self.windows)
 
     def __len__(self):
         return len(self.windows)
@@ -279,6 +317,7 @@ class TabBar:  # {{{
 
         self.active_bg = as_rgb(color_as_int(opts.active_tab_background))
         self.active_fg = as_rgb(color_as_int(opts.active_tab_foreground))
+        self.bell_fg = as_rgb(0xff0000)
 
     def patch_colors(self, spec):
         if 'active_tab_foreground' in spec:
@@ -322,10 +361,18 @@ class TabBar:  # {{{
 
         for t in data:
             s.cursor.bg = self.active_bg if t.is_active else 0
-            s.cursor.fg = self.active_fg if t.is_active else 0
+            s.cursor.fg = fg = self.active_fg if t.is_active else 0
             s.cursor.bold, s.cursor.italic = self.active_font_style if t.is_active else self.inactive_font_style
             before = s.cursor.x
-            s.draw(' ' * self.leading_spaces + t.title + ' ' * self.trailing_spaces)
+            if self.leading_spaces:
+                s.draw(' ' * self.leading_spaces)
+            if t.needs_attention and self.opts.bell_on_tab:
+                s.cursor.fg = self.bell_fg
+                s.draw('🔔 ')
+                s.cursor.fg = fg
+            s.draw(t.title)
+            if self.trailing_spaces:
+                s.draw(' ' * self.trailing_spaces)
             extra = s.cursor.x - before - max_title_length
             if extra > 0:
                 s.cursor.x -= extra + 1
@@ -360,12 +407,36 @@ class TabManager:  # {{{
         self.opts, self.args = opts, args
         self.tabs = []
         self.tab_bar = TabBar(self.os_window_id, opts)
-        self.active_tab_idx = 0
+        self._active_tab_idx = 0
 
         for t in startup_session.tabs:
             self._add_tab(Tab(self, session_tab=t))
         self._set_active_tab(max(0, min(startup_session.active_tab_idx, len(self.tabs) - 1)))
-        self.update_tab_bar()
+
+    @property
+    def active_tab_idx(self):
+        return self._active_tab_idx
+
+    @active_tab_idx.setter
+    def active_tab_idx(self, val):
+        try:
+            old_active_tab = self.tabs[self._active_tab_idx]
+        except Exception:
+            old_active_tab = None
+        self._active_tab_idx = max(0, min(val, len(self.tabs) - 1))
+        try:
+            new_active_tab = self.tabs[self._active_tab_idx]
+        except Exception:
+            new_active_tab = None
+        if old_active_tab is not new_active_tab:
+            if old_active_tab is not None:
+                w = old_active_tab.active_window
+                if w is not None:
+                    w.focus_changed(False)
+            if new_active_tab is not None:
+                w = new_active_tab.active_window
+                if w is not None:
+                    w.focus_changed(True)
 
     def refresh_sprite_positions(self):
         self.tab_bar.screen.refresh_sprite_positions()
@@ -392,21 +463,24 @@ class TabManager:  # {{{
         self.resize(only_tabs=True)
         glfw_post_empty_event()
 
-    def update_tab_bar(self):
+    def mark_tab_bar_dirty(self):
         if len(self.tabs) > 1:
-            self.tab_bar.update(self.tab_bar_data)
+            mark_tab_bar_dirty(self.os_window_id)
+
+    def update_tab_bar_data(self):
+        self.tab_bar.update(self.tab_bar_data)
 
     def resize(self, only_tabs=False):
         if not only_tabs:
             self.tab_bar.layout()
-            self.update_tab_bar()
+            self.mark_tab_bar_dirty()
         for tab in self.tabs:
             tab.relayout()
 
     def set_active_tab_idx(self, idx):
         self._set_active_tab(idx)
         self.active_tab.relayout_borders()
-        self.update_tab_bar()
+        self.mark_tab_bar_dirty()
 
     def set_active_tab(self, tab):
         try:
@@ -459,22 +533,19 @@ class TabManager:  # {{{
             self.tabs[idx], self.tabs[nidx] = self.tabs[nidx], self.tabs[idx]
             swap_tabs(self.os_window_id, idx, nidx)
             self._set_active_tab(nidx)
-            self.update_tab_bar()
-
-    def title_changed(self, new_title):
-        self.update_tab_bar()
+            self.mark_tab_bar_dirty()
 
     def new_tab(self, special_window=None, cwd_from=None):
         idx = len(self.tabs)
         self._add_tab(Tab(self, special_window=special_window, cwd_from=cwd_from))
         self._set_active_tab(idx)
-        self.update_tab_bar()
+        self.mark_tab_bar_dirty()
         return self.tabs[idx]
 
     def remove(self, tab):
         self._remove_tab(tab)
         self._set_active_tab(max(0, min(self.active_tab_idx, len(self.tabs) - 1)))
-        self.update_tab_bar()
+        self.mark_tab_bar_dirty()
         tab.destroy()
 
     @property
@@ -483,7 +554,12 @@ class TabManager:  # {{{
         ans = []
         for t in self.tabs:
             title = (t.name or t.title or appname).strip()
-            ans.append(TabbarData(title, t is at, t is self.tabs[-1]))
+            needs_attention = False
+            for w in t:
+                if w.needs_attention:
+                    needs_attention = True
+                    break
+            ans.append(TabbarData(title, t is at, t is self.tabs[-1], needs_attention))
         return ans
 
     def activate_tab_at(self, x):

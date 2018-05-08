@@ -75,9 +75,11 @@ class Layout:
         # this layout, i.e. spaces that are not covered by any window
         self.blank_rects = ()
 
-    def nth_window(self, all_windows, num):
+    def nth_window(self, all_windows, num, make_active=True):
         windows = process_overlaid_windows(all_windows)[1]
         w = windows[min(num, len(windows) - 1)]
+        if not make_active:
+            return w
         active_window_idx = idx_for_id(w.id, all_windows)
         return self.set_active_window(all_windows, active_window_idx)
 
@@ -252,7 +254,9 @@ def top_blank_rect(w, rects):
 
 def bottom_blank_rect(w, rects):
     b = w.geometry.bottom
-    if b < central.bottom:
+    # Need to use <= here as otherwise a single pixel row at the bottom of the
+    # window is sometimes not covered. See https://github.com/kovidgoyal/kitty/issues/506
+    if b <= central.bottom:
         rects.append(Rect(central.left, b, central.right + 1, central.bottom + 1))
 
 

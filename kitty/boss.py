@@ -6,7 +6,6 @@ import atexit
 import json
 import os
 import re
-import socket
 from functools import partial
 from gettext import gettext as _
 from weakref import WeakValueDictionary
@@ -15,7 +14,8 @@ from .cli import create_opts, parse_args
 from .config import (
     MINIMUM_FONT_SIZE, initial_window_size, prepare_config_file_for_editing
 )
-from .constants import appname, editor, set_boss, config_dir
+from .config_utils import to_cmdline
+from .constants import appname, config_dir, editor, set_boss
 from .fast_data_types import (
     ChildMonitor, create_os_window, current_os_window, destroy_global_data,
     destroy_sprite_map, get_clipboard_string, glfw_post_empty_event,
@@ -42,6 +42,7 @@ def initialize_renderer():
 
 
 def listen_on(spec):
+    import socket
     family, address, socket_path = parse_address_spec(spec)
     s = socket.socket(family)
     atexit.register(remove_socket_file, s, socket_path)
@@ -148,10 +149,20 @@ class Boss:
             field, exp = match.split(':', 1)
         except ValueError:
             return
-        pat = re.compile(exp)
-        for window in self.all_windows:
-            if window.matches(field, pat):
-                yield window
+        if field == 'num':
+            tab = self.active_tab
+            if tab is not None:
+                try:
+                    w = tab.get_nth_window(int(exp))
+                except Exception:
+                    return
+                if w is not None:
+                    yield w
+        else:
+            pat = re.compile(exp)
+            for window in self.all_windows:
+                if window.matches(field, pat):
+                    yield window
 
     def tab_for_window(self, window):
         for tab in self.all_tabs:
@@ -440,6 +451,12 @@ class Boss:
             w = tm.active_window
             if w is not None:
                 w.focus_changed(focused)
+            tm.mark_tab_bar_dirty()
+
+    def update_tab_bar_data(self, os_window_id):
+        tm = self.os_window_map.get(os_window_id)
+        if tm is not None:
+            tm.update_tab_bar_data()
 
     def on_drop(self, os_window_id, paths):
         tm = self.os_window_map.get(os_window_id)
@@ -498,7 +515,7 @@ class Boss:
                 SpecialWindow(
                     ['kitty', '+runpy', 'from kittens.runner import main; main()'] + args,
                     stdin=data,
-                    env={'KITTY_COMMON_OPTS': json.dumps(copts)},
+                    env={'KITTY_COMMON_OPTS': json.dumps(copts), 'PYTHONWARNINGS': 'ignore'},
                     overlay_for=w.id))
             overlay_window.action_on_close = partial(self.on_kitten_finish, w.id, end_kitten)
 
@@ -510,8 +527,9 @@ class Boss:
 
     def on_kitten_finish(self, target_window_id, end_kitten, source_window):
         output = self.get_output(source_window, num_lines=None)
-        if output.startswith('OK: '):
-            data = json.loads(output.partition(' ')[2].strip())
+        from kittens.runner import deserialize
+        data = deserialize(output)
+        if data is not None:
             end_kitten(data, target_window_id, self)
 
     def input_unicode_character(self):
@@ -554,14 +572,12 @@ class Boss:
     def switch_focus_to(self, window_idx):
         tab = self.active_tab
         tab.set_active_window_idx(window_idx)
-        old_focus = tab.active_window
-        if not old_focus.destroyed:
-            old_focus.focus_changed(False)
-        tab.active_window.focus_changed(True)
 
-    def open_url(self, url, program=None):
+    def open_url(self, url, program=None, cwd=None):
         if url:
-            open_url(url, program or self.opts.open_url_with)
+            if isinstance(program, str):
+                program = to_cmdline(program)
+            open_url(url, program or self.opts.open_url_with, cwd=cwd)
 
     def open_url_lines(self, lines, program=None):
         self.open_url(''.join(lines), program)
