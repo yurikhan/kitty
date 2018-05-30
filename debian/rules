@@ -21,7 +21,7 @@ override_dh_auto_build-arch:
 	python3 setup.py --verbose linux-package
 
 override_dh_auto_build-indep:
-	for f in *.asciidoc; do ./debian/rules "html/$${f%.asciidoc}.html"; done
+	for f in $$(find -type f -name '*.asciidoc'); do ./debian/rules "html/$${f%.asciidoc}.html"; done
 	cp --parents --recursive \
 		key_encoding.json \
 		logo/kitty.png \
