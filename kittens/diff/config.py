@@ -5,8 +5,9 @@
 import os
 
 from kitty.config_utils import (
-    init_config, load_config as _load_config, merge_dicts, parse_config_base,
-    resolve_config, to_color
+    init_config, key_func, load_config as _load_config, merge_dicts,
+    parse_config_base, parse_kittens_key, python_string, resolve_config,
+    to_color
 )
 from kitty.constants import config_dir
 from kitty.rgb import color_as_sgr
@@ -24,13 +25,13 @@ formats = {
 
 
 def set_formats(opts):
-    formats['text'] = '38' + color_as_sgr(opts.foreground) + ';48' + color_as_sgr(opts.background)
+    formats['text'] = '48' + color_as_sgr(opts.background)
     formats['title'] = '38' + color_as_sgr(opts.title_fg) + ';48' + color_as_sgr(opts.title_bg) + ';1'
     formats['margin'] = '38' + color_as_sgr(opts.margin_fg) + ';48' + color_as_sgr(opts.margin_bg)
     formats['added_margin'] = '38' + color_as_sgr(opts.margin_fg) + ';48' + color_as_sgr(opts.added_margin_bg)
     formats['removed_margin'] = '38' + color_as_sgr(opts.margin_fg) + ';48' + color_as_sgr(opts.removed_margin_bg)
-    formats['added'] = '38' + color_as_sgr(opts.foreground) + ';48' + color_as_sgr(opts.added_bg)
-    formats['removed'] = '38' + color_as_sgr(opts.foreground) + ';48' + color_as_sgr(opts.removed_bg)
+    formats['added'] = '48' + color_as_sgr(opts.added_bg)
+    formats['removed'] = '48' + color_as_sgr(opts.removed_bg)
     formats['filler'] = '48' + color_as_sgr(opts.filler_bg)
     formats['hunk_margin'] = '38' + color_as_sgr(opts.margin_fg) + ';48' + color_as_sgr(opts.hunk_margin_bg)
     formats['hunk'] = '38' + color_as_sgr(opts.margin_fg) + ';48' + color_as_sgr(opts.hunk_bg)
@@ -38,21 +39,66 @@ def set_formats(opts):
     formats['added_highlight'] = '48' + color_as_sgr(opts.highlight_added_bg)
 
 
-type_map = {}
+def syntax_aliases(raw):
+    ans = {}
+    for x in raw.split():
+        a, b = x.partition(':')[::2]
+        if a and b:
+            ans[a.lower()] = b
+    return ans
+
+
+type_map = {
+    'syntax_aliases': syntax_aliases,
+    'num_context_lines': int,
+    'replace_tab_by': python_string,
+}
 
 for name in (
     'foreground background title_fg title_bg margin_bg margin_fg removed_bg removed_margin_bg added_bg added_margin_bg filler_bg hunk_bg hunk_margin_bg'
     ' highlight_removed_bg highlight_added_bg'
 ).split():
     type_map[name] = to_color
+func_with_args, args_funcs = key_func()
 
 
-def special_handling(*a):
-    pass
+@func_with_args('scroll_by')
+def parse_scroll_by(func, rest):
+    try:
+        return func, int(rest)
+    except Exception:
+        return func, 1
+
+
+@func_with_args('scroll_to')
+def parse_scroll_to(func, rest):
+    rest = rest.lower()
+    if rest not in {'start', 'end', 'next-change', 'prev-change', 'next-page', 'prev-page'}:
+        rest = 'start'
+    return func, rest
+
+
+@func_with_args('change_context')
+def parse_change_context(func, rest):
+    rest = rest.lower()
+    if rest in {'all', 'default'}:
+        return func, rest
+    try:
+        amount = int(rest)
+    except Exception:
+        amount = 5
+    return func, amount
+
+
+def special_handling(key, val, ans):
+    if key == 'map':
+        action, *key_def = parse_kittens_key(val, args_funcs)
+        ans['key_definitions'][tuple(key_def)] = action
+        return True
 
 
 def parse_config(lines, check_keys=True):
-    ans = {}
+    ans = {'key_definitions': {}}
     parse_config_base(
         lines,
         defaults,

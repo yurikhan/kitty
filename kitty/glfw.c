@@ -365,7 +365,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
         PyErr_SetString(PyExc_ValueError, "Too many windows");
         return NULL;
     }
-    bool want_semi_transparent = (1.0 - OPT(background_opacity) >= 0.01) ? true : false;
+    bool want_semi_transparent = (1.0 - OPT(background_opacity) >= 0.01) || OPT(dynamic_background_opacity);
     glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, want_semi_transparent);
     GLFWwindow *glfw_window = glfwCreateWindow(width, height, title, NULL, global_state.num_os_windows ? global_state.os_windows[0].handle : NULL);
     if (glfw_window == NULL) {
@@ -385,12 +385,14 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
         Py_DECREF(ret);
 #ifdef __APPLE__
         cocoa_create_global_menu();
-        if (OPT(macos_option_as_alt)) glfwSetCocoaTextInputFilter(glfw_window, filter_option);
         // This needs to be done only after the first window has been created, because glfw only sets the activation policy once upon initialization.
         if (OPT(macos_hide_from_tasks)) cocoa_set_hide_from_tasks();
 #endif
         is_first_window = false;
     }
+#ifdef __APPLE__
+    if (OPT(macos_option_as_alt)) glfwSetCocoaTextInputFilter(glfw_window, filter_option);
+#endif
 
     OSWindow *w = add_os_window();
     w->handle = glfw_window;
@@ -765,6 +767,16 @@ os_window_swap_buffers(PyObject UNUSED *self, PyObject *args) {
     return NULL;
 }
 
+static PyObject*
+ring_bell(PyObject UNUSED *self, PyObject *args) {
+    id_type os_window_id;
+    if (!PyArg_ParseTuple(args, "K", &os_window_id)) return NULL;
+    OSWindow *w = os_window_for_kitty_window(os_window_id);
+    if (w && w->handle) {
+        glfwWindowBell(w->handle);
+    }
+    Py_RETURN_NONE;
+}
 // Boilerplate {{{
 
 static PyMethodDef module_methods[] = {
@@ -778,6 +790,7 @@ static PyMethodDef module_methods[] = {
     METHODB(glfw_window_hint, METH_VARARGS),
     METHODB(os_window_should_close, METH_VARARGS),
     METHODB(os_window_swap_buffers, METH_VARARGS),
+    METHODB(ring_bell, METH_VARARGS),
     METHODB(get_primary_selection, METH_NOARGS),
     METHODB(x11_display, METH_NOARGS),
     METHODB(x11_window_id, METH_O),

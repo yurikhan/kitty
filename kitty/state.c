@@ -81,6 +81,7 @@ add_os_window() {
     memset(ans, 0, sizeof(OSWindow));
     ans->id = ++global_state.os_window_id_counter;
     ans->tab_bar_render_data.vao_idx = create_cell_vao();
+    ans->background_opacity = OPT(background_opacity);
     END_WITH_OS_WINDOW_REFS
     return ans;
 }
@@ -328,6 +329,10 @@ set_special_keys(PyObject *dict) {
     }}
 }
 
+PYWRAP0(next_window_id) {
+    return PyLong_FromUnsignedLongLong(global_state.window_id_counter + 1);
+}
+
 PYWRAP1(handle_for_window_id) {
     id_type os_window_id;
     PA("K", &os_window_id);
@@ -355,6 +360,8 @@ PYWRAP1(set_options) {
     S(cursor_blink_interval, PyFloat_AsDouble);
     S(cursor_stop_blinking_after, PyFloat_AsDouble);
     S(background_opacity, PyFloat_AsDouble);
+    S(dim_opacity, PyFloat_AsDouble);
+    S(dynamic_background_opacity, PyObject_IsTrue);
     S(inactive_text_alpha, PyFloat_AsDouble);
     S(window_padding_width, PyFloat_AsDouble);
     S(cursor_shape, PyLong_AsLong);
@@ -498,6 +505,26 @@ PYWRAP1(mark_tab_bar_dirty) {
     Py_RETURN_NONE;
 }
 
+PYWRAP1(change_background_opacity) {
+    id_type os_window_id;
+    float opacity;
+    PA("Kf", &os_window_id, &opacity);
+    WITH_OS_WINDOW(os_window_id)
+        os_window->background_opacity = opacity;
+        os_window->is_damaged = true;
+        Py_RETURN_TRUE;
+    END_WITH_OS_WINDOW
+    Py_RETURN_FALSE;
+}
+
+PYWRAP1(background_opacity_of) {
+    id_type os_window_id = PyLong_AsUnsignedLongLong(args);
+    WITH_OS_WINDOW(os_window_id)
+        return PyFloat_FromDouble((double)os_window->background_opacity);
+    END_WITH_OS_WINDOW
+    Py_RETURN_NONE;
+}
+
 static inline bool
 fix_window_idx(Tab *tab, id_type window_id, unsigned int *window_idx) {
     for (id_type fix = 0; fix < tab->num_windows; fix++) {
@@ -600,6 +627,7 @@ KK5I(add_borders_rect)
 
 static PyMethodDef module_methods[] = {
     MW(current_os_window, METH_NOARGS),
+    MW(next_window_id, METH_NOARGS),
     MW(set_options, METH_VARARGS),
     MW(set_in_sequence_mode, METH_O),
     MW(resolve_key_mods, METH_VARARGS),
@@ -624,6 +652,8 @@ static PyMethodDef module_methods[] = {
     MW(mark_os_window_for_close, METH_VARARGS),
     MW(set_titlebar_color, METH_VARARGS),
     MW(mark_tab_bar_dirty, METH_O),
+    MW(change_background_opacity, METH_VARARGS),
+    MW(background_opacity_of, METH_O),
     MW(update_window_visibility, METH_VARARGS),
     MW(set_boss, METH_O),
     MW(set_display_state, METH_VARARGS),

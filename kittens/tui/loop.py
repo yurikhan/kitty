@@ -18,23 +18,29 @@ from functools import partial
 from queue import Empty, Queue
 
 from kitty.fast_data_types import parse_input_from_terminal, safe_pipe
-from kitty.icat import screen_size
 from kitty.key_encoding import (
     ALT, CTRL, PRESS, RELEASE, REPEAT, SHIFT, C, D, backspace_key,
     decode_key_event, enter_key
 )
+from kitty.utils import screen_size_function
 
 from .handler import Handler
-from .operations import clear_screen, init_state, reset_state
+from .operations import init_state, reset_state
+
+screen_size = screen_size_function()
 
 
-def log(*a, **kw):
-    fd = getattr(log, 'fd', None)
-    if fd is None:
-        fd = log.fd = open('/tmp/kitten-debug', 'w')
-    kw['file'] = fd
+def debug(*a, **kw):
+    from base64 import standard_b64encode
+    buf = io.StringIO()
+    kw['file'] = buf
     print(*a, **kw)
-    fd.flush()
+    text = buf.getvalue()
+    text = b'\x1bP@kitty-print|' + standard_b64encode(text.encode('utf-8')) + b'\x1b\\'
+    fobj = getattr(debug, 'fobj', sys.stdout.buffer)
+    fobj.write(text)
+    if hasattr(fobj, 'flush'):
+        fobj.flush()
 
 
 def write_all(fd, data):
@@ -53,6 +59,7 @@ class TermManager:
         self.input_fd = input_fd
         self.output_fd = output_fd
         self.original_fl = fcntl.fcntl(self.input_fd, fcntl.F_GETFL)
+        self.extra_finalize = None
         self.isatty = os.isatty(self.input_fd)
         if self.isatty:
             self.original_termios = termios.tcgetattr(self.input_fd)
@@ -67,6 +74,8 @@ class TermManager:
         if self.isatty:
             termios.tcsetattr(self.input_fd, termios.TCSADRAIN, self.original_termios)
         fcntl.fcntl(self.input_fd, fcntl.F_SETFL, self.original_fl)
+        if self.extra_finalize:
+            write_all(self.output_fd, self.extra_finalize)
         write_all(self.output_fd, reset_state())
 
     @contextmanager
@@ -122,7 +131,10 @@ class UnhandledException(Handler):
         self.tb = tb
 
     def initialize(self):
-        self.write(clear_screen())
+        self.cmd.clear_screen()
+        self.cmd.set_scrolling_region()
+        self.cmd.set_cursor_visible(True)
+        self.cmd.set_default_colors()
         self.write(self.tb.replace('\n', '\r\n'))
         self.write('\r\n')
         self.write('Press the Enter key to quit')
@@ -158,7 +170,7 @@ class Loop:
         self.read_buf = ''
         self.decoder = codecs.getincrementaldecoder('utf-8')('ignore')
         try:
-            self.iov_limit = os.sysconf('SC_IOV_MAX') - 1
+            self.iov_limit = max(os.sysconf('SC_IOV_MAX') - 1, 255)
         except Exception:
             self.iov_limit = 255
         self.parse_input_from_terminal = partial(parse_input_from_terminal, self._on_text, self._on_dcs, self._on_csi, self._on_osc, self._on_pm, self._on_apc)
@@ -228,7 +240,9 @@ class Loop:
                 self.handler.on_text(chunk, self.in_bracketed_paste)
 
     def _on_dcs(self, dcs):
-        pass
+        if dcs.startswith('@kitty-cmd'):
+            import json
+            self.handler.on_kitty_cmd_response(json.loads(dcs[len('@kitty-cmd'):]))
 
     def _on_csi(self, csi):
         q = csi[-1]
@@ -251,7 +265,15 @@ class Loop:
         pass
 
     def _on_osc(self, osc):
-        pass
+        m = re.match(r'(\d+);', osc)
+        if m is not None:
+            code = int(m.group(1))
+            rest = osc[m.end():]
+            if code == 52:
+                where, rest = rest.partition(';')[::2]
+                from_primary = 'p' in where
+                from base64 import standard_b64decode
+                self.handler.on_clipboard_response(standard_b64decode(rest).decode('utf-8'), from_primary)
 
     def _on_apc(self, apc):
         if apc.startswith('K'):
@@ -268,6 +290,9 @@ class Loop:
                         self.handler.on_eot()
                         return
                 self.handler.on_key(k)
+        elif apc.startswith('G'):
+            if self.handler.image_manager is not None:
+                self.handler.image_manager.handle_response(apc)
 
     def _write_ready(self, handler):
         if len(handler.write_buf) > self.iov_limit:
@@ -356,9 +381,12 @@ class Loop:
             signal.signal(signal.SIGINT, self._on_sigint)
             handler.write_buf = []
             handler._term_manager = term_manager
+            image_manager = None
+            if handler.image_manager_class is not None:
+                image_manager = handler.image_manager_class(handler)
             keep_going = True
             try:
-                handler._initialize(screen_size(), self.quit, self.wakeup, self.start_job)
+                handler._initialize(screen_size(), self.quit, self.wakeup, self.start_job, debug, image_manager)
                 with handler:
                     while keep_going:
                         has_data_to_write = bool(handler.write_buf)
@@ -376,12 +404,10 @@ class Loop:
                 self.return_code = 1
                 keep_going = False
 
-            finalize_output = b''.join(handler.write_buf).decode('utf-8')
+            term_manager.extra_finalize = b''.join(handler.write_buf).decode('utf-8')
 
             if tb is not None:
-                self._report_error_loop(finalize_output + tb, term_manager)
-        if tb is None:
-            os.write(self.output_fd, finalize_output.encode('utf-8'))
+                self._report_error_loop(tb, term_manager)
 
     def _report_error_loop(self, tb, term_manager):
         select = self.sel.select
@@ -389,7 +415,7 @@ class Loop:
         handler = UnhandledException(tb)
         handler.write_buf = []
         handler._term_manager = term_manager
-        handler._initialize(screen_size(), self.quit, self.wakeup, self.start_job)
+        handler._initialize(screen_size(), self.quit, self.wakeup, self.start_job, debug)
         with handler:
             while True:
                 has_data_to_write = bool(handler.write_buf)

@@ -13,7 +13,9 @@ import sys
 from contextlib import contextmanager
 from time import monotonic
 
-from .constants import appname, is_macos, is_wayland
+from .constants import (
+    appname, is_macos, is_wayland, supports_primary_selection
+)
 from .fast_data_types import (
     GLSL_VERSION, log_error_string, redirect_std_streams, x11_display,
     x11_window_id
@@ -76,8 +78,50 @@ def parse_color_set(raw):
             continue
 
 
+def screen_size_function(fd=None):
+    ans = getattr(screen_size_function, 'ans', None)
+    if ans is None:
+        from collections import namedtuple
+        import array
+        import fcntl
+        import termios
+        Size = namedtuple('Size', 'rows cols width height cell_width cell_height')
+        if fd is None:
+            fd = sys.stdout
+
+        def screen_size():
+            if screen_size.changed:
+                buf = array.array('H', [0, 0, 0, 0])
+                fcntl.ioctl(fd, termios.TIOCGWINSZ, buf)
+                rows, cols, width, height = tuple(buf)
+                cell_width, cell_height = width // (cols or 1), height // (rows or 1)
+                screen_size.ans = Size(rows, cols, width, height, cell_width, cell_height)
+                screen_size.changed = False
+            return screen_size.ans
+        screen_size.changed = True
+        screen_size.Size = Size
+        ans = screen_size_function.ans = screen_size
+
+    return ans
+
+
+def fit_image(width, height, pwidth, pheight):
+    from math import floor
+    if height > pheight:
+        corrf = pheight / float(height)
+        width, height = floor(corrf * width), pheight
+    if width > pwidth:
+        corrf = pwidth / float(width)
+        width, height = pwidth, floor(corrf * height)
+    if height > pheight:
+        corrf = pheight / float(height)
+        width, height = floor(corrf * width), pheight
+
+    return int(width), int(height)
+
+
 def set_primary_selection(text):
-    if is_macos or is_wayland:
+    if not supports_primary_selection:
         return  # There is no primary selection
     if isinstance(text, bytes):
         text = text.decode('utf-8')
@@ -86,7 +130,7 @@ def set_primary_selection(text):
 
 
 def get_primary_selection():
-    if is_macos or is_wayland:
+    if not supports_primary_selection:
         return ''  # There is no primary selection
     from kitty.fast_data_types import get_primary_selection
     return (get_primary_selection() or b'').decode('utf-8', 'replace')
@@ -291,7 +335,7 @@ def make_fd_non_blocking(fd):
 
 
 @contextmanager
-def non_blocking_read(src=sys.stdin):
+def non_blocking_read(src=sys.stdin, disable_echo=False):
     import termios
     import tty
     import fcntl
@@ -299,6 +343,10 @@ def non_blocking_read(src=sys.stdin):
     if src.isatty():
         old = termios.tcgetattr(fd)
         tty.setraw(fd)
+        if disable_echo:
+            new = list(old)
+            new[3] |= termios.ECHO
+            termios.tcsetattr(fd, termios.TCSANOW, new)
     oldfl = make_fd_non_blocking(fd)
     yield fd
     if src.isatty():

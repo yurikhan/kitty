@@ -10,7 +10,6 @@ from collections import deque
 from .config import defaults, load_config
 from .config_utils import resolve_config
 from .constants import appname, defconf, is_macos, is_wayland, str_version
-from .layout import all_layouts
 
 CONFIG_HELP = '''\
 Specify a path to the configuration file(s) to use. All configuration files are
@@ -71,12 +70,6 @@ condition=not is_macos
 Detach from the controlling terminal, if any
 
 
---window-layout
-type=choices
-choices={window_layout_choices}
-The window layout to use on startup.
-
-
 --session
 Path to a file containing the startup |_ session| (tabs, windows, layout, programs).
 See the README file for details and an example.
@@ -119,8 +112,10 @@ Output commands received from child process to stdout
 
 
 --replay-commands
-type=bool-set
-Replay previously dumped commands
+Replay previously dumped commands. Specify the path to a dump file previously created by --dump-commands. You
+can open a new kitty window to replay the commands with:
+
+    kitty sh -c "kitty --replay-commands /path/to/dump/file; read"
 
 
 --dump-bytes
@@ -293,8 +288,8 @@ def wrap(text, limit=80):
 
 
 def print_help_for_seq(seq, usage, message, appname):
-    from kitty.icat import screen_size
-    screen_size.changed = True
+    from kitty.utils import screen_size_function
+    screen_size = screen_size_function()
     try:
         linesz = min(screen_size().cols, 76)
     except EnvironmentError:
@@ -488,8 +483,8 @@ def parse_cmdline(oc, disabled, args=None):
 def options_spec():
     if not hasattr(options_spec, 'ans'):
         options_spec.ans = OPTIONS.format(
-            appname=appname, config_help=CONFIG_HELP.format(appname=appname, conf_name=appname),
-            window_layout_choices=', '.join(all_layouts)
+            appname=appname, config_help=CONFIG_HELP.format(appname=appname, conf_name=appname)
+
         )
     return options_spec.ans
 
@@ -555,12 +550,14 @@ def flatten_sequence_map(m):
 def compare_opts(opts):
     print('\nConfig options different from defaults:')
     default_opts = load_config()
-
-    for f in sorted(defaults._fields):
-        if getattr(opts, f) != getattr(defaults, f):
-            if f in ('key_definitions', 'keymap', 'sequence_map'):
-                continue
-            print(title('{:20s}'.format(f)), getattr(opts, f))
+    changed_opts = [
+        f for f in sorted(defaults._fields)
+        if f not in ('key_definitions', 'keymap', 'sequence_map') and getattr(opts, f) != getattr(defaults, f)
+    ]
+    field_len = max(map(len, changed_opts)) if changed_opts else 20
+    fmt = '{{:{:d}s}}'.format(field_len)
+    for f in changed_opts:
+        print(title(fmt.format(f)), getattr(opts, f))
 
     final, initial = opts.keymap, default_opts.keymap
     final = {(k,): v for k, v in final.items()}

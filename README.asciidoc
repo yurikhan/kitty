@@ -13,6 +13,11 @@
 :sc_fourth_window: pass:quotes[`ctrl+shift+4`]
 :sc_increase_font_size: pass:quotes[`ctrl+shift+equal`]
 :sc_input_unicode_character: pass:quotes[`ctrl+shift+u`]
+:sc_kitten_hints: pass:quotes[`ctrl+shift+e`]
+:sc_kitten_hints_type_line_program: pass:quotes[`ctrl+shift+p → l`]
+:sc_kitten_hints_type_path: pass:quotes[`ctrl+shift+p → shift+f`]
+:sc_kitten_hints_type_path_program: pass:quotes[`ctrl+shift+p → f`]
+:sc_kitten_hints_type_word_program: pass:quotes[`ctrl+shift+p → w`]
 :sc_kitty_shell_window: pass:quotes[`ctrl+shift+escape`]
 :sc_move_tab_backward: pass:quotes[`ctrl+shift+,`]
 :sc_move_tab_forward: pass:quotes[`ctrl+shift+.`]
@@ -32,11 +37,6 @@
 :sc_previous_tab: pass:quotes[`ctrl+shift+left`]
 :sc_previous_window: pass:quotes[`ctrl+shift+[`]
 :sc_restore_font_size: pass:quotes[`ctrl+shift+backspace`]
-:sc_run_kitten_text_hints: pass:quotes[`ctrl+shift+e`]
-:sc_run_kitten_text_hints_type_line_program: pass:quotes[`ctrl+shift+p → l`]
-:sc_run_kitten_text_hints_type_path: pass:quotes[`ctrl+shift+p → shift+f`]
-:sc_run_kitten_text_hints_type_path_program: pass:quotes[`ctrl+shift+p → f`]
-:sc_run_kitten_text_hints_type_word_program: pass:quotes[`ctrl+shift+p → w`]
 :sc_scroll_end: pass:quotes[`ctrl+shift+end`]
 :sc_scroll_home: pass:quotes[`ctrl+shift+home`]
 :sc_scroll_line_down: pass:quotes[`ctrl+shift+down` or `ctrl+shift+j`]
@@ -44,10 +44,15 @@
 :sc_scroll_page_down: pass:quotes[`ctrl+shift+page_down`]
 :sc_scroll_page_up: pass:quotes[`ctrl+shift+page_up`]
 :sc_second_window: pass:quotes[`ctrl+shift+2`]
+:sc_set_background_opacity_0_1: pass:quotes[`ctrl+shift+a → l`]
+:sc_set_background_opacity_1: pass:quotes[`ctrl+shift+a → 1`]
+:sc_set_background_opacity_default: pass:quotes[`ctrl+shift+a → d`]
+:sc_set_background_opacity_plus0_1: pass:quotes[`ctrl+shift+a → m`]
 :sc_set_tab_title: pass:quotes[`ctrl+shift+alt+t`]
 :sc_seventh_window: pass:quotes[`ctrl+shift+7`]
 :sc_show_scrollback: pass:quotes[`ctrl+shift+h`]
 :sc_sixth_window: pass:quotes[`ctrl+shift+6`]
+:sc_start_resizing_window: pass:quotes[`ctrl+shift+r`]
 :sc_tenth_window: pass:quotes[`ctrl+shift+0`]
 :sc_third_window: pass:quotes[`ctrl+shift+3`]
 :sc_toggle_fullscreen: pass:quotes[`ctrl+shift+f11`]
@@ -73,7 +78,7 @@ link:#layouts[layouts] without needing to use an extra program like tmux
 * Can be link:remote-control.asciidoc[controlled from scripts or the shell prompt], even over SSH.
 
 * Has a framework for _kittens_, small terminal programs that can be used to extend kitty's functionality.
-For example, they are used for link:#unicode-input[Unicode input] and link:#url-hints[Hints].
+For example, they are used for link:#unicode-input[Unicode input], link:#hints[Hints] and link:https://github.com/kovidgoyal/kitty/blob/master/kittens/diff/README.asciidoc[Side-by-side diff].
 
 * Supports link:#startup-sessions[startup sessions] which allow you to specify the window/tab layout,
 working directories and programs to run on startup.
@@ -87,7 +92,7 @@ window using arbitrary programs of your choice. This is useful for browsing
 the history comfortably in a pager or editor.
 
 
-image::screenshot.png?raw=true[Screenshot, showing three programs in the "Tall" layout]
+image::screenshots/screenshot.png?raw=true[Screenshot, showing three programs in the "Tall" layout]
 
 toc::[]
 
@@ -106,6 +111,7 @@ the following dependencies are installed first.
 * freetype (not needed on macOS)
 * fontconfig (not needed on macOS)
 * ImageMagick (optional, needed to use the `kitty icat` tool to display images in the terminal)
+* pygments (optional, need for syntax highlighting in `kitty +kitten diff`)
 * gcc or clang (required only for building)
 * pkg-config (required only for building)
 * For building on Linux in addition to the above dependencies you might also need to install the `-dev` packages for `xcursor`, `xrandr`, `libxi`, `xinerama`, `libgl1-mesa` and `xkbcommon-x11`, if they are not already installed by your distro.
@@ -152,7 +158,7 @@ just `kitty`.
 
 * openSUSE: https://build.opensuse.org/package/show/X11:terminals/kitty
 
-* Debian: https://packages.qa.debian.org/k/kitty/news/20180419T070013Z.html
+* Debian: https://packages.debian.org/buster/kitty
 
 === macOS packages
 
@@ -260,6 +266,10 @@ windows are:
 |Pass current selection to program | {sc_pass_selection_to_program}
 |Edit kitty config file | {sc_edit_config_file}
 |Open a kitty shell | {sc_kitty_shell}
+|Increase background opacity | {sc_set_background_opacity_plus0_1}
+|Decrease background opacity | {sc_set_background_opacity_0_1}
+|Full background opacity | {sc_set_background_opacity_1}
+|Reset background opacity | {sc_set_background_opacity_default}
 |===
 
 
@@ -292,7 +302,7 @@ the scrollback pager comfortably within the pager.
 You can input unicode characters by name, hex code, recently used and even an editable favorites list.
 Press {sc_input_unicode_character} to start the unicode input widget, shown below.
 
-image::unicode.png?raw=true[Unicode input widget, showing selection of unicode characters by name]
+image::screenshots/unicode.png?raw=true[Unicode input widget, showing selection of unicode characters by name]
 
 In Code mode, you enter a unicode character by typing in the hex code for the
 character and pressing enter, for example, type in 2716 and press enter to get
@@ -311,7 +321,7 @@ visible on the screen.  For example, you can press {sc_run_kitten_text_hints}
 to choose any URL visible on the screen and then open it using your system
 browser.
 
-image::hints_mode.png?raw=true[URL hints mode]
+image::screenshots/hints_mode.png?raw=true[URL hints mode]
 
 Similarly, you can press {sc_run_kitten_text_hints_type_path_program} to
 select anything that looks like a path or filename and then insert it into the
@@ -334,6 +344,7 @@ Currently, there are five layouts available,
 
 * Stack -- Only a single maximized window is shown at a time
 * Tall -- One window is shown full height on the left, the rest of the windows are shown one below the other on the right
+* Fat -- One window is shown full width on the top, the rest of the windows are shown side-by-side on the bottom
 * Grid -- All windows are shown in a grid
 * Horizontal -- All windows are shown side-by-side
 * Vertical -- All windows are shown one below the other
@@ -342,7 +353,25 @@ You can switch between layouts using the {sc_next_layout} key combination. You c
 also create shortcuts to select particular layouts, and choose which layouts
 you want to enable/disable, see link:kitty/kitty.conf[kitty.conf] for examples.
 
-Writing a new layout only requires about fifty lines of code, so if there is
+You can resize windows inside layouts. Press {sc_start_resizing_window} to
+enter resizing mode and follow the on-screen instructions.  In a given window
+layout only some operations may be possible for a particular window. For
+example, in the Tall layout you can make the first window wider/narrower, but
+not taller/shorter. Note that what you are resizing is actually not a window,
+but a row/column in the layout, all windows in that row/column will be resized.
+
+Some layouts take options to control their behavior. For example, the `fat` and `tall`
+layouts accept the `bias` option to control how the available space is split up. To specify the
+option, in kitty.conf use:
+
+```
+enabled_layouts tall:bias=70
+```
+
+This will make the tall window occupy `70%` of available width. `bias` can be
+any number between 10 and 90.
+
+Writing a new layout only requires about a hundred lines of code, so if there is
 some layout you want, take a look at link:kitty/layout.py[layout.py] and submit
 a pull request!
 
@@ -375,7 +404,8 @@ layout tall
 cd ~
 # Create a window and run the specified command in it
 launch zsh
-launch vim
+# Create a window with some environment variables set and run vim in it
+launch env FOO=BAR vim
 # Set the title for the next window
 title Chat with x
 launch irssi --profile x
@@ -539,8 +569,16 @@ for why kitty does not support background color erase.
 === I get errors about the terminal being unknown or opening the terminal failing when SSHing into a different computer?
 
 This happens because the kitty terminfo files are not available on the server.
-Either install kitty on the server, or simply copy over the terminfo files,
-using:
+You can ssh in using the following command which will automatically copy the
+terminfo files to the server:
+
+....
+kitty +kitten ssh myserver
+....
+
+If for some reason that does not work (typically because the server is using a
+very limited shell), you can use the following one-liner instead (it is slower
+as it needs to ssh into the server twice, but will work with most servers).
 
 ....
 infocmp xterm-kitty | ssh myserver tic -x -o \~/.terminfo /dev/stdin
@@ -549,17 +587,6 @@ infocmp xterm-kitty | ssh myserver tic -x -o \~/.terminfo /dev/stdin
 Really, the correct solution for this is to convince the OpenSSH maintainers to
 have ssh do this automatically when connecting to a server, so that all
 terminals work transparently.
-
-In the meantime, you can automate it by using a simple script called, for example,
-`~/bin/myssh`
-
-....
-#!/bin/sh
-infocmp xterm-kitty | ssh $1 tic -x -o \~/.terminfo /dev/stdin && ssh $1
-....
-
-Then you can use `myssh server` to log in to `server` with the terminfo file
-being automatically available.
 
 
 === How do I change the colors in a running kitty instance?
@@ -583,6 +610,20 @@ You can, of course, also run kitty from a terminal with command line options, us
 
 And within kitty itself, you can always run kitty using just `kitty` as it
 cleverly adds itself to the PATH.
+
+
+=== kitty is not able to use my favorite font?
+
+kitty achieves its stellar performance by caching alpha masks of each rendered
+character on the GPU, so that every character needs to be rendered only once.
+This means it is a strictly character cell based display.  As such it can use
+only monospace fonts, since every cell in the grid has to be the same size. If
+your font is not listed in `kitty list-fonts` it means that it is not
+monospace. On Linux you can list all monospace fonts with,
+
+```
+fc-list : family spacing | grep spacing=100
+```
 
 == Resources on terminal behavior
 

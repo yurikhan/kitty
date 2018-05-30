@@ -21,7 +21,12 @@ class MatchError(ValueError):
         ValueError.__init__(self, 'No matching {} for expression: {}'.format(target, expression))
 
 
-def cmd(short_desc, desc=None, options_spec=None, no_response=False, argspec='...'):
+class OpacityError(ValueError):
+
+    hide_traceback = True
+
+
+def cmd(short_desc, desc=None, options_spec=None, no_response=False, argspec='...', string_return_is_error=False, args_count=None):
 
     def w(func):
         func.short_desc = short_desc
@@ -32,6 +37,8 @@ def cmd(short_desc, desc=None, options_spec=None, no_response=False, argspec='..
         func.is_cmd = True
         func.impl = lambda: globals()[func.__name__[4:]]
         func.no_response = no_response
+        func.string_return_is_error = string_return_is_error
+        func.args_count = 0 if not argspec else args_count
         return func
     return w
 
@@ -44,7 +51,8 @@ You can use the |_ ls| command to get a list of windows. Note that for
 numeric fields such as id, pid and num the expression is interpreted as a number,
 not a regular expression. The field num refers to the window position in the current tab,
 starting from zero and counting clockwise (this is the same as the order in which the
-windows are reported by the |_ ls| command).
+windows are reported by the |_ ls| command). The window id of the current window
+is available as the KITTY_WINDOW_ID environment variable.
 '''
 MATCH_TAB_OPTION = '''\
 --match -m
@@ -84,7 +92,7 @@ def ls(boss, window):
 @cmd(
     'Set the font size in all windows',
     'Sets the font size to the specified size, in pts.',
-    argspec='FONT_SIZE'
+    argspec='FONT_SIZE', args_count=1
 )
 def cmd_set_font_size(global_opts, opts, args):
     try:
@@ -274,6 +282,55 @@ def close_window(boss, window, payload):
 # }}}
 
 
+# resize_window {{{
+@cmd(
+    'Resize the specified window',
+    'Resize the specified window in the current layout. Note that not all layouts can resize all windows in all directions.',
+    options_spec=MATCH_WINDOW_OPTION + '''\n
+--increment -i
+type=int
+default=2
+The number of cells to change the size by, can be negative to decrease the size.
+
+
+--axis -a
+type=choices
+choices=horizontal,vertical,reset
+default=horizontal
+The axis along which to resize. If |_ horizontal|, it will make the window wider or narrower by the specified increment.
+If |_ vertical|, it will make the window taller or shorter by the specified increment. The special value |_ reset| will
+reset the layout to its default configuration.
+
+
+--self
+type=bool-set
+If specified close the window this command is run in, rather than the active window.
+''',
+    argspec='',
+    string_return_is_error=True
+)
+def cmd_resize_window(global_opts, opts, args):
+    return {'match': opts.match, 'increment': opts.increment, 'axis': opts.axis, 'self': opts.self}
+
+
+def resize_window(boss, window, payload):
+    match = payload['match']
+    if match:
+        windows = tuple(boss.match_windows(match))
+        if not windows:
+            raise MatchError(match)
+    else:
+        windows = [window if window and payload['self'] else boss.active_window]
+    resized = False
+    if windows and windows[0]:
+        resized = boss.resize_layout_window(
+            windows[0], increment=payload['increment'], is_horizontal=payload['axis'] == 'horizontal',
+            reset=payload['axis'] == 'reset'
+        )
+    return resized
+# }}}
+
+
 # close_tab {{{
 @cmd(
     'Close the specified tab(s)',
@@ -374,6 +431,7 @@ def new_window(boss, window, payload):
 # focus_window {{{
 @cmd(
     'Focus the specified window',
+    'Focus the specified window, if no window is specified, focus the window this command is run inside.',
     options_spec=MATCH_WINDOW_OPTION,
     argspec='',
 )
@@ -534,11 +592,55 @@ def set_colors(boss, window, payload):
 # }}}
 
 
+# set_background_opacity {{{
+@cmd(
+    'Set the background_opacity',
+    'Set the background opacity for the specified windows. This will only work if you have turned on'
+    ' dynamic_background_opacity in kitty.conf. The background opacity affects all kitty windows in a'
+    ' single os_window. For example: kitty @ set-background-opacity 0.5',
+    options_spec='''\
+--all -a
+type=bool-set
+By default, colors are only changed for the currently active window. This option will
+cause colors to be changed in all windows.
+
+''' + '\n\n' + MATCH_WINDOW_OPTION + '\n\n' + MATCH_TAB_OPTION.replace('--match -m', '--match-tab -t'),
+    argspec='OPACITY',
+    args_count=1
+)
+def cmd_set_background_opacity(global_opts, opts, args):
+    opacity = max(0.1, min(float(args[0]), 1.0))
+    return {
+            'opacity': opacity, 'match_window': opts.match,
+            'all': opts.all,
+    }
+
+
+def set_background_opacity(boss, window, payload):
+    if not boss.opts.dynamic_background_opacity:
+        raise OpacityError('You must turn on the dynamic_background_opacity option in kitty.conf to be able to set background opacity')
+    if payload['all']:
+        windows = tuple(boss.all_windows)
+    else:
+        windows = (window or boss.active_window,)
+        if payload['match_window']:
+            windows = tuple(boss.match_windows(payload['match_window']))
+            if not windows:
+                raise MatchError(payload['match_window'])
+    for os_window_id in {w.os_window_id for w in windows}:
+        boss._set_os_window_background_opacity(os_window_id, payload['opacity'])
+# }}}
+
+
 cmap = {v.name: v for v in globals().values() if hasattr(v, 'is_cmd')}
 
 
 def parse_subcommand_cli(func, args):
     opts, items = parse_args(args[1:], (func.options_spec or '\n').format, func.argspec, func.desc, '{} @ {}'.format(appname, func.name))
+    if func.args_count is not None and func.args_count != len(items):
+        if func.args_count == 0:
+            raise SystemExit('Unknown extra argument(s) supplied to {}'.format(func.name))
+        raise SystemExit('Must specify exactly {} argument(s) for {}'.format(func.args_count, func.name))
     return opts, items
 
 

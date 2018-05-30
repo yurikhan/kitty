@@ -15,19 +15,20 @@ from .constants import (
 )
 from .fast_data_types import (
     BLIT_PROGRAM, CELL_BG_PROGRAM, CELL_FG_PROGRAM, CELL_PROGRAM,
-    CELL_SPECIAL_PROGRAM, CSI, CURSOR_PROGRAM, DCS, GRAPHICS_PREMULT_PROGRAM,
-    GRAPHICS_PROGRAM, OSC, SCROLL_FULL, SCROLL_LINE, SCROLL_PAGE, Screen,
-    add_window, compile_program, glfw_post_empty_event, init_cell_program,
-    init_cursor_program, set_clipboard_string, set_titlebar_color,
-    set_window_render_data, update_window_title, update_window_visibility,
-    viewport_for_window
+    CELL_SPECIAL_PROGRAM, CSI, CURSOR_PROGRAM, DCS, DECORATION, DIM,
+    GRAPHICS_PREMULT_PROGRAM, GRAPHICS_PROGRAM, OSC, REVERSE, SCROLL_FULL,
+    SCROLL_LINE, SCROLL_PAGE, STRIKETHROUGH, Screen, add_window,
+    compile_program, get_clipboard_string, glfw_post_empty_event,
+    init_cell_program, init_cursor_program, set_clipboard_string,
+    set_titlebar_color, set_window_render_data, update_window_title,
+    update_window_visibility, viewport_for_window
 )
 from .keys import keyboard_mode_name
 from .rgb import to_color
 from .terminfo import get_capabilities
 from .utils import (
-    color_as_int, load_shaders, open_cmd, open_url, parse_color_set,
-    sanitize_title
+    color_as_int, get_primary_selection, load_shaders, log_error, open_cmd,
+    open_url, parse_color_set, sanitize_title, set_primary_selection
 )
 
 
@@ -64,6 +65,8 @@ def load_shader_programs(semi_transparent=0):
             'FOREGROUND': CELL_FG_PROGRAM,
     }.items():
         vv, ff = v.replace('WHICH_PROGRAM', which), f.replace('WHICH_PROGRAM', which)
+        for gln, pyn in {'REVERSE_SHIFT': REVERSE, 'STRIKE_SHIFT': STRIKETHROUGH, 'DIM_SHIFT': DIM, 'DECORATION_SHIFT': DECORATION}.items():
+            vv = vv.replace('{{{}}}'.format(gln), str(pyn), 1)
         if semi_transparent:
             vv = vv.replace('#define NOT_TRANSPARENT', '#define TRANSPARENT')
             ff = ff.replace('#define NOT_TRANSPARENT', '#define TRANSPARENT')
@@ -328,9 +331,46 @@ class Window:
     def handle_remote_cmd(self, cmd):
         get_boss().handle_remote_cmd(cmd, self)
 
+    def handle_remote_print(self, msg):
+        from base64 import standard_b64decode
+        msg = standard_b64decode(msg).decode('utf-8')
+        print(msg, end='', file=sys.stderr)
+        sys.stderr.flush()
+
     def send_cmd_response(self, response):
         self.screen.send_escape_code_to_child(DCS, '@kitty-cmd' + json.dumps(response))
 
+    def clipboard_control(self, data):
+        where, text = data.partition(';')[::2]
+        if text == '?':
+            response = None
+            if 's' in where or 'c' in where:
+                response = get_clipboard_string() if 'read-clipboard' in self.opts.clipboard_control else ''
+                loc = 'c'
+            elif 'p' in where:
+                response = get_primary_selection() if 'read-primary' in self.opts.clipboard_control else ''
+                loc = 'p'
+            response = response or ''
+            from base64 import standard_b64encode
+            self.screen.send_escape_code_to_child(OSC, '52;{};{}'.format(
+                loc, standard_b64encode(response.encode('utf-8')).decode('ascii')))
+
+        else:
+            from base64 import standard_b64decode
+            try:
+                text = standard_b64decode(text).decode('utf-8')
+            except Exception:
+                log_error('Invalid data to write to clipboard received, ignoring')
+                return
+            if 's' in where or 'c' in where:
+                if 'write-clipboard' not in self.opts.clipboard_control:
+                    set_clipboard_string(text)
+            if 'p' in where:
+                if self.opts.copy_on_select:
+                    if 'write-clipboard' in self.opts.clipboard_control:
+                        set_clipboard_string(text)
+                if 'write-primary' in self.opts.clipboard_control:
+                    set_primary_selection(text)
     # }}}
 
     def text_for_selection(self):
@@ -343,11 +383,11 @@ class Window:
             self.screen.reset_callbacks()
         self.screen = None
 
-    def as_text(self, as_ansi=False, add_history=False):
+    def as_text(self, as_ansi=False, add_history=False, add_wrap_markers=False):
         lines = []
         add_history = add_history and not self.screen.is_using_alternate_linebuf()
         f = self.screen.as_text_non_visual if add_history else self.screen.as_text
-        f(lines.append, as_ansi)
+        f(lines.append, as_ansi, add_wrap_markers)
         if add_history:
             h = []
             self.screen.historybuf.as_text(h.append, as_ansi)

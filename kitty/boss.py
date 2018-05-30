@@ -15,9 +15,12 @@ from .config import (
     MINIMUM_FONT_SIZE, initial_window_size, prepare_config_file_for_editing
 )
 from .config_utils import to_cmdline
-from .constants import appname, config_dir, editor, set_boss
+from .constants import (
+    appname, config_dir, editor, set_boss, supports_primary_selection
+)
 from .fast_data_types import (
-    ChildMonitor, create_os_window, current_os_window, destroy_global_data,
+    ChildMonitor, background_opacity_of, change_background_opacity,
+    create_os_window, current_os_window, destroy_global_data,
     destroy_sprite_map, get_clipboard_string, glfw_post_empty_event,
     layout_sprite_map, mark_os_window_for_close, set_clipboard_string,
     set_dpi_from_os_window, set_in_sequence_mode, show_window,
@@ -359,6 +362,29 @@ class Boss:
     def on_dpi_change(self, os_window_id):
         self._change_font_size()
 
+    def _set_os_window_background_opacity(self, os_window_id, opacity):
+        change_background_opacity(os_window_id, max(0.1, min(opacity, 1.0)))
+
+    def set_background_opacity(self, opacity):
+        window = self.active_window
+        if window is None or not opacity:
+            return
+        if not self.opts.dynamic_background_opacity:
+            return self.show_error(
+                    _('Cannot change background opacity'),
+                    _('You must set the dynamic_background_opacity option in kitty.conf to be able to change background opacity'))
+        os_window_id = window.os_window_id
+        if opacity[0] in '+-':
+            opacity = background_opacity_of(os_window_id)
+            if opacity is None:
+                return
+            opacity += float(opacity)
+        elif opacity == 'default':
+            opacity = self.opts.background_opacity
+        else:
+            opacity = float(opacity)
+        self._set_os_window_background_opacity(os_window_id, opacity)
+
     @property
     def active_tab_manager(self):
         os_window_id = current_os_window()
@@ -410,6 +436,25 @@ class Boss:
             set_in_sequence_mode(False)
             if matched_action is not None:
                 self.dispatch_action(matched_action)
+
+    def start_resizing_window(self):
+        w = self.active_window
+        if w is None:
+            return
+        overlay_window = self._run_kitten('resize_window', args=[
+            '--horizontal-increment={}'.format(self.opts.window_resize_step_cells),
+            '--vertical-increment={}'.format(self.opts.window_resize_step_lines)
+        ])
+        if overlay_window is not None:
+            overlay_window.allow_remote_control = True
+
+    def resize_layout_window(self, window, increment, is_horizontal, reset=False):
+        tab = window.tabref()
+        if tab is None or not increment:
+            return False
+        if reset:
+            return tab.reset_window_sizes()
+        return tab.resize_window_by(window.id, increment, is_horizontal)
 
     def default_bg_changed_for(self, window_id):
         w = self.window_id_map.get(window_id)
@@ -496,34 +541,50 @@ class Boss:
             output += str(s.linebuf.line(i))
         return output
 
-    def _run_kitten(self, kitten, args=(), type_of_input='none'):
+    def _run_kitten(self, kitten, args=(), input_data=None):
         w = self.active_window
         tab = self.active_tab
         if w is not None and tab is not None and w.overlay_for is None:
             orig_args, args = list(args), list(args)
-            args[0:0] = [config_dir, kitten]
-            if type_of_input in ('text', 'history', 'ansi', 'ansi-history'):
-                data = w.as_text(as_ansi='ansi' in type_of_input, add_history='history' in type_of_input).encode('utf-8')
-            elif type_of_input == 'none':
-                data = None
-            else:
-                raise ValueError('Unknown type_of_input: {}'.format(type_of_input))
             from kittens.runner import create_kitten_handler
             end_kitten = create_kitten_handler(kitten, orig_args)
+            args[0:0] = [config_dir, kitten]
+            if input_data is None:
+                type_of_input = end_kitten.type_of_input
+                if type_of_input in ('text', 'history', 'ansi', 'ansi-history', 'screen', 'screen-history', 'screen-ansi', 'screen-ansi-history'):
+                    data = w.as_text(
+                            as_ansi='ansi' in type_of_input,
+                            add_history='history' in type_of_input,
+                            add_wrap_markers='screen' in type_of_input
+                    ).encode('utf-8')
+                elif type_of_input is None:
+                    data = None
+                else:
+                    raise ValueError('Unknown type_of_input: {}'.format(type_of_input))
+            else:
+                data = input_data
+            if isinstance(data, str):
+                data = data.encode('utf-8')
             copts = {k: self.opts[k] for k in ('select_by_word_characters', 'open_url_with')}
             overlay_window = tab.new_special_window(
                 SpecialWindow(
                     ['kitty', '+runpy', 'from kittens.runner import main; main()'] + args,
                     stdin=data,
-                    env={'KITTY_COMMON_OPTS': json.dumps(copts), 'PYTHONWARNINGS': 'ignore'},
+                    env={
+                        'KITTY_COMMON_OPTS': json.dumps(copts),
+                        'PYTHONWARNINGS': 'ignore',
+                        'OVERLAID_WINDOW_LINES': str(w.screen.lines),
+                        'OVERLAID_WINDOW_COLS': str(w.screen.columns),
+                    },
                     overlay_for=w.id))
             overlay_window.action_on_close = partial(self.on_kitten_finish, w.id, end_kitten)
+            return overlay_window
 
-    def run_kitten(self, type_of_input, kitten, *args):
+    def kitten(self, kitten, *args):
         import shlex
         cmdline = args[0] if args else ''
         args = shlex.split(cmdline) if cmdline else []
-        self._run_kitten(kitten, args, type_of_input)
+        self._run_kitten(kitten, args)
 
     def on_kitten_finish(self, target_window_id, end_kitten, source_window):
         output = self.get_output(source_window, num_lines=None)
@@ -540,6 +601,9 @@ class Boss:
         if tab:
             args = ['--name=tab-title', '--message', _('Enter the new title for this tab below.'), 'do_set_tab_title', str(tab.id)]
             self._run_kitten('ask', args)
+
+    def show_error(self, title, msg):
+        self._run_kitten('show_error', ['--title', title], input_data=msg)
 
     def do_set_tab_title(self, title, tab_id):
         tm = self.active_tab_manager
@@ -603,7 +667,7 @@ class Boss:
         self.paste_to_active_window(text)
 
     def paste_from_selection(self):
-        text = get_primary_selection()
+        text = get_primary_selection() if supports_primary_selection else get_clipboard_string()
         self.paste_to_active_window(text)
 
     def set_primary_selection(self):

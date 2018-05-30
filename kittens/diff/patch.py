@@ -4,20 +4,45 @@
 
 import concurrent.futures
 import os
+import shlex
+import shutil
 import subprocess
 
 from .collect import lines_for_path
 from .diff_speedup import changed_center
 
 left_lines = right_lines = None
+GIT_DIFF = 'git diff --no-color --no-ext-diff --exit-code -U_CONTEXT_ --no-index --'
+DIFF_DIFF = 'diff -p -U _CONTEXT_ --'
+
+
+def find_differ():
+    if shutil.which('git'):
+        return GIT_DIFF
+    if shutil.which('diff'):
+        return DIFF_DIFF
+
+
+def set_diff_command(opt):
+    if opt == 'auto':
+        cmd = find_differ()
+        if cmd is None:
+            raise SystemExit('Failed to find either the git or diff programs on your system')
+    else:
+        cmd = opt
+    set_diff_command.cmd = cmd
 
 
 def run_diff(file1, file2, context=3):
     # returns: ok, is_different, patch
-    p = subprocess.Popen([
-        'git', 'diff', '--no-color', '--no-ext-diff', '--exit-code', '-U' + str(context), '--no-index', '--'
-        ] + [file1, file2],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+    cmd = shlex.split(set_diff_command.cmd.replace('_CONTEXT_', str(context)))
+    # we resolve symlinks because git diff does not follow symlinks, while diff
+    # does. We want consistent behavior, also for integration with git difftool
+    # we always want symlinks to be followed.
+    path1, path2 = map(os.path.realpath, (file1, file2))
+    p = subprocess.Popen(
+            cmd + [path1, path2],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
     stdout, stderr = p.communicate()
     returncode = p.wait()
     if returncode in (0, 1):
@@ -48,7 +73,10 @@ class Chunk:
 
     def finalize(self):
         if not self.is_context and self.left_count == self.right_count:
-            self.centers = tuple(changed_center(left_lines[self.left_start + i], right_lines[self.right_start + i]) for i in range(self.left_count))
+            self.centers = tuple(
+                changed_center(left_lines[self.left_start + i], right_lines[self.right_start + i])
+                for i in range(self.left_count)
+            )
 
     def __repr__(self):
         return 'Chunk(is_context={}, left_start={}, left_count={}, right_start={}, right_count={})'.format(
@@ -63,6 +91,7 @@ class Hunk:
         self.left_start -= 1  # 0-index
         self.right_start -= 1  # 0-index
         self.title = title
+        self.added_count = self.removed_count = 0
         self.chunks = []
         self.current_chunk = None
         self.largest_line_number = max(self.left_start + self.left_count, self.right_start + self.right_count)
@@ -94,10 +123,12 @@ class Hunk:
     def add_line(self):
         self.ensure_diff_chunk()
         self.current_chunk.add_line()
+        self.added_count += 1
 
     def remove_line(self):
         self.ensure_diff_chunk()
         self.current_chunk.remove_line()
+        self.removed_count += 1
 
     def context_line(self):
         self.ensure_context_chunk()
@@ -138,6 +169,8 @@ class Patch:
     def __init__(self, all_hunks):
         self.all_hunks = all_hunks
         self.largest_line_number = self.all_hunks[-1].largest_line_number if self.all_hunks else 0
+        self.added_count = sum(h.added_count for h in all_hunks)
+        self.removed_count = sum(h.removed_count for h in all_hunks)
 
     def __iter__(self):
         return iter(self.all_hunks)
@@ -148,20 +181,23 @@ class Patch:
 
 def parse_patch(raw):
     all_hunks = []
+    current_hunk = None
     for line in raw.splitlines():
         if line.startswith('@@ '):
             current_hunk = parse_hunk_header(line)
             all_hunks.append(current_hunk)
         else:
-            if not all_hunks:
+            if current_hunk is None:
                 continue
             q = line[0]
             if q == '+':
-                all_hunks[-1].add_line()
+                current_hunk.add_line()
             elif q == '-':
-                all_hunks[-1].remove_line()
+                current_hunk.remove_line()
+            elif q == '\\':
+                continue
             else:
-                all_hunks[-1].context_line()
+                current_hunk.context_line()
     for h in all_hunks:
         h.finalize()
     return Patch(all_hunks)
@@ -199,7 +235,7 @@ class Differ:
                     patch = parse_patch(output)
                 except Exception:
                     import traceback
-                    return traceback.format_exc() + '\nParsing diff for {} vs. {} failed'.format(key[0], key[1])
+                    return traceback.format_exc() + '\nParsing diff for {} vs. {} failed'.format(left_path, right_path)
                 else:
                     ans[key] = patch
         return ans

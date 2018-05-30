@@ -4,9 +4,9 @@
 
 import sys
 from contextlib import contextmanager
+from functools import wraps
 
 from kitty.rgb import Color, color_as_sharp, to_color
-from kitty.terminfo import string_capabilities
 
 S7C1T = '\033 F'
 SAVE_CURSOR = '\0337'
@@ -36,34 +36,69 @@ MODES = dict(
 )
 
 
-def set_mode(which, private=True):
+def set_mode(which, private=True) -> str:
     num, private = MODES[which]
     return '\033[{}{}h'.format(private, num)
 
 
-def reset_mode(which):
+def reset_mode(which) -> str:
     num, private = MODES[which]
     return '\033[{}{}l'.format(private, num)
 
 
-def clear_screen():
-    return string_capabilities['clear'].replace(r'\E', '\033')
+def clear_screen() -> str:
+    return '\033[H\033[2J'
 
 
-def set_window_title(value):
+def clear_to_eol() -> str:
+    return '\033[K'
+
+
+def bell() -> str:
+    return '\a'
+
+
+def beep() -> str:
+    return '\a'
+
+
+def set_window_title(value) -> str:
     return ('\033]2;' + value.replace('\033', '').replace('\x9c', '') + '\033\\')
 
 
-def set_line_wrapping(yes_or_no):
+def set_line_wrapping(yes_or_no) -> str:
     return (set_mode if yes_or_no else reset_mode)('DECAWM')
 
 
-def set_cursor_visible(yes_or_no):
+def set_cursor_visible(yes_or_no) -> str:
     return (set_mode if yes_or_no else reset_mode)('DECTCEM')
+
+
+def set_cursor_position(x, y) -> str:  # (0, 0) is top left
+    return '\033[{};{}H'.format(y + 1, x + 1)
+
+
+def set_scrolling_region(screen_size=None, top=None, bottom=None) -> str:
+    if screen_size is None:
+        return '\033[r'
+    if top is None:
+        top = 0
+    if bottom is None:
+        bottom = screen_size.rows - 1
+    if bottom < 0:
+        bottom = screen_size.rows - 1 + bottom
+    else:
+        bottom += 1
+    return '\033[{};{}r'.format(top + 1, bottom + 1)
+
+
+def scroll_screen(amt=1) -> str:
+    return '\033[' + str(abs(amt)) + ('T' if amt < 0 else 'S')
 
 
 STANDARD_COLORS = {name: i for i, name in enumerate(
     'black red green yellow blue magenta cyan gray'.split())}
+STANDARD_COLORS['white'] = STANDARD_COLORS['gray']
 UNDERLINE_STYLES = {name: i + 1 for i, name in enumerate(
     'straight double curly'.split())}
 
@@ -78,20 +113,20 @@ def color_code(color, intense=False, base=30):
     return e
 
 
-def sgr(*parts):
+def sgr(*parts) -> str:
     return '\033[{}m'.format(';'.join(parts))
 
 
-def colored(text, color, intense=False, reset_to=None, reset_to_intense=False):
+def colored(text, color, intense=False, reset_to=None, reset_to_intense=False) -> str:
     e = color_code(color, intense)
     return '\033[{}m{}\033[{}m'.format(e, text, 39 if reset_to is None else color_code(reset_to, reset_to_intense))
 
 
-def faint(text):
+def faint(text) -> str:
     return colored(text, 'black', True)
 
 
-def styled(text, fg=None, bg=None, fg_intense=False, bg_intense=False, italic=None, bold=None, underline=None, underline_color=None, reverse=None):
+def styled(text, fg=None, bg=None, fg_intense=False, bg_intense=False, italic=None, bold=None, underline=None, underline_color=None, reverse=None) -> str:
     start, end = [], []
     if fg is not None:
         start.append(color_code(fg, fg_intense))
@@ -119,6 +154,26 @@ def styled(text, fg=None, bg=None, fg_intense=False, bg_intense=False, italic=No
     if not start:
         return text
     return '\033[{}m{}\033[{}m'.format(';'.join(start), text, ';'.join(end))
+
+
+def serialize_gr_command(cmd, payload=None):
+    cmd = ','.join('{}={}'.format(k, v) for k, v in cmd.items())
+    ans = []
+    w = ans.append
+    w(b'\033_G'), w(cmd.encode('ascii'))
+    if payload:
+        w(b';')
+        w(payload)
+    w(b'\033\\')
+    return b''.join(ans)
+
+
+def gr_command(cmd, payload=None) -> str:
+    return serialize_gr_command(cmd, payload)
+
+
+def clear_images_on_screen(delete_data=False) -> str:
+    return serialize_gr_command({'a': 'd', 'd': 'A' if delete_data else 'a'})
 
 
 def init_state(alternate_screen=True):
@@ -163,7 +218,7 @@ def alternate_screen(f=None):
     print(reset_mode('ALTERNATE_SCREEN'), end='', file=f)
 
 
-def set_default_colors(fg=None, bg=None):
+def set_default_colors(fg=None, bg=None) -> str:
     ans = ''
     if fg is None:
         ans += '\x1b]110\x1b\\'
@@ -174,3 +229,31 @@ def set_default_colors(fg=None, bg=None):
     else:
         ans += '\x1b]11;{}\x1b\\'.format(color_as_sharp(bg if isinstance(bg, Color) else to_color(bg)))
     return ans
+
+
+def write_to_clipboard(data, use_primary=False) -> str:
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    from base64 import standard_b64encode
+    return '\x1b]52;{};{}\x07'.format('p' if use_primary else 'c', standard_b64encode(data).decode('ascii'))
+
+
+def request_from_clipboard(use_primary=False) -> str:
+    return '\x1b]52;{};?\x07'.format('p' if use_primary else 'c')
+
+
+all_cmds = tuple(
+        (name, obj) for name, obj in globals().items()
+        if hasattr(obj, '__annotations__') and obj.__annotations__.get('return') is str)
+
+
+def writer(handler, func):
+    @wraps(func)
+    def f(self, *a, **kw):
+        handler.write(func(*a, **kw))
+    return f
+
+
+def commander(handler):
+    ans = {name: writer(handler, obj) for name, obj in all_cmds}
+    return type('CMD', (), ans)()

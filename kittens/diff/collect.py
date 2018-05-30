@@ -11,6 +11,20 @@ from mimetypes import guess_type
 path_name_map = {}
 
 
+class Segment:
+
+    __slots__ = ('start', 'end', 'start_code', 'end_code')
+
+    def __init__(self, start, start_code):
+        self.start = start
+        self.start_code = start_code
+
+    def __repr__(self):
+        return 'Segment(start={!r}, start_code={!r}, end={!r}, end_code={!r})'.format(
+                self.start, self.start_code, getattr(self, 'end', None), getattr(self, 'end_code', None)
+        )
+
+
 class Collection:
 
     def __init__(self):
@@ -20,6 +34,7 @@ class Collection:
         self.removes = set()
         self.all_paths = []
         self.type_map = {}
+        self.added_count = self.removed_count = 0
 
     def add_change(self, left_path, right_path):
         self.changes[left_path] = right_path
@@ -35,11 +50,15 @@ class Collection:
         self.adds.add(right_path)
         self.all_paths.append(right_path)
         self.type_map[right_path] = 'add'
+        if isinstance(data_for_path(right_path), str):
+            self.added_count += len(lines_for_path(right_path))
 
     def add_removal(self, left_path):
         self.removes.add(left_path)
         self.all_paths.append(left_path)
         self.type_map[left_path] = 'removal'
+        if isinstance(data_for_path(left_path), str):
+            self.removed_count += len(lines_for_path(left_path))
 
     def finalize(self):
         self.all_paths.sort(key=path_name_map.get)
@@ -47,8 +66,16 @@ class Collection:
     def __iter__(self):
         for path in self.all_paths:
             typ = self.type_map[path]
-            data = self.changes[path] if typ == 'diff' else None
-            yield path, self.type_map[path], data
+            if typ == 'diff':
+                data = self.changes[path]
+            elif typ == 'rename':
+                data = self.renames[path]
+            else:
+                data = None
+            yield path, typ, data
+
+    def __len__(self):
+        return len(self.all_paths)
 
 
 def collect_files(collection, left, right):
@@ -76,7 +103,7 @@ def collect_files(collection, left, right):
     for name, rh in rhash.items():
         for n, ah in ahash.items():
             if ah == rh and data_for_path(left_path_map[name]) == data_for_path(right_path_map[n]):
-                collection.add_rename(left_path_map[name], right_path_map[name])
+                collection.add_rename(left_path_map[name], right_path_map[n])
                 added.discard(n)
                 break
         else:
@@ -86,7 +113,7 @@ def collect_files(collection, left, right):
         collection.add_add(right_path_map[name])
 
 
-sanitize_pat = re.compile('[\x00-\x1f\x7f\x80-\x9f]')
+sanitize_pat = re.compile('[\x00-\x09\x0b-\x1f\x7f\x80-\x9f]')
 
 
 def sanitize_sub(m):
@@ -103,10 +130,19 @@ def mime_type_for_path(path):
 
 
 @lru_cache(maxsize=1024)
-def data_for_path(path):
+def raw_data_for_path(path):
     with open(path, 'rb') as f:
-        ans = f.read()
-    if not mime_type_for_path(path).startswith('image/'):
+        return f.read()
+
+
+def is_image(path):
+    return mime_type_for_path(path).startswith('image/')
+
+
+@lru_cache(maxsize=1024)
+def data_for_path(path):
+    ans = raw_data_for_path(path)
+    if not is_image(path) and not os.path.samefile(path, os.devnull):
         try:
             ans = ans.decode('utf-8')
         except UnicodeDecodeError:
@@ -116,13 +152,16 @@ def data_for_path(path):
 
 @lru_cache(maxsize=1024)
 def lines_for_path(path):
-    data = data_for_path(path)
-    return tuple(map(sanitize, data.splitlines()))
+    data = data_for_path(path).replace('\t', lines_for_path.replace_tab_by)
+    return tuple(sanitize(data).splitlines())
+
+
+lines_for_path.replace_tab_by = ' ' * 4
 
 
 @lru_cache(maxsize=1024)
 def hash_for_path(path):
-    md5(data_for_path(path)).digest()
+    return md5(raw_data_for_path(path)).digest()
 
 
 def create_collection(left, right):
@@ -131,8 +170,20 @@ def create_collection(left, right):
         collect_files(collection, left, right)
     else:
         pl, pr = os.path.abspath(left), os.path.abspath(right)
-        path_name_map[left] = pl
-        path_name_map[right] = pr
+        path_name_map[pl] = left
+        path_name_map[pr] = right
         collection.add_change(pl, pr)
     collection.finalize()
     return collection
+
+
+highlight_data = {}
+
+
+def set_highlight_data(data):
+    global highlight_data
+    highlight_data = data
+
+
+def highlights_for_path(path):
+    return highlight_data.get(path, [])

@@ -2,41 +2,26 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
-import array
-import codecs
-import fcntl
 import mimetypes
 import os
 import re
 import signal
-import subprocess
 import sys
-import termios
 import zlib
 from base64 import standard_b64encode
 from collections import namedtuple
-from math import ceil, floor
+from math import ceil
 from tempfile import NamedTemporaryFile
 
 from kitty.cli import parse_args
 from kitty.constants import appname
-from kitty.utils import read_with_timeout
+from kitty.utils import fit_image, read_with_timeout
 
-try:
-    fsenc = sys.getfilesystemencoding() or 'utf-8'
-    codecs.lookup(fsenc)
-except Exception:
-    fsenc = 'utf-8'
-
-
-class OpenFailed(ValueError):
-
-    def __init__(self, path, message):
-        ValueError.__init__(
-            self, 'Failed to open: {} with error: {}'.format(path, message)
-        )
-        self.path = path
-
+from ..tui.images import (
+    ConvertFailed, NoImageMagick, OpenFailed, convert, fsenc, identify,
+    screen_size
+)
+from ..tui.operations import clear_images_on_screen, serialize_gr_command
 
 OPTIONS = '''\
 --align
@@ -100,44 +85,9 @@ def options_spec():
     return options_spec.ans
 
 
-Size = namedtuple('Size', 'rows cols width height')
-
-
-def screen_size():
-    if screen_size.changed:
-        buf = array.array('H', [0, 0, 0, 0])
-        fcntl.ioctl(sys.stdout, termios.TIOCGWINSZ, buf)
-        screen_size.ans = Size(*buf)
-        screen_size.changed = False
-    return screen_size.ans
-
-
-screen_size.changed = True
-
-
 def write_gr_cmd(cmd, payload=None):
-    cmd = ','.join('{}={}'.format(k, v) for k, v in cmd.items())
-    w = sys.stdout.buffer.write
-    w(b'\033_G'), w(cmd.encode('ascii'))
-    if payload:
-        w(b';')
-        w(payload)
-    w(b'\033\\')
+    sys.stdout.buffer.write(serialize_gr_command(cmd, payload))
     sys.stdout.flush()
-
-
-def fit_image(width, height, pwidth, pheight):
-    if height > pheight:
-        corrf = pheight / float(height)
-        width, height = floor(corrf * width), pheight
-    if width > pwidth:
-        corrf = pwidth / float(width)
-        width, height = pwidth, floor(corrf * height)
-    if height > pheight:
-        corrf = pheight / float(height)
-        width, height = floor(corrf * width), pheight
-
-    return int(width), int(height)
 
 
 def calculate_in_cell_x_offset(width, cell_width, align):
@@ -215,52 +165,6 @@ def show(outfile, width, height, fmt, transmit_mode='t', align='center', place=N
         if fmt == 100:
             cmd['S'] = len(data)
         write_chunked(cmd, data)
-
-
-ImageData = namedtuple('ImageData', 'fmt width height mode')
-
-
-def run_imagemagick(path, cmd, keep_stdout=True):
-    try:
-        p = subprocess.run(cmd, stdout=subprocess.PIPE if keep_stdout else subprocess.DEVNULL, stderr=subprocess.PIPE)
-    except FileNotFoundError:
-        raise SystemExit('ImageMagick is required to cat images')
-    if p.returncode != 0:
-        raise OpenFailed(path, p.stderr.decode('utf-8'))
-    return p
-
-
-def identify(path):
-    p = run_imagemagick(path, ['identify', '-format', '%m %w %h %A', path])
-    parts = tuple(filter(None, p.stdout.decode('utf-8').split()))
-    mode = 'rgb' if parts[3].lower() == 'false' else 'rgba'
-    return ImageData(parts[0].lower(), int(parts[1]), int(parts[2]), mode)
-
-
-def convert(path, m, available_width, available_height, scale_up):
-    width, height = m.width, m.height
-    cmd = ['convert', '-background', 'none', path]
-    if scale_up:
-        if width < available_width:
-            r = available_width / width
-            width, height = available_width, int(height * r)
-    if width > available_width or height > available_height:
-        width, height = fit_image(width, height, available_width, available_height)
-        cmd += ['-resize', '{}x{}'.format(width, height)]
-    with NamedTemporaryFile(prefix='icat-', suffix='.' + m.mode, delete=False) as outfile:
-        run_imagemagick(path, cmd + [outfile.name])
-    # ImageMagick sometimes generated rgba images smaller than the specified
-    # size. See https://github.com/kovidgoyal/kitty/issues/276 for examples
-    sz = os.path.getsize(outfile.name)
-    bytes_per_pixel = 3 if m.mode == 'rgb' else 4
-    expected_size = bytes_per_pixel * width * height
-    if sz < expected_size:
-        missing = expected_size - sz
-        if missing % (bytes_per_pixel * width) != 0:
-            raise SystemExit('ImageMagick failed to convert {} correctly, it generated {} < {} of data'.format(path, sz, expected_size))
-        height -= missing // (bytes_per_pixel * width)
-
-    return outfile.name, width, height
 
 
 def process(path, args):
@@ -369,7 +273,7 @@ def main(args=sys.argv):
         detect_support.has_files = args.transfer_mode == 'file'
     errors = []
     if args.clear:
-        write_gr_cmd({'a': 'd'})
+        sys.stdout.buffer.write(clear_images_on_screen(delete_data=True))
         if not items:
             return
     if not items:
@@ -385,6 +289,10 @@ def main(args=sys.argv):
                     process(item, args)
             else:
                 process(item, args)
+        except NoImageMagick as e:
+            raise SystemExit(str(e))
+        except ConvertFailed as e:
+            raise SystemExit(str(e))
         except OpenFailed as e:
             errors.append(e)
     if args.place:

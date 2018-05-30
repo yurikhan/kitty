@@ -2,7 +2,6 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
-import ast
 import json
 import os
 import re
@@ -12,8 +11,9 @@ from contextlib import contextmanager
 
 from . import fast_data_types as defines
 from .config_utils import (
-    init_config, load_config as _load_config, merge_dicts, parse_config_base,
-    positive_float, positive_int, to_bool, to_cmdline, to_color, unit_float
+    init_config, key_func, load_config as _load_config, merge_dicts,
+    parse_config_base, positive_float, positive_int, python_string, to_bool,
+    to_cmdline, to_color, unit_float
 )
 from .constants import cache_dir, defconf
 from .fast_data_types import CURSOR_BEAM, CURSOR_BLOCK, CURSOR_UNDERLINE
@@ -92,10 +92,61 @@ def parse_shortcut(sc):
 
 
 KeyAction = namedtuple('KeyAction', 'func args')
-shlex_actions = {
+func_with_args, args_funcs = key_func()
+
+
+@func_with_args(
     'pass_selection_to_program', 'new_window', 'new_tab', 'new_os_window',
     'new_window_with_cwd', 'new_tab_with_cwd', 'new_os_window_with_cwd'
-}
+    )
+def shlex_parse(func, rest):
+    return func, to_cmdline(rest)
+
+
+@func_with_args('combine')
+def combine_parse(func, rest):
+    sep, rest = rest.split(' ', 1)
+    parts = re.split(r'\s*' + re.escape(sep) + r'\s*', rest)
+    args = tuple(map(parse_key_action, filter(None, parts)))
+    return func, args
+
+
+@func_with_args('send_text')
+def send_text_parse(func, rest):
+    args = rest.split(' ', 1)
+    if len(args) > 0:
+        try:
+            args[1] = parse_send_text_bytes(args[1])
+        except Exception:
+            log_error('Ignoring invalid send_text string: ' + args[1])
+            args[1] = ''
+    return func, args
+
+
+@func_with_args('run_kitten', 'run_simple_kitten', 'kitten')
+def kitten_parse(func, rest):
+    if func == 'kitten':
+        args = rest.split(' ', 1)
+    else:
+        args = rest.split(' ', 2)[1:]
+        func = 'kitten'
+    return func, args
+
+
+@func_with_args('goto_tab')
+def goto_tab_parse(func, rest):
+    args = (max(0, int(rest)), )
+    return func, args
+
+
+@func_with_args('set_background_opacity', 'goto_layout', 'kitty_shell')
+def simple_parse(func, rest):
+    return func, [rest]
+
+
+@func_with_args('set_font_size')
+def float_parse(func, rest):
+    return func, (float(rest),)
 
 
 def parse_key_action(action):
@@ -104,30 +155,12 @@ def parse_key_action(action):
     if len(parts) == 1:
         return KeyAction(func, ())
     rest = parts[1]
-    if func == 'combine':
-        sep, rest = rest.split(' ', 1)
-        parts = re.split(r'\s*' + re.escape(sep) + r'\s*', rest)
-        args = tuple(map(parse_key_action, filter(None, parts)))
-    elif func == 'send_text':
-        args = rest.split(' ', 1)
-        if len(args) > 0:
-            try:
-                args[1] = parse_send_text_bytes(args[1])
-            except Exception:
-                log_error('Ignoring invalid send_text string: ' + args[1])
-                args[1] = ''
-    elif func in ('run_kitten', 'run_simple_kitten'):
-        if func == 'run_simple_kitten':
-            func = 'run_kitten'
-        args = rest.split(' ', 2)
-    elif func == 'goto_tab':
-        args = (max(0, int(rest)), )
-    elif func == 'goto_layout' or func == 'kitty_shell':
-        args = [rest]
-    elif func == 'set_font_size':
-        args = (float(rest),)
-    elif func in shlex_actions:
-        args = to_cmdline(rest)
+    parser = args_funcs.get(func)
+    if parser is not None:
+        try:
+            func, args = parser(func, rest)
+        except Exception:
+            log_error('Ignoring invalid key action: {}'.format(action))
     return KeyAction(func, args)
 
 
@@ -221,8 +254,7 @@ def parse_symbol_map(val):
 
 
 def parse_send_text_bytes(text):
-    return ast.literal_eval("'''" + text.replace("'''", "'\\''") + "'''"
-                            ).encode('utf-8')
+    return python_string(text).encode('utf-8')
 
 
 def parse_send_text(val, key_definitions):
@@ -245,14 +277,24 @@ def to_modifiers(val):
     return parse_mods(val.split('+'), val) or 0
 
 
+def uniq(vals, result_type=list):
+    seen = set()
+    seen_add = seen.add
+    return result_type(x for x in vals if x not in seen and not seen_add(x))
+
+
 def to_layout_names(raw):
     parts = [x.strip().lower() for x in raw.split(',')]
-    if '*' in parts:
-        return sorted(all_layouts)
+    ans = []
     for p in parts:
-        if p not in all_layouts:
+        if p == '*':
+            ans.extend(sorted(all_layouts))
+            continue
+        name = p.partition(':')[0]
+        if name not in all_layouts:
             raise ValueError('The window layout {} is unknown'.format(p))
-    return parts
+        ans.append(p)
+    return uniq(ans)
 
 
 def adjust_line_height(x):
@@ -343,7 +385,9 @@ type_map = {
     'macos_option_as_alt': to_bool,
     'macos_titlebar_color': macos_titlebar_color,
     'box_drawing_scale': box_drawing_scale,
+    'dynamic_background_opacity': to_bool,
     'background_opacity': unit_float,
+    'dim_opacity': unit_float,
     'tab_separator': tab_separator,
     'active_tab_font_style': tab_font_style,
     'inactive_tab_font_style': tab_font_style,
@@ -355,6 +399,9 @@ type_map = {
     'bell_on_tab': to_bool,
     'kitty_mod': to_modifiers,
     'clear_all_shortcuts': to_bool,
+    'clipboard_control': lambda x: frozenset(x.lower().split()),
+    'window_resize_step_cells': int,
+    'window_resize_step_lines': int,
 }
 
 for name in (

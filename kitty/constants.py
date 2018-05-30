@@ -11,7 +11,7 @@ from collections import namedtuple
 from .fast_data_types import set_boss as set_c_boss
 
 appname = 'kitty'
-version = (0, 9, 1)
+version = (0, 10, 1)
 str_version = '.'.join(map(str, version))
 _plat = sys.platform.lower()
 is_macos = 'darwin' in _plat
@@ -105,3 +105,6 @@ def glfw_path(module):
 is_wayland = False
 if os.environ.get('WAYLAND_DISPLAY') and 'KITTY_ENABLE_WAYLAND' in os.environ and os.path.exists(glfw_path('wayland')):
     is_wayland = True
+
+
+supports_primary_selection = not is_macos and not is_wayland

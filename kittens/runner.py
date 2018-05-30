@@ -28,18 +28,27 @@ def import_kitten_main_module(config_dir, kitten):
         code = compile(src, path, 'exec')
         g = {'__name__': 'kitten'}
         exec(code, g)
-        return {'start': g['main'], 'end': g['handle_result']}
+        hr = g.get('handle_result', lambda *a, **kw: None)
+        return {'start': g['main'], 'end': hr}
     else:
         kitten = resolved_kitten(kitten)
         m = importlib.import_module('kittens.{}.main'.format(kitten))
-        return {'start': m.main, 'end': m.handle_result}
+        return {'start': m.main, 'end': getattr(m, 'handle_result', lambda *a, **k: None)}
 
 
 def create_kitten_handler(kitten, orig_args):
     from kitty.constants import config_dir
     kitten = resolved_kitten(kitten)
     m = import_kitten_main_module(config_dir, kitten)
-    return partial(m['end'], [kitten] + orig_args)
+    ans = partial(m['end'], [kitten] + orig_args)
+    ans.type_of_input = getattr(m['end'], 'type_of_input', None)
+    return ans
+
+
+def set_debug(kitten):
+    from kittens.tui.loop import debug
+    import builtins
+    builtins.debug = debug
 
 
 def launch(args):
@@ -49,6 +58,7 @@ def launch(args):
     args = [kitten] + args
     os.environ['KITTY_CONFIG_DIRECTORY'] = config_dir
     from kittens.tui.operations import clear_screen, reset_mode
+    set_debug(kitten)
     m = import_kitten_main_module(config_dir, kitten)
     try:
         result = m['start'](args)
@@ -73,6 +83,7 @@ def deserialize(output):
 def run_kitten(kitten):
     import runpy
     kitten = resolved_kitten(kitten)
+    set_debug(kitten)
     runpy.run_module('kittens.{}.main'.format(kitten), run_name='__main__')
 
 

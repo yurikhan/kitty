@@ -3,6 +3,87 @@ Changelog
 
 kitty is a feature full, cross-platform, *fast*, GPU based terminal emulator.
 
+version 0.10.1 [2018-05-24]
+------------------------------
+
+- Add a kitten to easily ssh into servers that automatically copies the
+  terminfo files over. ``kitty +kitten ssh myserver``.
+
+- diff kitten: Make the keyboard shortcuts configurable
+  (`#563 <https://github.com/kovidgoyal/kitty/issues/563>`_)
+
+- Allow controlling *background_opacity* via either keyboard shortcuts or
+  remote control. Note that you must set *dynamic_background_opacity yes* in
+  kitty.conf first. (`#569 <https://github.com/kovidgoyal/kitty/issues/569>`_)
+
+- diff kitten: Add keybindings to scroll by page
+
+- diff kitten: Fix incorrect syntax highlighting for a few file formats such as
+  yaml
+
+- macOS: Fix regression that caused the *macos_option_as_alt* setting to always
+  be disabled for all OS windows in a kitty instance after the first window
+  (`#571 <https://github.com/kovidgoyal/kitty/issues/571>`_)
+
+- Fix Ctrl+Alt+Space not working in normal and application keyboard modes 
+  (`#562 <https://github.com/kovidgoyal/kitty/issues/562>`_)
+
+
+version 0.10.0 [2018-05-21]
+------------------------------
+
+- A diff kitten to show side-by-side diffs with syntax highlighting and support
+  for images. See `diff README
+  <https://github.com/kovidgoyal/kitty/blob/master/kittens/diff/README.asciidoc>`_.
+
+- Make windows in the various kitty layouts manually resizable. See the
+  `Layouts section of the README
+  <https://github.com/kovidgoyal/kitty#layouts>`_ for details.
+
+- Implement support for the SGR *faint* escape code to make text blend
+  into the background (`#446 <https://github.com/kovidgoyal/kitty/issues/446>`_).
+
+- Make the hints kitten a little `smarter
+  <https://github.com/kovidgoyal/kitty/commit/ad1109b6fe0a6802ca4f77182a7a0b36086b3e9f>`_,
+  so that URLs that stretch over multiple lines are detected. Also improve
+  detection of surrounding brackets/quotes.
+
+- Make the kitty window id available as the environment variable
+  `KITTY_WINDOW_ID` (`#532 <https://github.com/kovidgoyal/kitty/issues/532>`_).
+
+- Add a "fat" layout that is similar to the "tall" layout but vertically
+  oriented.
+
+- Expand environment variables in config file include directives
+
+- Allow programs running in kitty to `read/write from the clipboard
+  <https://github.com/kovidgoyal/kitty/commit/889ca7791244253cb08fbc3eca8883a87fb943a7>`_.
+  By default only writing is allowed. This feature is supported in many
+  terminals, search for `OSC 52 clipboard` to find out more about using it.
+
+- Fix moving cursor outside a defined page area incorrectly causing the cursor
+  to be placed inside the page area. Caused incorrect rendering in neovim, in
+  some situations (`#542 <https://github.com/kovidgoyal/kitty/issues/542>`_).
+
+- Render a couple more powerline symbols directly, bypassing the font
+  (`#550 <https://github.com/kovidgoyal/kitty/issues/550>`_).
+
+- Fix ctrl+alt+<special> not working in normal and application keyboard (`#548
+  <https://github.com/kovidgoyal/kitty/issues/548>`_).
+
+- Partial fix for rendering Right-to-left languages like Arabic. Rendering of
+  Arabic is never going to be perfect, but now it is at least readable.
+
+- Fix Ctrl+backspace acting as plain backspace in normal and application
+  keyboard modes (`#538 <https://github.com/kovidgoyal/kitty/issues/538>`_). 
+
+- Have the paste_from_selection action paste from the clipboard on platforms
+  that do not have a primary selection such as Wayland and macOS 
+  (`#529 <https://github.com/kovidgoyal/kitty/issues/529>`_)
+
+- Fix cursor_stop_blinking_after=0 not working (`#530 <https://github.com/kovidgoyal/kitty/issues/530>`_)
+
+
 version 0.9.1 [2018-05-05]
 ------------------------------
 

@@ -17,7 +17,7 @@ for line in open('kitty/kitty.conf'):
     if line.startswith('map '):
         _, sc, name = line.split(maxsplit=2)
         sc = sc.replace('kitty_mod', 'ctrl+shift')
-        name = name.rstrip().replace(' ', '_').replace('-', '_').replace('___', '_').replace('__', '_').strip('_')
+        name = name.rstrip().replace(' ', '_').replace('-', '_').replace('+', 'plus').replace('.', '_').replace('___', '_').replace('__', '_').strip('_')
         defns[name].append('`' + sc.replace('>', ' → ') + '`')
 
 defns = [
@@ -38,7 +38,7 @@ if raw != nraw:
     open('README.asciidoc', 'w').write(nraw)
 
 raw = subprocess.check_output([
-    'kitty', '-c',
+    'kitty', '+runpy',
     'from kitty.key_encoding import *; import json; print(json.dumps(ENCODING))'
 ]).decode('utf-8')
 key_map = json.loads(raw)
