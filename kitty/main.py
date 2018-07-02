@@ -10,18 +10,59 @@ from contextlib import contextmanager
 from .borders import load_borders_program
 from .boss import Boss
 from .cli import create_opts, parse_args
-from .config import cached_values_for, initial_window_size
-from .constants import appname, glfw_path, is_macos, is_wayland, logo_data_file, config_dir
+from .config import cached_values_for, initial_window_size_func
+from .constants import (
+    appname, config_dir, glfw_path, is_macos, is_wayland, kitty_exe,
+    logo_data_file
+)
 from .fast_data_types import (
-    create_os_window, glfw_init, glfw_terminate, set_default_window_icon,
-    set_options, show_window
+    GLFW_MOD_SUPER, create_os_window, free_font_data, glfw_init,
+    glfw_terminate, set_default_window_icon, set_options
 )
 from .fonts.box_drawing import set_scale
+from .fonts.render import set_font_family
 from .utils import (
-    detach, end_startup_notification, init_startup_notification, log_error,
-    single_instance
+    detach, log_error, single_instance, startup_notification_handler,
+    unix_socket_paths
 )
 from .window import load_shader_programs
+
+
+def talk_to_instance(args):
+    import json
+    import socket
+    data = {'cmd': 'new_instance', 'args': tuple(sys.argv),
+            'startup_id': os.environ.get('DESKTOP_STARTUP_ID'),
+            'cwd': os.getcwd()}
+    notify_socket = None
+    if args.wait_for_single_instance_window_close:
+        address = '\0{}-os-window-close-notify-{}-{}'.format(appname, os.getpid(), os.geteuid())
+        notify_socket = socket.socket(family=socket.AF_UNIX)
+        try:
+            notify_socket.bind(address)
+        except FileNotFoundError:
+            for address in unix_socket_paths(address[1:], ext='.sock'):
+                notify_socket.bind(address)
+                break
+        data['notify_on_os_window_death'] = address
+        notify_socket.listen()
+
+    data = json.dumps(data, ensure_ascii=False).encode('utf-8')
+    single_instance.socket.sendall(data)
+    try:
+        single_instance.socket.shutdown(socket.SHUT_RDWR)
+    except EnvironmentError:
+        pass
+    single_instance.socket.close()
+
+    if args.wait_for_single_instance_window_close:
+        conn = notify_socket.accept()[0]
+        conn.recv(1)
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except EnvironmentError:
+            pass
+        conn.close()
 
 
 def load_all_shaders(semi_transparent=0):
@@ -29,37 +70,67 @@ def load_all_shaders(semi_transparent=0):
     load_borders_program()
 
 
-def init_graphics():
+def init_glfw(debug_keyboard=False):
     glfw_module = 'cocoa' if is_macos else ('wayland' if is_wayland else 'x11')
-    if not glfw_init(glfw_path(glfw_module)):
+    if not glfw_init(glfw_path(glfw_module), debug_keyboard):
         raise SystemExit('GLFW initialization failed')
     return glfw_module
 
 
-def run_app(opts, args):
-    set_scale(opts.box_drawing_scale)
-    set_options(opts, is_wayland, args.debug_gl, args.debug_font_fallback)
+def prefer_cmd_shortcuts(x):
+    return x[0] == GLFW_MOD_SUPER
+
+
+def get_new_os_window_trigger(opts):
+    new_os_window_trigger = None
+    if is_macos:
+        new_os_window_shortcuts = []
+        for k, v in opts.keymap.items():
+            if v.func == 'new_os_window':
+                new_os_window_shortcuts.append(k)
+        if new_os_window_shortcuts:
+            from .fast_data_types import cocoa_set_new_window_trigger
+            new_os_window_shortcuts.sort(key=prefer_cmd_shortcuts, reverse=True)
+            for candidate in new_os_window_shortcuts:
+                if cocoa_set_new_window_trigger(candidate[0], candidate[2]):
+                    new_os_window_trigger = candidate
+                    break
+    return new_os_window_trigger
+
+
+def _run_app(opts, args):
+    new_os_window_trigger = get_new_os_window_trigger(opts)
     with cached_values_for(run_app.cached_values_name) as cached_values:
-        w, h = run_app.initial_window_size(opts, cached_values)
-        window_id = create_os_window(w, h, appname, args.name or args.cls or appname, args.cls or appname, load_all_shaders)
-        run_app.first_window_callback(opts, window_id)
-        startup_ctx = init_startup_notification(window_id)
-        show_window(window_id)
+        with startup_notification_handler(extra_callback=run_app.first_window_callback) as pre_show_callback:
+            window_id = create_os_window(
+                    run_app.initial_window_size_func(opts, cached_values),
+                    pre_show_callback,
+                    appname, args.name or args.cls or appname,
+                    args.cls or appname, load_all_shaders)
         if not is_wayland and not is_macos:  # no window icons on wayland
             with open(logo_data_file, 'rb') as f:
                 set_default_window_icon(f.read(), 256, 256)
-        boss = Boss(window_id, opts, args, cached_values)
+        boss = Boss(window_id, opts, args, cached_values, new_os_window_trigger)
         boss.start()
-        end_startup_notification(startup_ctx)
         try:
             boss.child_monitor.main_loop()
         finally:
             boss.destroy()
 
 
+def run_app(opts, args):
+    set_scale(opts.box_drawing_scale)
+    set_options(opts, is_wayland, args.debug_gl, args.debug_font_fallback)
+    set_font_family(opts, debug_font_matching=args.debug_font_fallback)
+    try:
+        _run_app(opts, args)
+    finally:
+        free_font_data()  # must free font data before glfw/freetype/fontconfig/opengl etc are finalized
+
+
 run_app.cached_values_name = 'main'
-run_app.first_window_callback = lambda opts, window_id: None
-run_app.initial_window_size = initial_window_size
+run_app.first_window_callback = lambda window_handle: None
+run_app.initial_window_size_func = initial_window_size_func
 
 
 def ensure_osx_locale():
@@ -129,14 +200,8 @@ def _main():
             print('Failed to set locale with no LANG, ignoring', file=sys.stderr)
 
     # Ensure kitty is in PATH
-    rpath = getattr(sys, 'bundle_exe_dir', None)
+    rpath = os.path.dirname(kitty_exe())
     items = frozenset(os.environ['PATH'].split(os.pathsep))
-    if not rpath:
-        for candidate in items:
-            if os.access(os.path.join(candidate, 'kitty'), os.X_OK):
-                break
-        else:
-            rpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'launcher')
     if rpath and rpath not in items:
         os.environ['PATH'] += os.pathsep + rpath
 
@@ -153,6 +218,7 @@ def _main():
     args, rest = parse_args(args=args)
     args.args = rest
     if args.debug_config:
+        init_glfw(args.debug_keyboard)  # needed for parsing native keysyms
         create_opts(args, debug_config=True)
         return
     if getattr(args, 'detach', False):
@@ -164,15 +230,12 @@ def _main():
     if args.single_instance:
         is_first = single_instance(args.instance_group)
         if not is_first:
-            import json
-            data = {'cmd': 'new_instance', 'args': tuple(sys.argv),
-                    'startup_id': os.environ.get('DESKTOP_STARTUP_ID'),
-                    'cwd': os.getcwd()}
-            data = json.dumps(data, ensure_ascii=False).encode('utf-8')
-            single_instance.socket.sendall(data)
+            talk_to_instance(args)
             return
+    init_glfw(args.debug_keyboard)  # needed for parsing native keysyms
     opts = create_opts(args)
-    init_graphics()
+    if opts.editor != '.':
+        os.environ['EDITOR'] = opts.editor
     try:
         with setup_profiling(args):
             # Avoid needing to launch threads to reap zombies

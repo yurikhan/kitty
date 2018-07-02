@@ -171,25 +171,30 @@ end:
 }
 
 PyObject*
-specialize_font_descriptor(PyObject *base_descriptor) {
+specialize_font_descriptor(PyObject *base_descriptor, FONTS_DATA_HANDLE fg) {
     PyObject *p = PyDict_GetItemString(base_descriptor, "path"), *ans = NULL;
     PyObject *idx = PyDict_GetItemString(base_descriptor, "index");
     if (p == NULL) { PyErr_SetString(PyExc_ValueError, "Base descriptor has no path"); return NULL; }
     if (idx == NULL) { PyErr_SetString(PyExc_ValueError, "Base descriptor has no index"); return NULL; }
     FcPattern *pat = FcPatternCreate();
     if (pat == NULL) return PyErr_NoMemory();
+    long face_idx = MAX(0, PyLong_AsLong(idx));
     AP(FcPatternAddString, FC_FILE, (const FcChar8*)PyUnicode_AsUTF8(p), "path");
-    AP(FcPatternAddInteger, FC_INDEX, PyLong_AsLong(idx), "index");
-    AP(FcPatternAddDouble, FC_SIZE, global_state.font_sz_in_pts, "size");
-    AP(FcPatternAddDouble, FC_DPI, (global_state.logical_dpi_x + global_state.logical_dpi_y) / 2.0, "dpi");
+    AP(FcPatternAddInteger, FC_INDEX, face_idx, "index");
+    AP(FcPatternAddDouble, FC_SIZE, fg->font_sz_in_pts, "size");
+    AP(FcPatternAddDouble, FC_DPI, (fg->logical_dpi_x + fg->logical_dpi_y) / 2.0, "dpi");
     ans = _fc_match(pat);
+    if (face_idx > 0) {
+        // For some reason FcFontMatch sets the index to zero, so manually restore it.
+        PyDict_SetItemString(ans, "index", idx);
+    }
 end:
     if (pat != NULL) FcPatternDestroy(pat);
     return ans;
 }
 
 PyObject*
-create_fallback_face(PyObject UNUSED *base_face, Cell* cell, bool bold, bool italic, bool emoji_presentation) {
+create_fallback_face(PyObject UNUSED *base_face, CPUCell* cell, bool bold, bool italic, bool emoji_presentation, FONTS_DATA_HANDLE fg) {
     PyObject *ans = NULL;
     FcPattern *pat = FcPatternCreate();
     if (pat == NULL) return PyErr_NoMemory();
@@ -200,7 +205,7 @@ create_fallback_face(PyObject UNUSED *base_face, Cell* cell, bool bold, bool ita
     size_t num = cell_as_unicode(cell, true, char_buf, ' ');
     add_charset(pat, num);
     PyObject *d = _fc_match(pat);
-    if (d) { ans = face_from_descriptor(d); Py_CLEAR(d); }
+    if (d) { ans = face_from_descriptor(d, fg); Py_CLEAR(d); }
 end:
     if (pat != NULL) FcPatternDestroy(pat);
     return ans;

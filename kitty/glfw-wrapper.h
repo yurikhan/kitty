@@ -2,6 +2,8 @@
 #include <stddef.h>
 #include <stdint.h>
 typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int);
+typedef int (* GLFWapplicationshouldhandlereopenfun)(int);
+
 
 
 /*! @name GLFW version macros
@@ -578,6 +580,12 @@ typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int);
  *  Mouse cursor hover [window attribute](@ref GLFW_HOVERED_attrib).
  */
 #define GLFW_HOVERED                0x0002000B
+/*! @brief Input focus on calling show window hint and attribute
+ *
+ *  Input focus [window hint](@ref GLFW_FOCUS_ON_SHOW_hint) or
+ *  [window attribute](@ref GLFW_FOCUS_ON_SHOW_attrib).
+ */
+#define GLFW_FOCUS_ON_SHOW          0x0002000C
 
 /*! @brief Framebuffer bit depth hint.
  *
@@ -810,6 +818,7 @@ typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int);
 /*! @addtogroup init
  *  @{ */
 #define GLFW_JOYSTICK_HAT_BUTTONS   0x00050001
+#define GLFW_DEBUG_KEYBOARD         0x00050002
 
 #define GLFW_COCOA_CHDIR_RESOURCES  0x00051001
 #define GLFW_COCOA_MENUBAR          0x00051002
@@ -1830,6 +1839,14 @@ typedef GLFWcocoatextinputfilterfun (*glfwSetCocoaTextInputFilter_func)(GLFWwind
 glfwSetCocoaTextInputFilter_func glfwSetCocoaTextInputFilter_impl;
 #define glfwSetCocoaTextInputFilter glfwSetCocoaTextInputFilter_impl
 
+typedef GLFWapplicationshouldhandlereopenfun (*glfwSetApplicationShouldHandleReopen_func)(GLFWapplicationshouldhandlereopenfun);
+glfwSetApplicationShouldHandleReopen_func glfwSetApplicationShouldHandleReopen_impl;
+#define glfwSetApplicationShouldHandleReopen glfwSetApplicationShouldHandleReopen_impl
+
+typedef void (*glfwGetCocoaKeyEquivalent_func)(int, int, void*, void*);
+glfwGetCocoaKeyEquivalent_func glfwGetCocoaKeyEquivalent_impl;
+#define glfwGetCocoaKeyEquivalent glfwGetCocoaKeyEquivalent_impl
+
 typedef void* (*glfwGetX11Display_func)();
 glfwGetX11Display_func glfwGetX11Display_impl;
 #define glfwGetX11Display glfwGetX11Display_impl
@@ -1845,5 +1862,9 @@ glfwSetX11SelectionString_func glfwSetX11SelectionString_impl;
 typedef const char* (*glfwGetX11SelectionString_func)();
 glfwGetX11SelectionString_func glfwGetX11SelectionString_impl;
 #define glfwGetX11SelectionString glfwGetX11SelectionString_impl
+
+typedef int (*glfwGetXKBScancode_func)(const char*, int);
+glfwGetXKBScancode_func glfwGetXKBScancode_impl;
+#define glfwGetXKBScancode glfwGetXKBScancode_impl
 
 const char* load_glfw(const char* path);

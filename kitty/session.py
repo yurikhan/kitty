@@ -4,9 +4,10 @@
 
 import shlex
 
-from .config import to_layout_names
-from .constants import shell_path
+from .config_data import to_layout_names
+from .constants import shell_path, kitty_exe
 from .layout import all_layouts
+from .utils import log_error
 
 
 class Tab:
@@ -105,16 +106,26 @@ def parse_session(raw, opts):
     return ans
 
 
-def create_session(opts, args=None, special_window=None, cwd_from=None, respect_cwd=False):
+def create_session(opts, args=None, special_window=None, cwd_from=None, respect_cwd=False, default_session=None):
     if args and args.session:
         with open(args.session) as f:
             return parse_session(f.read(), opts)
+    if default_session and default_session != 'none':
+        try:
+            with open(default_session) as f:
+                session_data = f.read()
+        except EnvironmentError:
+            log_error('Failed to read from session file, ignoring: {}'.format(default_session))
+        else:
+            return parse_session(session_data, opts)
     ans = Session()
     current_layout = opts.enabled_layouts[0] if opts.enabled_layouts else 'tall'
     ans.add_tab(opts)
     ans.tabs[-1].layout = current_layout
     if special_window is None:
         cmd = args.args if args and args.args else resolved_shell(opts)
+        if args and args.hold:
+            cmd = [kitty_exe(), '+hold'] + cmd
         from kitty.tabs import SpecialWindow
         k = {'cwd_from': cwd_from}
         if respect_cwd:

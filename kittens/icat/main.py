@@ -15,14 +15,14 @@ from tempfile import NamedTemporaryFile
 
 from kitty.cli import parse_args
 from kitty.constants import appname
-from kitty.utils import fit_image, read_with_timeout
+from kitty.utils import TTYIO, fit_image, screen_size_function
 
 from ..tui.images import (
-    ConvertFailed, NoImageMagick, OpenFailed, convert, fsenc, identify,
-    screen_size
+    ConvertFailed, NoImageMagick, OpenFailed, convert, fsenc, identify
 )
 from ..tui.operations import clear_images_on_screen, serialize_gr_command
 
+screen_size = None
 OPTIONS = '''\
 --align
 type=choices
@@ -34,14 +34,14 @@ Horizontal alignment for the displayed image.
 --place
 Choose where on the screen to display the image. The image will
 be scaled to fit into the specified rectangle. The syntax for
-specifying rectanges is <|_ width|>x<|_ height|>@<|_ left|>x<|_ top|>. All measurements
-are in cells (i.e. cursor positions) with the origin |_ (0, 0)| at
+specifying rectanges is <:italic:`width`>x<:italic:`height`>@<:italic:`left`>x<:italic:`top`>. All measurements
+are in cells (i.e. cursor positions) with the origin :italic:`(0, 0)` at
 the top-left corner of the screen.
 
 
 --scale-up
 type=bool-set
-When used in combination with |_ --place| it will cause images that
+When used in combination with :option:`--place` it will cause images that
 are smaller than the specified area to be scaled up to use as much
 of the specified area as possible.
 
@@ -56,8 +56,8 @@ type=choices
 choices=detect,file,stream
 default=detect
 Which mechanism to use to transfer images to the terminal. The default is to
-auto-detect. |_ file| means to use a temporary file and |_ stream| means to
-send the data via terminal escape codes. Note that if you use the |_ file|
+auto-detect. :italic:`file` means to use a temporary file and :italic:`stream` means to
+send the data via terminal escape codes. Note that if you use the :italic:`file`
 transfer mode and you are connecting over a remote session then image display
 will not work.
 
@@ -66,7 +66,7 @@ will not work.
 type=bool-set
 Detect support for image display in the terminal. If not supported, will exit
 with exit code 1, otherwise will exit with code 0 and print the supported
-transfer mode to stderr, which can be used with the |_ --transfer-mode| option.
+transfer mode to stderr, which can be used with the :option:`--transfer-mode` option.
 
 
 --detection-timeout
@@ -74,6 +74,13 @@ type=float
 default=10
 The amount of time (in seconds) to wait for a response form the terminal, when
 detecting image display support.
+
+
+--print-window-size
+type=bool-set
+Print out the window size as :italic:`widthxheight` (in pixels) and quit. This is a
+convenience method to query the window size if using kitty icat from a
+scripting language that cannot make termios calls.
 '''
 
 
@@ -222,7 +229,8 @@ def detect_support(wait_for=10, silent=False):
             f.write(b'abcd'), f.flush()
             write_gr_cmd(dict(a='q', s=1, v=1, i=1), standard_b64encode(b'abcd'))
             write_gr_cmd(dict(a='q', s=1, v=1, i=2, t='f'), standard_b64encode(f.name.encode(fsenc)))
-            read_with_timeout(more_needed, timeout=wait_for)
+            with TTYIO() as io:
+                io.recv(more_needed, timeout=float(wait_for))
     finally:
         if not silent:
             sys.stdout.buffer.write(b'\033[J'), sys.stdout.flush()
@@ -238,18 +246,29 @@ def parse_place(raw):
         return namedtuple('Place', 'width height left top')(w, h, l, t)
 
 
-def main(args=sys.argv):
-    msg = (
+help_text = (
         'A cat like utility to display images in the terminal.'
         ' You can specify multiple image files and/or directories.'
-        ' Directories are scanned recursively for image files.')
-    args, items = parse_args(args[1:], options_spec, 'image-file ...', msg, '{} icat'.format(appname))
+        ' Directories are scanned recursively for image files.'
+)
+usage = 'image-file ...'
 
+
+def main(args=sys.argv):
+    global screen_size
+    args, items = parse_args(args[1:], options_spec, usage, help_text, '{} +kitten icat'.format(appname))
+
+    if args.print_window_size:
+        screen_size_function.ans = None
+        with open('/dev/tty') as tty:
+            ss = screen_size_function(tty)()
+        print('{}x{}'.format(ss.width, ss.height), end='')
+        raise SystemExit(0)
+
+    if not sys.stdout.isatty():
+        sys.stdout = open('/dev/tty', 'w')
+    screen_size = screen_size_function()
     signal.signal(signal.SIGWINCH, lambda signum, frame: setattr(screen_size, 'changed', True))
-    if not sys.stdout.isatty() or not sys.stdin.isatty():
-        raise SystemExit(
-            'Must be run in a terminal, stdout and/or stdin is currently not a terminal'
-        )
     if screen_size().width == 0:
         if args.detect_support:
             raise SystemExit(1)
@@ -306,3 +325,7 @@ def main(args=sys.argv):
 
 if __name__ == '__main__':
     main()
+elif __name__ == '__doc__':
+    sys.cli_docs['usage'] = usage
+    sys.cli_docs['options'] = options_spec
+    sys.cli_docs['help_text'] = help_text

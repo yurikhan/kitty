@@ -10,15 +10,14 @@ import os
 import re
 import string
 import sys
-from contextlib import contextmanager
 from time import monotonic
 
 from .constants import (
     appname, is_macos, is_wayland, supports_primary_selection
 )
 from .fast_data_types import (
-    GLSL_VERSION, log_error_string, redirect_std_streams, x11_display,
-    x11_window_id
+    GLSL_VERSION, close_tty, log_error_string, open_tty, redirect_std_streams,
+    x11_display
 )
 from .rgb import Color, to_color
 
@@ -40,7 +39,7 @@ def safe_print(*a, **k):
 
 def log_error(*a, **k):
     try:
-        msg = k.get('sep', ' ').join(map(str, a)) + k.get('end', '\n')
+        msg = k.get('sep', ' ').join(map(str, a)) + k.get('end', '')
         log_error_string(msg.replace('\0', ''))
     except Exception:
         pass
@@ -152,7 +151,7 @@ def base64_encode(
 
 def command_for_open(program='default'):
     if isinstance(program, str):
-        from .config_utils import to_cmdline
+        from .conf.utils import to_cmdline
         program = to_cmdline(program)
     if program == ['default']:
         cmd = ['open'] if is_macos else ['xdg-open']
@@ -190,7 +189,7 @@ def adjust_line_height(cell_height, val):
     return int(cell_height * val)
 
 
-def init_startup_notification_x11(window_id, startup_id=None):
+def init_startup_notification_x11(window_handle, startup_id=None):
     # https://specifications.freedesktop.org/startup-notification-spec/startup-notification-latest.txt
     from kitty.fast_data_types import init_x11_startup_notification
     sid = startup_id or os.environ.pop('DESKTOP_STARTUP_ID', None)  # ensure child processes dont get this env var
@@ -199,8 +198,7 @@ def init_startup_notification_x11(window_id, startup_id=None):
     display = x11_display()
     if not display:
         return
-    window_id = x11_window_id(window_id)
-    return init_x11_startup_notification(display, window_id, sid)
+    return init_x11_startup_notification(display, window_handle, sid)
 
 
 def end_startup_notification_x11(ctx):
@@ -208,11 +206,14 @@ def end_startup_notification_x11(ctx):
     end_x11_startup_notification(ctx)
 
 
-def init_startup_notification(window, startup_id=None):
+def init_startup_notification(window_handle, startup_id=None):
     if is_macos or is_wayland:
         return
+    if window_handle is None:
+        log_error('Could not perform startup notification as window handle not present')
+        return
     try:
-        return init_startup_notification_x11(window, startup_id)
+        return init_startup_notification_x11(window_handle, startup_id)
     except Exception:
         import traceback
         traceback.print_exc()
@@ -230,6 +231,29 @@ def end_startup_notification(ctx):
         traceback.print_exc()
 
 
+class startup_notification_handler:
+
+    def __init__(self, do_notify=True, startup_id=None, extra_callback=None):
+        self.do_notify = do_notify
+        self.startup_id = startup_id
+        self.extra_callback = extra_callback
+        self.ctx = None
+
+    def __enter__(self):
+
+        def pre_show_callback(window_handle):
+            if self.extra_callback is not None:
+                self.extra_callback(window_handle)
+            if self.do_notify:
+                self.ctx = init_startup_notification(window_handle, self.startup_id)
+
+        return pre_show_callback
+
+    def __exit__(self, *a):
+        if self.ctx is not None:
+            end_startup_notification(self.ctx)
+
+
 def remove_socket_file(s, path=None):
     try:
         s.close()
@@ -242,8 +266,7 @@ def remove_socket_file(s, path=None):
             pass
 
 
-def single_instance_unix(name):
-    import socket
+def unix_socket_paths(name, ext='.lock'):
     import tempfile
     home = os.path.expanduser('~')
     candidates = [tempfile.gettempdir(), home]
@@ -252,34 +275,39 @@ def single_instance_unix(name):
         candidates = [user_cache_dir(), '/Library/Caches']
     for loc in candidates:
         if os.access(loc, os.W_OK | os.R_OK | os.X_OK):
-            filename = ('.' if loc == home else '') + name + '.lock'
-            path = os.path.join(loc, filename)
-            socket_path = path.rpartition('.')[0] + '.sock'
-            fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_CLOEXEC)
-            try:
-                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except EnvironmentError as err:
-                if err.errno in (errno.EAGAIN, errno.EACCES):
-                    # Client
-                    s = socket.socket(family=socket.AF_UNIX)
-                    s.connect(socket_path)
-                    single_instance.socket = s
-                    return False
-                raise
-            s = socket.socket(family=socket.AF_UNIX)
-            try:
+            filename = ('.' if loc == home else '') + name + ext
+            yield os.path.join(loc, filename)
+
+
+def single_instance_unix(name):
+    import socket
+    for path in unix_socket_paths(name):
+        socket_path = path.rpartition('.')[0] + '.sock'
+        fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_CLOEXEC)
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except EnvironmentError as err:
+            if err.errno in (errno.EAGAIN, errno.EACCES):
+                # Client
+                s = socket.socket(family=socket.AF_UNIX)
+                s.connect(socket_path)
+                single_instance.socket = s
+                return False
+            raise
+        s = socket.socket(family=socket.AF_UNIX)
+        try:
+            s.bind(socket_path)
+        except EnvironmentError as err:
+            if err.errno in (errno.EADDRINUSE, errno.EEXIST):
+                os.unlink(socket_path)
                 s.bind(socket_path)
-            except EnvironmentError as err:
-                if err.errno in (errno.EADDRINUSE, errno.EEXIST):
-                    os.unlink(socket_path)
-                    s.bind(socket_path)
-                else:
-                    raise
-            single_instance.socket = s  # prevent garbage collection from closing the socket
-            atexit.register(remove_socket_file, s, socket_path)
-            s.listen()
-            s.set_inheritable(False)
-            return True
+            else:
+                raise
+        single_instance.socket = s  # prevent garbage collection from closing the socket
+        atexit.register(remove_socket_file, s, socket_path)
+        s.listen()
+        s.set_inheritable(False)
+        return True
 
 
 def single_instance(group_id=None):
@@ -328,43 +356,54 @@ def parse_address_spec(spec):
     return family, address, socket_path
 
 
-def make_fd_non_blocking(fd):
-    oldfl = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, oldfl | os.O_NONBLOCK)
-    return oldfl
+def write_all(fd, data):
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    while data:
+        n = os.write(fd, data)
+        if not n:
+            break
+        data = data[n:]
 
 
-@contextmanager
-def non_blocking_read(src=sys.stdin, disable_echo=False):
-    import termios
-    import tty
-    import fcntl
-    fd = src.fileno()
-    if src.isatty():
-        old = termios.tcgetattr(fd)
-        tty.setraw(fd)
-        if disable_echo:
-            new = list(old)
-            new[3] |= termios.ECHO
-            termios.tcsetattr(fd, termios.TCSANOW, new)
-    oldfl = make_fd_non_blocking(fd)
-    yield fd
-    if src.isatty():
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    fcntl.fcntl(fd, fcntl.F_SETFL, oldfl)
+class TTYIO:
 
+    def __enter__(self):
+        self.tty_fd, self.original_termios = open_tty(True)
+        return self
 
-def read_with_timeout(more_needed, timeout=10, src=sys.stdin.buffer):
-    import select
-    start_time = monotonic()
-    with non_blocking_read(src) as fd:
+    def __exit__(self, *a):
+        close_tty(self.tty_fd, self.original_termios)
+
+    def send(self, data):
+        if isinstance(data, (str, bytes)):
+            write_all(self.tty_fd, data)
+        else:
+            for chunk in data:
+                write_all(self.tty_fd, chunk)
+
+    def recv(self, more_needed, timeout, sz=1):
+        fd = self.tty_fd
+        start_time = monotonic()
         while timeout > monotonic() - start_time:
-            rd = select.select([fd], [], [], max(0, timeout - (monotonic() - start_time)))[0]
-            if rd:
-                data = src.read()
-                if not data:
-                    break  # eof
-                if not more_needed(data):
-                    break
-            else:
+            # will block for 0.1 secs waiting for data because we have set
+            # VMIN=0 VTIME=1 in termios
+            data = os.read(fd, sz)
+            if data and not more_needed(data):
                 break
+
+
+def natsort_ints(iterable):
+
+    def convert(text):
+        return int(text) if text.isdigit() else text
+
+    def alphanum_key(key):
+        return tuple(map(convert, re.split(r'(\d+)', key)))
+
+    return sorted(iterable, key=alphanum_key)
+
+
+def get_editor():
+    import shlex
+    return shlex.split(os.environ.get('EDITOR', 'vim'))

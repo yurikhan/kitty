@@ -24,7 +24,9 @@
 //
 //========================================================================
 
+#define _GNU_SOURCE
 #include "internal.h"
+#include "backend_utils.h"
 
 #include <assert.h>
 #include <linux/input.h>
@@ -33,6 +35,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <wayland-client.h>
 
 
@@ -161,7 +164,7 @@ static void pointerHandleMotion(void* data,
                                 wl_fixed_t sy)
 {
     _GLFWwindow* window = _glfw.wl.pointerFocus;
-    const char* cursorName;
+    const char* cursorName = NULL;
 
     if (!window)
         return;
@@ -615,6 +618,13 @@ static const struct wl_registry_listener registryListener = {
 
 int _glfwPlatformInit(void)
 {
+    if (pipe2(_glfw.wl.eventLoopData.wakeupFds, O_CLOEXEC | O_NONBLOCK) != 0)
+    {
+        _glfwInputError(GLFW_PLATFORM_ERROR,
+                "Wayland: failed to create self pipe");
+        return GLFW_FALSE;
+    }
+
     _glfw.wl.cursor.handle = _glfw_dlopen("libwayland-cursor.so.0");
     if (!_glfw.wl.cursor.handle)
     {
@@ -654,6 +664,7 @@ int _glfwPlatformInit(void)
                         "Wayland: Failed to connect to display");
         return GLFW_FALSE;
     }
+    initPollData(_glfw.wl.eventLoopData.fds, _glfw.wl.eventLoopData.wakeupFds[0], wl_display_get_fd(_glfw.wl.display));
 
     _glfw.wl.registry = wl_display_get_registry(_glfw.wl.display);
     wl_registry_add_listener(_glfw.wl.registry, &registryListener, NULL);
@@ -744,6 +755,7 @@ void _glfwPlatformTerminate(void)
         wl_display_flush(_glfw.wl.display);
         wl_display_disconnect(_glfw.wl.display);
     }
+    closeFds(_glfw.wl.eventLoopData.wakeupFds, sizeof(_glfw.wl.eventLoopData.wakeupFds)/sizeof(_glfw.wl.eventLoopData.wakeupFds[0]));
 }
 
 const char* _glfwPlatformGetVersionString(void)

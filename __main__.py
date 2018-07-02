@@ -3,6 +3,7 @@
 # License: GPL v3 Copyright: 2015, Kovid Goyal <kovid at kovidgoyal.net>
 
 import sys
+import os
 
 
 def icat(args):
@@ -25,6 +26,13 @@ def runpy(args):
     exec(args[1])
 
 
+def hold(args):
+    import subprocess
+    ret = subprocess.Popen(args[1:]).wait()
+    sys.stdin.read()
+    raise SystemExit(ret)
+
+
 def launch(args):
     import runpy
     sys.argv = args[1:]
@@ -32,7 +40,12 @@ def launch(args):
 
 
 def run_kitten(args):
-    kitten = args[1]
+    try:
+        kitten = args[1]
+    except IndexError:
+        from kittens.runner import list_kittens
+        list_kittens()
+        raise SystemExit(1)
     sys.argv = args[1:]
     from kittens.runner import run_kitten
     run_kitten(kitten)
@@ -55,9 +68,24 @@ entry_points = {
     '+': namespaced,
 }
 namespaced_entry_points = {k: v for k, v in entry_points.items() if k[0] not in '+@'}
+namespaced_entry_points['hold'] = hold
+
+
+def setup_openssl_environment():
+    # Workaround for Linux distros that have still failed to get their heads
+    # out of their asses and implement a common location for SSL certificates.
+    # It's not that hard people, there exists a wonderful tool called the symlink
+    # See http://www.mobileread.com/forums/showthread.php?t=256095
+    if 'SSL_CERT_FILE' not in os.environ and 'SSL_CERT_DIR' not in os.environ:
+        if os.access('/etc/pki/tls/certs/ca-bundle.crt', os.R_OK):
+            os.environ['SSL_CERT_FILE'] = '/etc/pki/tls/certs/ca-bundle.crt'
+        elif os.path.isdir('/etc/ssl/certs'):
+            os.environ['SSL_CERT_DIR'] = '/etc/ssl/certs'
 
 
 def main():
+    if getattr(sys, 'frozen', False) and 'darwin' not in sys.platform.lower():
+        setup_openssl_environment()
     first_arg = '' if len(sys.argv) < 2 else sys.argv[1]
     func = entry_points.get(first_arg)
     if func is None:

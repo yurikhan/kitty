@@ -3,6 +3,7 @@
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import json
+import os
 import sys
 import weakref
 from collections import deque
@@ -18,17 +19,17 @@ from .fast_data_types import (
     CELL_SPECIAL_PROGRAM, CSI, CURSOR_PROGRAM, DCS, DECORATION, DIM,
     GRAPHICS_PREMULT_PROGRAM, GRAPHICS_PROGRAM, OSC, REVERSE, SCROLL_FULL,
     SCROLL_LINE, SCROLL_PAGE, STRIKETHROUGH, Screen, add_window,
-    compile_program, get_clipboard_string, glfw_post_empty_event,
-    init_cell_program, init_cursor_program, set_clipboard_string,
-    set_titlebar_color, set_window_render_data, update_window_title,
-    update_window_visibility, viewport_for_window
+    cell_size_for_window, compile_program, get_clipboard_string,
+    glfw_post_empty_event, init_cell_program, init_cursor_program,
+    set_clipboard_string, set_titlebar_color, set_window_render_data,
+    update_window_title, update_window_visibility, viewport_for_window
 )
 from .keys import keyboard_mode_name
 from .rgb import to_color
 from .terminfo import get_capabilities
 from .utils import (
-    color_as_int, get_primary_selection, load_shaders, log_error, open_cmd,
-    open_url, parse_color_set, sanitize_title, set_primary_selection
+    color_as_int, get_primary_selection, load_shaders, open_cmd, open_url,
+    parse_color_set, sanitize_title, set_primary_selection
 )
 
 
@@ -97,8 +98,10 @@ class Window:
         self.override_title = override_title
         self.overlay_window_id = None
         self.overlay_for = None
-        self.child_title = appname
+        self.default_title = os.path.basename(child.argv[0] or appname)
+        self.child_title = self.default_title
         self.id = add_window(tab.os_window_id, tab.id, self.title)
+        self.clipboard_control_buffers = {'p': '', 'c': ''}
         if not self.id:
             raise Exception('No tab with id: {} in OS Window: {} was found, or the window counter wrapped'.format(tab.id, tab.os_window_id))
         self.tab_id = tab.id
@@ -110,7 +113,8 @@ class Window:
         self.needs_layout = True
         self.is_visible_in_layout = True
         self.child, self.opts = child, opts
-        self.screen = Screen(self, 24, 80, opts.scrollback_lines, self.id)
+        cell_width, cell_height = cell_size_for_window(self.os_window_id)
+        self.screen = Screen(self, 24, 80, opts.scrollback_lines, cell_width, cell_height, self.id)
         setup_colors(self.screen, opts)
 
     @property
@@ -128,6 +132,10 @@ class Window:
             pid=self.child.pid,
             cwd=self.child.current_cwd or self.child.cwd, cmdline=self.child.cmdline
         )
+
+    @property
+    def current_colors(self):
+        return self.screen.color_profile.as_dict()
 
     def matches(self, field, pat):
         if field == 'id':
@@ -209,6 +217,8 @@ class Window:
         glfw_post_empty_event()
 
     def set_title(self, title):
+        if title:
+            title = sanitize_title(title)
         self.override_title = title or None
         self.title_updated()
 
@@ -226,7 +236,7 @@ class Window:
                 self.screen.send_escape_code_to_child(CSI, 'O')
 
     def title_changed(self, new_title):
-        self.child_title = sanitize_title(new_title or appname)
+        self.child_title = sanitize_title(new_title or self.default_title)
         if self.override_title is None:
             self.title_updated()
 
@@ -360,17 +370,26 @@ class Window:
             try:
                 text = standard_b64decode(text).decode('utf-8')
             except Exception:
-                log_error('Invalid data to write to clipboard received, ignoring')
-                return
+                text = ''
+
+            def write(key, func):
+                if text:
+                    if len(self.clipboard_control_buffers[key]) > 1024*1024:
+                        self.clipboard_control_buffers[key] = ''
+                    self.clipboard_control_buffers[key] += text
+                else:
+                    self.clipboard_control_buffers[key] = ''
+                func(self.clipboard_control_buffers[key])
+
             if 's' in where or 'c' in where:
-                if 'write-clipboard' not in self.opts.clipboard_control:
-                    set_clipboard_string(text)
+                if 'write-clipboard' in self.opts.clipboard_control:
+                    write('c', set_clipboard_string)
             if 'p' in where:
                 if self.opts.copy_on_select:
                     if 'write-clipboard' in self.opts.clipboard_control:
-                        set_clipboard_string(text)
+                        write('c', set_clipboard_string)
                 if 'write-primary' in self.opts.clipboard_control:
-                    set_primary_selection(text)
+                    write('p', set_primary_selection)
     # }}}
 
     def text_for_selection(self):
@@ -390,7 +409,7 @@ class Window:
         f(lines.append, as_ansi, add_wrap_markers)
         if add_history:
             h = []
-            self.screen.historybuf.as_text(h.append, as_ansi)
+            self.screen.historybuf.as_text(h.append, as_ansi, add_wrap_markers)
             lines = h + lines
         return ''.join(lines)
 
@@ -405,14 +424,23 @@ class Window:
     # actions {{{
 
     def show_scrollback(self):
-        get_boss().display_scrollback(self, self.as_text(as_ansi=True, add_history=True).encode('utf-8'))
+        data = self.as_text(as_ansi=True, add_history=True, add_wrap_markers=True)
+        data = data.replace('\r\n', '\n').replace('\r', '\n')
+        lines = data.count('\n')
+        input_line_number = (lines - (self.screen.lines - 1) - self.screen.scrolled_by)
+        cmd = [x.replace('INPUT_LINE_NUMBER', str(input_line_number)) for x in self.opts.scrollback_pager]
+        get_boss().display_scrollback(self, data, cmd)
 
     def paste(self, text):
         if text and not self.destroyed:
             if isinstance(text, str):
                 text = text.encode('utf-8')
             if self.screen.in_bracketed_paste_mode:
-                text = text.replace(b'\033[201~', b'').replace(b'\x9b201~', b'')
+                while True:
+                    new_text = text.replace(b'\033[201~', b'').replace(b'\x9b201~', b'')
+                    if len(text) == len(new_text):
+                        break
+                    text = new_text
             self.screen.paste(text)
 
     def copy_to_clipboard(self):

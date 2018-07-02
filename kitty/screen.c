@@ -60,9 +60,9 @@ new(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
     Screen *self;
     int ret = 0;
     PyObject *callbacks = Py_None, *test_child = Py_None;
-    unsigned int columns=80, lines=24, scrollback=0;
+    unsigned int columns=80, lines=24, scrollback=0, cell_width=10, cell_height=20;
     id_type window_id=0;
-    if (!PyArg_ParseTuple(args, "|OIIIKO", &callbacks, &lines, &columns, &scrollback, &window_id, &test_child)) return NULL;
+    if (!PyArg_ParseTuple(args, "|OIIIIIKO", &callbacks, &lines, &columns, &scrollback, &cell_width, &cell_height, &window_id, &test_child)) return NULL;
 
     self = (Screen *)type->tp_alloc(type, 0);
     if (self != NULL) {
@@ -74,6 +74,7 @@ new(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
             Py_CLEAR(self); PyErr_Format(PyExc_RuntimeError, "Failed to create Screen write_buf_lock mutex: %s", strerror(ret));
             return NULL;
         }
+        self->cell_size.width = cell_width; self->cell_size.height = cell_height;
         self->columns = columns; self->lines = lines;
         self->write_buf = PyMem_RawMalloc(BUFSIZ);
         self->window_id = window_id;
@@ -111,7 +112,8 @@ void
 screen_reset(Screen *self) {
     if (self->linebuf == self->alt_linebuf) screen_toggle_screen_buffer(self);
     linebuf_clear(self->linebuf, BLANK_CHAR);
-    grman_clear(self->grman, false);
+    historybuf_clear(self->historybuf);
+    grman_clear(self->grman, false, self->cell_size);
     self->modes = empty_modes;
 #define R(name) self->color_profile->overridden.name = 0
     R(default_fg); R(default_bg); R(cursor_color); R(highlight_fg); R(highlight_bg);
@@ -127,6 +129,16 @@ screen_reset(Screen *self) {
     set_dynamic_color(self, 110, NULL);
     set_dynamic_color(self, 111, NULL);
     set_color_table_color(self, 104, NULL);
+}
+
+void
+screen_dirty_sprite_positions(Screen *self) {
+    self->is_dirty = true;
+    for (index_type i = 0; i < self->lines; i++) {
+        linebuf_mark_line_dirty(self->main_linebuf, i);
+        linebuf_mark_line_dirty(self->alt_linebuf, i);
+    }
+    for (index_type i = 0; i < self->historybuf->count; i++) historybuf_mark_line_dirty(self->historybuf, i);
 }
 
 static inline HistoryBuf*
@@ -205,10 +217,10 @@ screen_resize(Screen *self, unsigned int lines, unsigned int columns) {
     return true;
 }
 
-static void
-screen_rescale_images(Screen *self, unsigned int old_cell_width, unsigned int old_cell_height) {
-    grman_rescale(self->main_grman, old_cell_width, old_cell_height);
-    grman_rescale(self->alt_grman, old_cell_width, old_cell_height);
+void
+screen_rescale_images(Screen *self) {
+    grman_rescale(self->main_grman, self->cell_size);
+    grman_rescale(self->alt_grman, self->cell_size);
 }
 
 
@@ -269,9 +281,10 @@ screen_designate_charset(Screen *self, uint32_t which, uint32_t as) {
 }
 
 static inline void
-move_widened_char(Screen *self, Cell* cell, index_type xpos, index_type ypos) {
+move_widened_char(Screen *self, CPUCell* cpu_cell, GPUCell *gpu_cell, index_type xpos, index_type ypos) {
     self->cursor->x = xpos; self->cursor->y = ypos;
-    Cell src = *cell, *dest;
+    CPUCell src_cpu = *cpu_cell, *dest_cpu;
+    GPUCell src_gpu = *gpu_cell, *dest_gpu;
     line_clear_text(self->linebuf->line, xpos, 1, BLANK_CHAR);
 
     if (self->modes.mDECAWM) {  // overflow goes onto next line
@@ -279,14 +292,17 @@ move_widened_char(Screen *self, Cell* cell, index_type xpos, index_type ypos) {
         screen_linefeed(self);
         self->linebuf->line_attrs[self->cursor->y] |= CONTINUED_MASK;
         linebuf_init_line(self->linebuf, self->cursor->y);
-        dest = self->linebuf->line->cells;
+        dest_cpu = self->linebuf->line->cpu_cells;
+        dest_gpu = self->linebuf->line->gpu_cells;
         self->cursor->x = MIN(2, self->columns);
         linebuf_mark_line_dirty(self->linebuf, self->cursor->y);
     } else {
-        dest = cell - 1;
+        dest_cpu = cpu_cell - 1;
+        dest_gpu = gpu_cell - 1;
         self->cursor->x = self->columns;
     }
-    *dest = src;
+    *dest_cpu = src_cpu;
+    *dest_gpu = src_gpu;
 }
 
 static inline void
@@ -309,10 +325,11 @@ draw_combining_char(Screen *self, char_type ch) {
         self->is_dirty = true;
         linebuf_mark_line_dirty(self->linebuf, ypos);
         if (ch == 0xfe0f) {  // emoji presentation variation marker makes default text presentation emoji (narrow emoji) into wide emoji
-            Cell *cell = self->linebuf->line->cells + xpos;
-            if ((cell->attrs & WIDTH_MASK) != 2 && cell->cc_idx[0] == VS16 && is_emoji_presentation_base(cell->ch)) {
-                cell->attrs = (cell->attrs & !WIDTH_MASK) | 2;
-                if (xpos == self->columns - 1) move_widened_char(self, cell, xpos, ypos);
+            CPUCell *cpu_cell = self->linebuf->line->cpu_cells + xpos;
+            GPUCell *gpu_cell = self->linebuf->line->gpu_cells + xpos;
+            if ((gpu_cell->attrs & WIDTH_MASK) != 2 && cpu_cell->cc_idx[0] == VS16 && is_emoji_presentation_base(cpu_cell->ch)) {
+                gpu_cell->attrs = (gpu_cell->attrs & !WIDTH_MASK) | 2;
+                if (xpos == self->columns - 1) move_widened_char(self, cpu_cell, gpu_cell, xpos, ypos);
                 else self->cursor->x++;
             }
         }
@@ -398,7 +415,7 @@ select_graphic_rendition(Screen *self, unsigned int *params, unsigned int count,
             num = MIN(num, self->columns - x);
             for (index_type y = region.top; y < MIN(region.bottom + 1, self->lines); y++) {
                 linebuf_init_line(self->linebuf, y);
-                apply_sgr_to_cells(self->linebuf->line->cells + x, num, params, count);
+                apply_sgr_to_cells(self->linebuf->line->gpu_cells + x, num, params, count);
             }
         } else {
             index_type x, num;
@@ -407,7 +424,7 @@ select_graphic_rendition(Screen *self, unsigned int *params, unsigned int count,
                 else if (y == region.bottom) { x = 0; num = MIN(region.right + 1, self->columns); }
                 else { x = 0; num = self->columns; }
                 linebuf_init_line(self->linebuf, y);
-                apply_sgr_to_cells(self->linebuf->line->cells + x, num, params, count);
+                apply_sgr_to_cells(self->linebuf->line->gpu_cells + x, num, params, count);
             }
         }
     } else cursor_from_sgr(self->cursor, params, count);
@@ -448,13 +465,13 @@ write_escape_code_to_child(Screen *self, unsigned char which, const char *data) 
 
 static inline bool
 cursor_within_margins(Screen *self) {
-    return self->margin_top <= self->cursor->y && self->cursor->y >= self->margin_bottom;
+    return self->margin_top <= self->cursor->y && self->cursor->y <= self->margin_bottom;
 }
 
 void
 screen_handle_graphics_command(Screen *self, const GraphicsCommand *cmd, const uint8_t *payload) {
     unsigned int x = self->cursor->x, y = self->cursor->y;
-    const char *response = grman_handle_command(self->grman, cmd, payload, self->cursor, &self->is_dirty);
+    const char *response = grman_handle_command(self->grman, cmd, payload, self->cursor, &self->is_dirty, self->cell_size);
     if (response != NULL) write_escape_code_to_child(self, APC, response);
     if (x != self->cursor->x || y != self->cursor->y) {
         bool in_margins = cursor_within_margins(self);
@@ -471,7 +488,7 @@ screen_handle_graphics_command(Screen *self, const GraphicsCommand *cmd, const u
 void
 screen_toggle_screen_buffer(Screen *self) {
     bool to_alt = self->linebuf == self->main_linebuf;
-    grman_clear(self->alt_grman, true);  // always clear the alt buffer graphics to free up resources, since it has to be cleared when switching back to it anyway
+    grman_clear(self->alt_grman, true, self->cell_size);  // always clear the alt buffer graphics to free up resources, since it has to be cleared when switching back to it anyway
     if (to_alt) {
         linebuf_clear(self->alt_linebuf, BLANK_CHAR);
         screen_save_cursor(self);
@@ -712,7 +729,7 @@ screen_cursor_to_column(Screen *self, unsigned int column) {
     s.amt = amtv; s.limit = is_main ? -self->historybuf->ynum : 0; \
     s.has_margins = self->margin_top != 0 || self->margin_bottom != self->lines - 1; \
     s.margin_top = top; s.margin_bottom = bottom; \
-    grman_scroll_images(self->grman, &s); \
+    grman_scroll_images(self->grman, &s, self->cell_size); \
 }
 
 #define INDEX_UP \
@@ -961,7 +978,7 @@ screen_erase_in_display(Screen *self, unsigned int how, bool private) {
             a = 0; b = self->cursor->y; break;
         case 2:
         case 3:
-            grman_clear(self->grman, how == 3);
+            grman_clear(self->grman, how == 3, self->cell_size);
             a = 0; b = self->lines; break;
         default:
             return;
@@ -1098,6 +1115,34 @@ report_device_attributes(Screen *self, unsigned int mode, char start_modifier) {
 }
 
 void
+screen_report_size(Screen *self, unsigned int which) {
+    char buf[32] = {0};
+    unsigned int code = 0;
+    unsigned int width = 0, height = 0;
+    switch(which) {
+        case 14:
+            code = 4;
+            width = self->cell_size.width * self->columns;
+            height = self->cell_size.height * self->lines;
+            break;
+        case 16:
+            code = 6;
+            width = self->cell_size.width;
+            height = self->cell_size.height;
+            break;
+        case 18:
+            code = 8;
+            width = self->columns;
+            height = self->lines;
+            break;
+    }
+    if (code) {
+        snprintf(buf, sizeof(buf), "%u;%u;%ut", code, height, width);
+        write_escape_code_to_child(self, CSI, buf);
+    }
+}
+
+void
 report_device_status(Screen *self, unsigned int which, bool private) {
     // We dont implement the private device status codes, since I haven't come
     // across any programs that use them
@@ -1220,6 +1265,16 @@ screen_handle_cmd(Screen *self, PyObject *cmd) {
 }
 
 void
+screen_push_dynamic_colors(Screen *self) {
+    colorprofile_push_dynamic_colors(self->color_profile);
+}
+
+void
+screen_pop_dynamic_colors(Screen *self) {
+    colorprofile_pop_dynamic_colors(self->color_profile);
+}
+
+void
 screen_handle_print(Screen *self, PyObject *msg) {
     CALLBACK("handle_remote_print", "O", msg);
 }
@@ -1269,8 +1324,8 @@ screen_request_capabilities(Screen *self, char c, PyObject *q) {
 // Rendering {{{
 static inline void
 update_line_data(Line *line, unsigned int dest_y, uint8_t *data) {
-    size_t base = dest_y * line->xnum * sizeof(Cell);
-    memcpy(data + base, line->cells, line->xnum * sizeof(Cell));
+    size_t base = dest_y * line->xnum * sizeof(GPUCell);
+    memcpy(data + base, line->gpu_cells, line->xnum * sizeof(GPUCell));
 }
 
 
@@ -1281,7 +1336,7 @@ screen_reset_dirty(Screen *self) {
 }
 
 void
-screen_update_cell_data(Screen *self, void *address, size_t UNUSED sz) {
+screen_update_cell_data(Screen *self, void *address, size_t UNUSED sz, FONTS_DATA_HANDLE fonts_data) {
     unsigned int history_line_added_count = self->history_line_added_count;
     index_type lnum;
     bool selection_must_be_cleared = self->is_dirty ? true : false;
@@ -1292,7 +1347,7 @@ screen_update_cell_data(Screen *self, void *address, size_t UNUSED sz) {
         lnum = self->scrolled_by - 1 - y;
         historybuf_init_line(self->historybuf, lnum, self->historybuf->line);
         if (self->historybuf->line->has_dirty_text) {
-            render_line(self->historybuf->line);
+            render_line(fonts_data, self->historybuf->line);
             historybuf_mark_line_clean(self->historybuf, lnum);
         }
         update_line_data(self->historybuf->line, y, address);
@@ -1301,7 +1356,7 @@ screen_update_cell_data(Screen *self, void *address, size_t UNUSED sz) {
         lnum = y - self->scrolled_by;
         linebuf_init_line(self->linebuf, lnum);
         if (self->linebuf->line->has_dirty_text) {
-            render_line(self->linebuf->line);
+            render_line(fonts_data, self->linebuf->line);
             linebuf_mark_line_clean(self->linebuf, lnum);
         }
         update_line_data(self->linebuf->line, y, address);
@@ -1485,17 +1540,6 @@ as_text_non_visual(Screen *self, PyObject *args) {
 }
 
 static PyObject*
-refresh_sprite_positions(Screen *self, PyObject *a UNUSED) {
-    self->is_dirty = true;
-    for (index_type i = 0; i < self->lines; i++) {
-        linebuf_mark_line_dirty(self->main_linebuf, i);
-        linebuf_mark_line_dirty(self->alt_linebuf, i);
-    }
-    for (index_type i = 0; i < self->historybuf->count; i++) historybuf_mark_line_dirty(self->historybuf, i);
-    Py_RETURN_NONE;
-}
-
-static PyObject*
 screen_wcswidth(PyObject UNUSED *self, PyObject *str) {
     if (PyUnicode_READY(str) != 0) return NULL;
     int kind = PyUnicode_KIND(str);
@@ -1630,7 +1674,7 @@ static PyObject*
 _select_graphic_rendition(Screen *self, PyObject *args) {
     unsigned int params[256] = {0};
     for (int i = 0; i < PyTuple_GET_SIZE(args); i++) { params[i] = PyLong_AsUnsignedLong(PyTuple_GET_ITEM(args, i)); }
-    select_graphic_rendition(self, params, PyList_GET_SIZE(args), NULL);
+    select_graphic_rendition(self, params, PyTuple_GET_SIZE(args), NULL);
     Py_RETURN_NONE;
 }
 
@@ -1691,7 +1735,7 @@ WRAP0(linefeed)
 WRAP0(carriage_return)
 WRAP2(resize, 1, 1)
 WRAP2(set_margins, 1, 1)
-WRAP2(rescale_images, 1, 1)
+WRAP0(rescale_images)
 WRAP2B(update_selection)
 
 static PyObject*
@@ -1718,8 +1762,8 @@ screen_selection_range_for_line(Screen *self, index_type y, index_type *start, i
     if (y >= self->lines) { return false; }
     Line *line = visual_line_(self, y);
     index_type xlimit = line->xnum, xstart = 0;
-    while (xlimit > 0 && CHAR_IS_BLANK(line->cells[xlimit - 1].ch)) xlimit--;
-    while (xstart < xlimit && CHAR_IS_BLANK(line->cells[xstart].ch)) xstart++;
+    while (xlimit > 0 && CHAR_IS_BLANK(line->cpu_cells[xlimit - 1].ch)) xlimit--;
+    while (xstart < xlimit && CHAR_IS_BLANK(line->cpu_cells[xstart].ch)) xstart++;
     *start = xstart; *end = xlimit;
     return true;
 }
@@ -1738,7 +1782,7 @@ screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, inde
     index_type start, end;
     Line *line = visual_line_(self, *y1);
     *y2 = *y1;
-#define is_ok(x) (is_word_char((line->cells[x].ch)) || is_opt_word_char(line->cells[x].ch))
+#define is_ok(x) (is_word_char((line->cpu_cells[x].ch)) || is_opt_word_char(line->cpu_cells[x].ch))
     if (!is_ok(x)) {
         start = x; end = x + 1;
     } else {
@@ -1979,7 +2023,6 @@ static PyMethodDef methods[] = {
     {"index", (PyCFunction)xxx_index, METH_VARARGS, ""},
     MND(as_text, METH_VARARGS)
     MND(as_text_non_visual, METH_VARARGS)
-    MND(refresh_sprite_positions, METH_NOARGS)
     MND(tab, METH_NOARGS)
     MND(backspace, METH_NOARGS)
     MND(linefeed, METH_NOARGS)
@@ -1992,7 +2035,7 @@ static PyMethodDef methods[] = {
     MND(mark_as_dirty, METH_NOARGS)
     MND(resize, METH_VARARGS)
     MND(set_margins, METH_VARARGS)
-    MND(rescale_images, METH_VARARGS)
+    MND(rescale_images, METH_NOARGS)
     MND(text_for_selection, METH_NOARGS)
     MND(scroll, METH_VARARGS)
     MND(send_escape_code_to_child, METH_VARARGS)

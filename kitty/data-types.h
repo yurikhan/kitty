@@ -7,13 +7,12 @@
 
 #pragma once
 
-
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <poll.h>
 #include <pthread.h>
-#define PY_SSIZE_T_CLEAN
-#include <Python.h>
 // Required minimum OpenGL version
 #define OPENGL_REQUIRED_VERSION_MAJOR 3
 #define OPENGL_REQUIRED_VERSION_MINOR 3
@@ -80,7 +79,7 @@ typedef enum MouseShapes { BEAM, HAND, ARROW } MouseShape;
     (c)->reverse = (a >> REVERSE_SHIFT) & 1; (c)->strikethrough = (a >> STRIKE_SHIFT) & 1; (c)->dim = (a >> DIM_SHIFT) & 1;
 
 #define COPY_CELL(src, s, dest, d) \
-    (dest)->cells[d] = (src)->cells[s];
+    (dest)->cpu_cells[d] = (src)->cpu_cells[s]; (dest)->gpu_cells[d] = (src)->gpu_cells[s];
 
 #define COPY_SELF_CELL(s, d) COPY_CELL(self, s, self, d)
 
@@ -140,15 +139,19 @@ typedef struct {
     color_type fg, bg, decoration_fg;
     sprite_index sprite_x, sprite_y, sprite_z;
     attrs_type attrs;
-    // The following are only needed on the CPU, not the GPU
+} GPUCell;
+
+typedef struct {
     char_type ch;
     combining_type cc_idx[2];
-} Cell;
+} CPUCell;
+
 
 typedef struct {
     PyObject_HEAD
 
-    Cell *cells;
+    GPUCell *gpu_cells;
+    CPUCell *cpu_cells;
     index_type xnum, ynum;
     bool continued, needs_free, has_dirty_text;
 } Line;
@@ -157,14 +160,16 @@ typedef struct {
 typedef struct {
     PyObject_HEAD
 
-    Cell *buf;
+    GPUCell *gpu_cell_buf;
+    CPUCell *cpu_cell_buf;
     index_type xnum, ynum, *line_map, *scratch;
     line_attrs_type *line_attrs;
     Line *line;
 } LineBuf;
 
 typedef struct {
-    Cell *cells;
+    GPUCell *gpu_cells;
+    CPUCell *cpu_cells;
     line_attrs_type *line_attrs;
 } HistoryBufSegment;
 
@@ -206,9 +211,18 @@ typedef struct {
     bool dirty;
     uint32_t color_table[256];
     uint32_t orig_color_table[256];
+    DynamicColor dynamic_color_stack[10];
+    size_t dynamic_color_stack_idx;
     DynamicColor configured, overridden;
 } ColorProfile;
 
+typedef struct {
+    unsigned int width, height;
+} CellPixelSize;
+
+typedef struct {int x;} *SPRITE_MAP_HANDLE;
+#define FONTS_DATA_HEAD SPRITE_MAP_HANDLE sprite_map; double logical_dpi_x, logical_dpi_y, font_sz_in_pts; unsigned int cell_width, cell_height;
+typedef struct {FONTS_DATA_HEAD} *FONTS_DATA_HANDLE;
 
 #define PARSER_BUF_SZ (8 * 1024)
 #define READ_BUF_SZ (1024*1024)
@@ -219,10 +233,10 @@ typedef struct {
     for(index_type __i__ = (at); __i__ < (line)->xnum - (num); __i__++) { \
         COPY_CELL(line, __i__ + (num), line, __i__) \
     } \
-    if ((((line)->cells[(at)].attrs) & WIDTH_MASK) != 1) { \
-        (line)->cells[(at)].ch = BLANK_CHAR; \
-        (line)->cells[(at)].attrs = BLANK_CHAR ? 1 : 0; \
-        clear_sprite_position((line)->cells[(at)]); \
+    if ((((line)->gpu_cells[(at)].attrs) & WIDTH_MASK) != 1) { \
+        (line)->cpu_cells[(at)].ch = BLANK_CHAR; \
+        (line)->gpu_cells[(at)].attrs = BLANK_CHAR ? 1 : 0; \
+        clear_sprite_position((line)->gpu_cells[(at)]); \
     }\
 }
 
@@ -253,7 +267,7 @@ Cursor* cursor_copy(Cursor*);
 void cursor_copy_to(Cursor *src, Cursor *dest);
 void cursor_reset_display_attrs(Cursor*);
 void cursor_from_sgr(Cursor *self, unsigned int *params, unsigned int count);
-void apply_sgr_to_cells(Cell *first_cell, unsigned int cell_count, unsigned int *params, unsigned int count);
+void apply_sgr_to_cells(GPUCell *first_cell, unsigned int cell_count, unsigned int *params, unsigned int count);
 const char* cursor_as_sgr(Cursor*, Cursor*);
 
 double monotonic();
@@ -263,6 +277,8 @@ bool set_iutf8(int, bool);
 
 color_type colorprofile_to_color(ColorProfile *self, color_type entry, color_type defval);
 void copy_color_table_to_buffer(ColorProfile *self, color_type *address, int offset, size_t stride);
+void colorprofile_push_dynamic_colors(ColorProfile*);
+void colorprofile_pop_dynamic_colors(ColorProfile*);
 
 void set_mouse_cursor(MouseShape);
 void mouse_event(int, int);
@@ -270,6 +286,8 @@ void focus_in_event();
 void wakeup_io_loop(bool);
 void scroll_event(double, double);
 void fake_scroll(int, bool);
-void set_special_key_combo(int glfw_key, int mods);
+void set_special_key_combo(int glfw_key, int mods, bool is_native);
 void on_key_input(int key, int scancode, int action, int mods, const char*, int);
 void request_window_attention(id_type, bool);
+SPRITE_MAP_HANDLE alloc_sprite_map(unsigned int, unsigned int);
+SPRITE_MAP_HANDLE free_sprite_map(SPRITE_MAP_HANDLE);

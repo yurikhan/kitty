@@ -7,8 +7,8 @@ import os
 import re
 import shlex
 
-from .rgb import to_color as as_color
-from .utils import log_error
+from ..rgb import to_color as as_color
+from ..utils import log_error
 
 key_pat = re.compile(r'([a-zA-Z][a-zA-Z0-9_-]*)\s+(.+)$')
 
@@ -41,6 +41,18 @@ def to_cmdline(x):
 
 def python_string(text):
     return ast.literal_eval("'''" + text.replace("'''", "'\\''") + "'''")
+
+
+def choices(*choices):
+    defval = choices[0]
+    choices = frozenset(choices)
+
+    def choice(x):
+        x = x.lower()
+        if x not in choices:
+            x = defval
+        return x
+    return choice
 
 
 def parse_line(line, type_map, special_handling, ans, all_keys, base_path_for_includes):
@@ -78,7 +90,7 @@ def _parse(lines, type_map, special_handling, ans, all_keys):
     if name:
         base_path_for_includes = os.path.dirname(os.path.abspath(name))
     else:
-        from .constants import config_dir
+        from ..constants import config_dir
         base_path_for_includes = config_dir
     for line in lines:
         parse_line(line, type_map, special_handling, ans, all_keys, base_path_for_includes)
@@ -164,9 +176,8 @@ def load_config(Options, defaults, parse_config, merge_configs, *paths, override
     return Options(ans)
 
 
-def init_config(defaults_path, parse_config):
-    with open(defaults_path, encoding='utf-8', errors='replace') as f:
-        defaults = parse_config(f, check_keys=False)
+def init_config(default_config_lines, parse_config):
+    defaults = parse_config(default_config_lines, check_keys=False)
     Options = create_options_class(defaults.keys())
     defaults = Options(defaults)
     return Options, defaults
@@ -188,7 +199,7 @@ def key_func():
 
 
 def parse_kittens_shortcut(sc):
-    from kitty.key_encoding import config_key_map, config_mod_map, text_match
+    from ..key_encoding import config_key_map, config_mod_map, text_match
     if sc.endswith('+'):
         parts = list(filter(None, sc.rstrip('+').split('+') + ['+']))
     else:
@@ -217,19 +228,28 @@ def parse_kittens_shortcut(sc):
 
 
 def parse_kittens_func_args(action, args_funcs):
-    parts = action.split(' ', 1)
+    parts = action.strip().split(' ', 1)
     func = parts[0]
     if len(parts) == 1:
         return func, ()
     rest = parts[1]
-    parser = args_funcs.get(func)
-    if parser is not None:
-        try:
-            func, args = parser(func, rest)
-        except Exception:
-            raise ValueError('Unknown key action: {}'.format(action))
+
+    try:
+        parser = args_funcs[func]
+    except KeyError as e:
+        raise KeyError(
+            'Unknown action: {}. Check if map action: '
+            '{} is valid'.format(func, action)
+        ) from e
+
+    try:
+        func, args = parser(func, rest)
+    except Exception:
+        raise ValueError('Unknown key action: {}'.format(action))
+
     if not isinstance(args, (list, tuple)):
         args = (args,)
+
     return func, tuple(args)
 
 

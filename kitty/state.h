@@ -23,7 +23,7 @@ typedef struct {
     color_type url_color, background, active_border_color, inactive_border_color, bell_border_color;
     double repaint_delay, input_delay;
     bool focus_follows_mouse;
-    bool macos_option_as_alt, macos_hide_titlebar, macos_hide_from_tasks;
+    bool macos_option_as_alt, macos_hide_titlebar, macos_hide_from_tasks, x11_hide_window_decorations, macos_quit_when_last_window_closed;
     int adjust_line_height_px, adjust_column_width_px;
     float adjust_line_height_frac, adjust_column_width_frac;
     float background_opacity, dim_opacity;
@@ -110,6 +110,7 @@ typedef struct {
     bool is_focused;
     double cursor_blink_zero_time, last_mouse_activity_at;
     double mouse_x, mouse_y;
+    double logical_dpi_x, logical_dpi_y, font_sz_in_pts;
     bool mouse_button_pressed[20];
     PyObject *window_title;
     bool is_key_pressed[MAX_KEY_COUNT];
@@ -120,16 +121,15 @@ typedef struct {
     unsigned int clear_count;
     color_type last_titlebar_color;
     float background_opacity;
+    FONTS_DATA_HANDLE fonts_data;
+    id_type temp_font_group_id;
 } OSWindow;
 
 
 typedef struct {
     Options opts;
 
-    double logical_dpi_x, logical_dpi_y;
     id_type os_window_id_counter, tab_id_counter, window_id_counter;
-    float font_sz_in_pts;
-    unsigned int cell_width, cell_height;
     PyObject *boss;
     OSWindow *os_windows;
     size_t num_os_windows, capacity;
@@ -139,6 +139,8 @@ typedef struct {
     bool debug_gl, debug_font_fallback;
     bool has_pending_resizes;
     bool in_sequence_mode;
+    double font_sz_in_pts;
+    struct { double x, y; } default_dpi;
 } GlobalState;
 
 extern GlobalState global_state;
@@ -160,7 +162,6 @@ void mark_os_window_for_close(OSWindow* w, bool yes);
 void update_os_window_viewport(OSWindow *window, bool);
 bool should_os_window_close(OSWindow* w);
 bool should_os_window_be_rendered(OSWindow* w);
-void set_dpi_from_os_window(OSWindow *w);
 void wakeup_main_loop();
 void event_loop_wait(double timeout);
 void swap_window_buffers(OSWindow *w);
@@ -178,10 +179,20 @@ ssize_t create_cell_vao();
 ssize_t create_graphics_vao();
 ssize_t create_border_vao();
 bool send_cell_data_to_gpu(ssize_t, ssize_t, float, float, float, float, Screen *, OSWindow *);
-void draw_cells(ssize_t, ssize_t, float, float, float, float, Screen *, OSWindow *, bool);
+void draw_cells(ssize_t, ssize_t, float, float, float, float, Screen *, OSWindow *, bool, bool);
 void draw_cursor(CursorRenderInfo *, bool);
 void update_surface_size(int, int, uint32_t);
 void free_texture(uint32_t*);
 void send_image_to_gpu(uint32_t*, const void*, int32_t, int32_t, bool, bool);
-void send_sprite_to_gpu(unsigned int, unsigned int, unsigned int, pixel*);
+void send_sprite_to_gpu(FONTS_DATA_HANDLE fg, unsigned int, unsigned int, unsigned int, pixel*);
 void set_titlebar_color(OSWindow *w, color_type color);
+FONTS_DATA_HANDLE load_fonts_data(double, double, double);
+void send_prerendered_sprites_for_window(OSWindow *w);
+#ifdef __APPLE__
+void get_cocoa_key_equivalent(int, int, unsigned short*, int*);
+typedef enum {
+    PREFERENCES_WINDOW = 1, NEW_OS_WINDOW = 2
+} CocoaPendingAction;
+void set_cocoa_pending_action(CocoaPendingAction action);
+bool application_quit_requested();
+#endif

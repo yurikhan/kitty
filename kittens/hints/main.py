@@ -6,8 +6,9 @@ import os
 import re
 import string
 import sys
-from functools import lru_cache, partial
+from functools import lru_cache
 from gettext import gettext as _
+from itertools import repeat
 
 from kitty.cli import parse_args
 from kitty.fast_data_types import set_clipboard_string
@@ -23,7 +24,7 @@ HINT_ALPHABET = string.digits + string.ascii_lowercase
 screen_size = screen_size_function()
 
 
-class Mark(object):
+class Mark:
 
     __slots__ = ('index', 'start', 'end', 'text')
 
@@ -62,8 +63,10 @@ def highlight_mark(m, text, current_input):
     )
 
 
-def render(text, current_input, all_marks):
+def render(text, current_input, all_marks, ignore_mark_indices):
     for mark in reversed(all_marks):
+        if mark.index in ignore_mark_indices:
+            continue
         mtext = highlight_mark(mark, text[mark.start:mark.end], current_input)
         text = text[:mark.start] + mtext + text[mark.end:]
 
@@ -77,11 +80,16 @@ class Hints(Handler):
     def __init__(self, text, all_marks, index_map, args):
         self.text, self.index_map = text, index_map
         self.all_marks = all_marks
-        self.current_input = ''
-        self.current_text = None
+        self.ignore_mark_indices = set()
         self.args = args
         self.window_title = _('Choose URL') if args.type == 'url' else _('Choose text')
-        self.chosen = None
+        self.multiple = args.multiple
+        self.chosen = []
+        self.reset()
+
+    def reset(self):
+        self.current_input = ''
+        self.current_text = None
 
     def init_terminal_state(self):
         self.cmd.set_cursor_visible(False)
@@ -100,13 +108,17 @@ class Hints(Handler):
                 changed = True
         if changed:
             matches = [
-                m.text for idx, m in self.index_map.items()
+                m for idx, m in self.index_map.items()
                 if encode_hint(idx).startswith(self.current_input)
             ]
             if len(matches) == 1:
-                self.chosen = matches[0]
-                self.quit_loop(0)
-                return
+                self.chosen.append(matches[0].text)
+                if self.multiple:
+                    self.ignore_mark_indices.add(matches[0].index)
+                    self.reset()
+                else:
+                    self.quit_loop(0)
+                    return
             self.current_text = None
             self.draw_screen()
 
@@ -118,15 +130,20 @@ class Hints(Handler):
         elif key_event is enter_key and self.current_input:
             try:
                 idx = decode_hint(self.current_input)
-                self.chosen = self.index_map[idx].text
+                self.chosen.append(self.index_map[idx].text)
+                self.ignore_mark_indices.add(idx)
             except Exception:
                 self.current_input = ''
                 self.current_text = None
                 self.draw_screen()
             else:
-                self.quit_loop(0)
+                if self.multiple:
+                    self.reset()
+                    self.draw_screen()
+                else:
+                    self.quit_loop(0)
         elif key_event.key is ESCAPE:
-            self.quit_loop(1)
+            self.quit_loop(0 if self.multiple else 1)
 
     def on_interrupt(self):
         self.quit_loop(1)
@@ -140,7 +157,7 @@ class Hints(Handler):
 
     def draw_screen(self):
         if self.current_text is None:
-            self.current_text = render(self.text, self.current_input, self.all_marks)
+            self.current_text = render(self.text, self.current_input, self.all_marks, self.ignore_mark_indices)
         self.cmd.clear_screen()
         self.write(self.current_text)
 
@@ -243,6 +260,8 @@ def functions_for(args):
         post_processors.extend((brackets, quotes))
     elif args.type == 'line':
         pattern = '(?m)^\\s*(.+)[\\s\0]*$'
+    elif args.type == 'hash':
+        pattern = '[0-9a-f]{7,128}'
     elif args.type == 'word':
         chars = args.word_characters
         if chars is None:
@@ -257,8 +276,12 @@ def functions_for(args):
 
 def convert_text(text, cols):
     lines = []
+    empty_line = '\0' * cols
     for full_line in text.split('\n'):
         if full_line:
+            if not full_line.rstrip('\r'):  # empty lines
+                lines.extend(repeat(empty_line, len(full_line)))
+                continue
             for line in full_line.split('\r'):
                 if line:
                     lines.append(line.ljust(cols, '\0'))
@@ -298,25 +321,26 @@ def run(args, text):
 
 
 # CLI {{{
-OPTIONS = partial(r'''
+OPTIONS = r'''
 --program
 default=default
 What program to use to open matched text. Defaults to the default open program
-for the operating system.  Use a value of - to paste the match into the
-terminal window instead. A value of @ will copy the match to the clipboard.
+for the operating system.  Use a value of :file:`-` to paste the match into the
+terminal window instead. A value of :file:`@` will copy the match to the clipboard.
 
 
 --type
 default=url
-choices=url,regex,path,line,word
+choices=url,regex,path,line,hash,word
 The type of text to search for.
 
 
 --regex
 default=(?m)^\s*(.+)\s*$
-The regular expression to use when --type=regex.  If you specify a group in the
-regular expression only the group will be matched. This allow you to match text
-ignoring a prefix/suffix, as needed. The default expression matches lines.
+The regular expression to use when :option:`kitty +kitten hints --type`=regex.
+If you specify a group in the regular expression only the group
+will be matched. This allow you to match text ignoring a prefix/suffix, as
+needed. The default expression matches lines.
 
 
 --url-prefixes
@@ -334,12 +358,19 @@ Defaults to the select_by_word_characters setting from kitty.conf.
 default=3
 type=int
 The minimum number of characters to consider a match.
-'''.format, ','.join(sorted(URL_PREFIXES)))
+
+
+--multiple
+type=bool-set
+Select multiple matches and perform the action on all of them together at the end.
+In this mode, press :kbd:`Esc` to finish selecting.
+'''.format(','.join(sorted(URL_PREFIXES))).format
+help_text = 'Select text from the screen using the keyboard. Defaults to searching for URLs.'
+usage = ''
 
 
 def parse_hints_args(args):
-    msg = 'Select text from the screen using the keyboard. Defaults to searching for URLs.'
-    return parse_args(args, OPTIONS, '', msg, 'hints')
+    return parse_args(args, OPTIONS, usage, help_text, 'kitty +kitten hints')
 
 
 def main(args):
@@ -368,18 +399,22 @@ def main(args):
 
 def handle_result(args, data, target_window_id, boss):
     program = data['program']
+    matches = tuple(filter(None, data['match']))
     if program == '-':
         w = boss.window_id_map.get(target_window_id)
         if w is not None:
-            w.paste(data['match'])
+            for m in matches:
+                w.paste(m)
     elif program == '@':
-        set_clipboard_string(data['match'])
+        set_clipboard_string(matches[-1])
     else:
         cwd = None
         w = boss.window_id_map.get(target_window_id)
         if w is not None:
             cwd = w.cwd_of_child
-        boss.open_url(data['match'], None if program == 'default' else program, cwd=cwd)
+        program = None if program == 'default' else program
+        for m in matches:
+            boss.open_url(m, program, cwd=cwd)
 
 
 handle_result.type_of_input = 'screen'
@@ -390,4 +425,8 @@ if __name__ == '__main__':
     ans = main(sys.argv)
     if ans:
         print(ans)
+elif __name__ == '__doc__':
+    sys.cli_docs['usage'] = usage
+    sys.cli_docs['options'] = OPTIONS
+    sys.cli_docs['help_text'] = help_text
 # }}}

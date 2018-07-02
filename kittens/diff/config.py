@@ -4,18 +4,17 @@
 
 import os
 
-from kitty.config_utils import (
-    init_config, key_func, load_config as _load_config, merge_dicts,
-    parse_config_base, parse_kittens_key, python_string, resolve_config,
-    to_color
+from kitty.conf.utils import (
+    init_config as _init_config, key_func, load_config as _load_config, merge_dicts,
+    parse_config_base, parse_kittens_key, resolve_config
 )
+from kitty.conf.definition import config_lines
 from kitty.constants import config_dir
 from kitty.rgb import color_as_sgr
 
+from .config_data import type_map, all_options
+
 defaults = None
-default_config_path = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), 'diff.conf'
-)
 
 formats = {
     'title': '',
@@ -39,26 +38,6 @@ def set_formats(opts):
     formats['added_highlight'] = '48' + color_as_sgr(opts.highlight_added_bg)
 
 
-def syntax_aliases(raw):
-    ans = {}
-    for x in raw.split():
-        a, b = x.partition(':')[::2]
-        if a and b:
-            ans[a.lower()] = b
-    return ans
-
-
-type_map = {
-    'syntax_aliases': syntax_aliases,
-    'num_context_lines': int,
-    'replace_tab_by': python_string,
-}
-
-for name in (
-    'foreground background title_fg title_bg margin_bg margin_fg removed_bg removed_margin_bg added_bg added_margin_bg filler_bg hunk_bg hunk_margin_bg'
-    ' highlight_removed_bg highlight_added_bg'
-).split():
-    type_map[name] = to_color
 func_with_args, args_funcs = key_func()
 
 
@@ -73,7 +52,7 @@ def parse_scroll_by(func, rest):
 @func_with_args('scroll_to')
 def parse_scroll_to(func, rest):
     rest = rest.lower()
-    if rest not in {'start', 'end', 'next-change', 'prev-change', 'next-page', 'prev-page'}:
+    if rest not in {'start', 'end', 'next-change', 'prev-change', 'next-page', 'prev-page', 'next-match', 'prev-match'}:
         rest = 'start'
     return func, rest
 
@@ -88,6 +67,14 @@ def parse_change_context(func, rest):
     except Exception:
         amount = 5
     return func, amount
+
+
+@func_with_args('start_search')
+def parse_start_search(func, rest):
+    rest = rest.lower().split()
+    is_regex = rest and rest[0] == 'regex'
+    is_backward = len(rest) > 1 and rest[1] == 'backward'
+    return func, (is_regex, is_backward)
 
 
 def special_handling(key, val, ans):
@@ -125,7 +112,7 @@ def parse_defaults(lines, check_keys=False):
     return parse_config(lines, check_keys)
 
 
-Options, defaults = init_config(default_config_path, parse_defaults)
+Options, defaults = _init_config(config_lines(all_options), parse_defaults)
 
 
 def load_config(*paths, overrides=None):

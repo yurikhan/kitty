@@ -10,14 +10,18 @@ import os
 import pprint
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 import requests
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 build_path = os.path.abspath('../build-kitty')
+docs_dir = os.path.abspath('docs')
+publish_dir = os.path.abspath(os.path.join('..', 'kovidgoyal.github.io', 'kitty'))
 raw = open('kitty/constants.py').read()
 nv = re.search(
     r'^version\s+=\s+\((\d+), (\d+), (\d+)\)', raw, flags=re.MULTILINE)
@@ -25,27 +29,70 @@ version = '%s.%s.%s' % (nv.group(1), nv.group(2), nv.group(3))
 appname = re.search(
     r"^appname\s+=\s+'([^']+)'", raw, flags=re.MULTILINE).group(1)
 
-ALL_ACTIONS = 'build tag upload'.split()
+ALL_ACTIONS = 'man html build tag sdist upload website'.split()
 
 
-def call(*cmd):
+def call(*cmd, cwd=None):
     if len(cmd) == 1:
         cmd = shlex.split(cmd[0])
-    ret = subprocess.Popen(cmd).wait()
+    ret = subprocess.Popen(cmd, cwd=cwd).wait()
     if ret != 0:
         raise SystemExit(ret)
 
 
 def run_build(args):
     os.chdir(build_path)
+    call('./linux 64 kitty')
     call('./osx kitty --sign-installers')
     call('./osx shutdown')
+    call('./linux 32 kitty')
 
 
 def run_tag(args):
     call('git push')
     call('git tag -s v{0} -m version-{0}'.format(version))
     call('git push origin v{0}'.format(version))
+
+
+def run_man(args):
+    call('make FAIL_WARN=-W man', cwd=docs_dir)
+
+
+def run_html(args):
+    call('make FAIL_WARN=-W html', cwd=docs_dir)
+
+
+def run_website(args):
+    if os.path.exists(publish_dir):
+        shutil.rmtree(publish_dir)
+    shutil.copytree(os.path.join(docs_dir, '_build', 'html'), publish_dir)
+    shutil.copy2(os.path.join(docs_dir, 'installer.sh'), publish_dir)
+    installer = os.path.join(docs_dir, 'installer.py')
+    subprocess.check_call([
+        'python3', '-c', f"import runpy; runpy.run_path('{installer}', run_name='update_wrapper')",
+        os.path.join(publish_dir, 'installer.sh')])
+    os.chdir(os.path.dirname(publish_dir))
+    subprocess.check_call(['git', 'add', 'kitty'])
+    subprocess.check_call(['git', 'commit', '-m', 'kitty website updates'])
+    subprocess.check_call(['git', 'push'])
+
+
+def run_sdist(args):
+    with tempfile.TemporaryDirectory() as tdir:
+        base = os.path.join(tdir, f'kitty-{version}')
+        os.mkdir(base)
+        subprocess.check_call('git archive HEAD | tar -x -C ' + base, shell=True)
+        dest = os.path.join(base, 'docs', '_build')
+        os.mkdir(dest)
+        for x in 'html man'.split():
+            shutil.copytree(os.path.join(docs_dir, '_build', x), os.path.join(dest, x))
+        dest = os.path.abspath(os.path.join('build', f'kitty-{version}.tar'))
+        subprocess.check_call(['tar', '-cf', dest, os.path.basename(base)], cwd=tdir)
+        try:
+            os.remove(dest + '.xz')
+        except FileNotFoundError:
+            pass
+        subprocess.check_call(['xz', '-9', dest])
 
 
 class ReadFileWithProgressReporting(io.BufferedReader):  # {{{
@@ -265,8 +312,11 @@ def run_upload(args):
         os.path.join(build_path, 'build', f.format(version)): desc
         for f, desc in {
             'osx/dist/kitty-{}.dmg': 'macOS dmg',
+            'linux/64/sw/dist/kitty-{}-x86_64.txz': 'Linux amd64 binary bundle',
+            'linux/32/sw/dist/kitty-{}-i686.txz': 'Linux x86 binary bundle',
         }.items()
     }
+    files[f'build/kitty-{version}.tar.xz'] = 'Source code'
     for f in files:
         if not os.path.exists(f):
             raise SystemExit('The installer {} does not exist'.format(f))
@@ -278,7 +328,7 @@ def run_upload(args):
 def require_git_master(branch='master'):
     b = subprocess.check_output(['git', 'symbolic-ref', '--short', 'HEAD']).decode('utf-8').strip()
     if b != branch:
-        raise SystemExit('You must be in the {} got branch'.format(branch))
+        raise SystemExit('You must be in the {} git branch'.format(branch))
 
 
 def main():
@@ -288,7 +338,7 @@ def main():
         '--only',
         default=False,
         action='store_true',
-        help='Only run the specified action')
+        help='Only run the specified action, by default the specified action and all sub-sequent actions are run')
     parser.add_argument(
         'action',
         default='build',

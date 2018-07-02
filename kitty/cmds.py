@@ -10,7 +10,7 @@ from .cli import parse_args
 from .config import parse_config, parse_send_text_bytes
 from .constants import appname
 from .tabs import SpecialWindow
-from .utils import non_blocking_read
+from .utils import natsort_ints
 
 
 class MatchError(ValueError):
@@ -46,19 +46,19 @@ def cmd(short_desc, desc=None, options_spec=None, no_response=False, argspec='..
 MATCH_WINDOW_OPTION = '''\
 --match -m
 The window to match. Match specifications are of the form:
-|_ field:regexp|. Where field can be one of: id, title, pid, cwd, cmdline, num.
-You can use the |_ ls| command to get a list of windows. Note that for
+:italic:`field:regexp`. Where field can be one of: id, title, pid, cwd, cmdline, num.
+You can use the :italic:`ls` command to get a list of windows. Note that for
 numeric fields such as id, pid and num the expression is interpreted as a number,
 not a regular expression. The field num refers to the window position in the current tab,
 starting from zero and counting clockwise (this is the same as the order in which the
-windows are reported by the |_ ls| command). The window id of the current window
+windows are reported by the :italic:`ls` command). The window id of the current window
 is available as the KITTY_WINDOW_ID environment variable.
 '''
 MATCH_TAB_OPTION = '''\
 --match -m
 The tab to match. Match specifications are of the form:
-|_ field:regexp|. Where field can be one of: id, title, pid, cwd, cmdline.
-You can use the |_ ls| command to get a list of tabs. Note that for
+:italic:`field:regexp`. Where field can be one of: id, title, pid, cwd, cmdline.
+You can use the :italic:`ls` command to get a list of tabs. Note that for
 numeric fields such as id and pid the expression is interpreted as a number,
 not a regular expression. When using title or id, first a matching tab is
 looked for and if not found a matching window is looked for, and the tab
@@ -70,10 +70,10 @@ for that window is used.
 @cmd(
     'List all tabs/windows',
     'List all windows. The list is returned as JSON tree. The top-level is a list of'
-    ' operating system {appname} windows. Each OS window has an |_ id| and a list'
-    ' of |_ tabs|. Each tab has its own |_ id|, a |_ title| and a list of |_ windows|.'
-    ' Each window has an |_ id|, |_ title|, |_ current working directory|, |_ process id (PID)| and'
-    ' |_ command-line| of the process running in the window.\n\n'
+    ' operating system {appname} windows. Each OS window has an :italic:`id` and a list'
+    ' of :italic:`tabs`. Each tab has its own :italic:`id`, a :italic:`title` and a list of :italic:`windows`.'
+    ' Each window has an :italic:`id`, :italic:`title`, :italic:`current working directory`, :italic:`process id (PID)` and'
+    ' :italic:`command-line` of the process running in the window.\n\n'
     'You can use these criteria to select windows/tabs for the other commands.'.format(appname=appname),
     argspec=''
 )
@@ -110,14 +110,14 @@ def set_font_size(boss, window, payload):
 @cmd(
     'Send arbitrary text to specified windows',
     'Send arbitrary text to specified windows. The text follows Python'
-    ' escaping rules. So you can use escapes like |_ \\x1b| to send control codes'
-    ' and |_ \\u21fa| to send unicode characters. If you use the |_ --match| option'
+    ' escaping rules. So you can use escapes like :italic:`\\x1b` to send control codes'
+    ' and :italic:`\\u21fa` to send unicode characters. If you use the :option:`kitty @ send-text --match` option'
     ' the text will be sent to all matched windows. By default, text is sent to'
     ' only the currently active window.',
     options_spec=MATCH_WINDOW_OPTION + '''\n
 --stdin
 type=bool-set
-Read the text to be sent from |_ stdin|. Note that in this case the text is sent as is,
+Read the text to be sent from :italic:`stdin`. Note that in this case the text is sent as is,
 not interpreted for escapes. If stdin is a terminal, you can press Ctrl-D to end reading.
 
 
@@ -132,27 +132,32 @@ def cmd_send_text(global_opts, opts, args):
     limit = 1024
     ret = {'match': opts.match, 'is_binary': False}
 
-    def pipe(src=sys.stdin):
+    def pipe():
         ret['is_binary'] = True
-        import select
-        with non_blocking_read() as fd:
+        if sys.stdin.isatty():
+            import select
+            fd = sys.stdin.fileno()
             keep_going = True
             while keep_going:
-                rd = select.select([fd], [], [])
-                if rd:
-                    data = sys.stdin.buffer.read()
-                    if not data:
-                        break
-                    data = data.decode('utf-8')
-                    if '\x04' in data:
-                        data = data[:data.index('\x04')]
-                        keep_going = False
-                    while data:
-                        ret['text'] = data[:limit]
-                        yield ret
-                        data = data[limit:]
-                else:
+                rd = select.select([fd], [], [])[0]
+                if not rd:
                     break
+                data = os.read(fd, limit)
+                if not data:
+                    break  # eof
+                data = data.decode('utf-8')
+                if '\x04' in data:
+                    data = data[:data.index('\x04')]
+                    keep_going = False
+                ret['text'] = data
+                yield ret
+        else:
+            while True:
+                data = sys.stdin.read(limit)
+                if not data:
+                    break
+                ret['text'] = data[:limit]
+                yield ret
 
     def chunks(text):
         ret['is_binary'] = False
@@ -202,15 +207,21 @@ def send_text(boss, window, payload):
 # set_window_title {{{
 @cmd(
     'Set the window title',
-    'Set the title for the specified window(s). If you use the |_ --match| option'
+    'Set the title for the specified window(s). If you use the :option:`kitty @ set-window-title --match` option'
     ' the title will be set for all matched windows. By default, only the window'
     ' in which the command is run is affected. If you do not specify a title, the'
     ' last title set by the child process running in the window will be used.',
-    options_spec=MATCH_WINDOW_OPTION,
+    options_spec='''
+--temporary
+type=bool-set
+By default, if you use :italic:`set-window-title` the title will be permanently changed
+and programs running in the window will not be able to change it again. If you
+want to allow other programs to change it afterwards, use this option.
+    ''' + '\n\n' + MATCH_WINDOW_OPTION,
     argspec='TITLE ...'
 )
 def cmd_set_window_title(global_opts, opts, args):
-    return {'title': ' '.join(args), 'match': opts.match}
+    return {'title': ' '.join(args), 'match': opts.match, 'temporary': opts.temporary}
 
 
 def set_window_title(boss, window, payload):
@@ -222,14 +233,19 @@ def set_window_title(boss, window, payload):
             raise MatchError(match)
     for window in windows:
         if window:
-            window.set_title(payload['title'])
+            if payload['temporary']:
+                window.override_title = None
+                window.title_changed(payload['title'])
+            else:
+                window.set_title(payload['title'])
+
 # }}}
 
 
 # set_tab_title {{{
 @cmd(
     'Set the tab title',
-    'Set the title for the specified tab(s). If you use the |_ --match| option'
+    'Set the title for the specified tab(s). If you use the :option:`kitty @ set-tab-title --match` option'
     ' the title will be set for all matched tabs. By default, only the tab'
     ' in which the command is run is affected. If you do not specify a title, the'
     ' title of the currently active window in the tab is used.',
@@ -297,8 +313,8 @@ The number of cells to change the size by, can be negative to decrease the size.
 type=choices
 choices=horizontal,vertical,reset
 default=horizontal
-The axis along which to resize. If |_ horizontal|, it will make the window wider or narrower by the specified increment.
-If |_ vertical|, it will make the window taller or shorter by the specified increment. The special value |_ reset| will
+The axis along which to resize. If :italic:`horizontal`, it will make the window wider or narrower by the specified increment.
+If :italic:`vertical`, it will make the window taller or shorter by the specified increment. The special value :italic:`reset` will
 reset the layout to its default configuration.
 
 
@@ -363,12 +379,12 @@ def close_tab(boss, window, payload):
 # new_window {{{
 @cmd(
     'Open new window',
-    'Open a new window in the specified tab. If you use the |_ --match| option'
+    'Open a new window in the specified tab. If you use the :option:`kitty @ new-window --match` option'
     ' the first matching tab is used. Otherwise the currently active tab is used.'
     ' Prints out the id of the newly opened window. Any command line arguments'
     ' are assumed to be the command line used to run in the new window, if none'
     ' are provided, the default shell is run. For example:\n'
-    '|_ kitty @ new-window --title Email mutt|',
+    ':italic:`kitty @ new-window --title Email mutt`',
     options_spec=MATCH_TAB_OPTION + '''\n
 --title
 The title for the new window. By default it will use the title set by the
@@ -514,7 +530,7 @@ def get_text(boss, window, payload):
     if payload['extent'] == 'selection':
         ans = window.text_for_selection()
     else:
-        ans = window.as_text(as_ansi=bool(payload['ansi']), add_history=True)
+        ans = window.as_text(as_ansi=bool(payload['ansi']), add_history=payload['extent'] == 'all')
     return ans
 # }}}
 
@@ -592,11 +608,43 @@ def set_colors(boss, window, payload):
 # }}}
 
 
+# get_colors {{{
+@cmd(
+    'Get terminal colors',
+    'Get the terminal colors for the specified window (defaults to active window). Colors will be output to stdout in the same syntax as used for kitty.conf',
+    options_spec='''\
+--configured -c
+type=bool-set
+Instead of outputting the colors for the specified window, output the currently
+configured colors.
+
+''' + '\n\n' + MATCH_WINDOW_OPTION
+)
+def cmd_get_colors(global_opts, opts, args):
+    return {'configured': opts.configured, 'match': opts.match}
+
+
+def get_colors(boss, window, payload):
+    from .rgb import Color, color_as_sharp, color_from_int
+    ans = {k: getattr(boss.opts, k) for k in boss.opts if isinstance(getattr(boss.opts, k), Color)}
+    if not payload['configured']:
+        windows = (window or boss.active_window,)
+        if payload['match']:
+            windows = tuple(boss.match_windows(payload['match']))
+            if not windows:
+                raise MatchError(payload['match'])
+        ans.update({k: color_from_int(v) for k, v in windows[0].current_colors.items()})
+    all_keys = natsort_ints(ans)
+    maxlen = max(map(len, all_keys))
+    return '\n'.join(('{:%ds} {}' % maxlen).format(key, color_as_sharp(ans[key])) for key in all_keys)
+# }}}
+
+
 # set_background_opacity {{{
 @cmd(
     'Set the background_opacity',
     'Set the background opacity for the specified windows. This will only work if you have turned on'
-    ' dynamic_background_opacity in kitty.conf. The background opacity affects all kitty windows in a'
+    ' :opt:`dynamic_background_opacity` in :file:`kitty.conf`. The background opacity affects all kitty windows in a'
     ' single os_window. For example: kitty @ set-background-opacity 0.5',
     options_spec='''\
 --all -a
@@ -635,8 +683,12 @@ def set_background_opacity(boss, window, payload):
 cmap = {v.name: v for v in globals().values() if hasattr(v, 'is_cmd')}
 
 
+def cli_params_for(func):
+    return (func.options_spec or '\n').format, func.argspec, func.desc, '{} @ {}'.format(appname, func.name)
+
+
 def parse_subcommand_cli(func, args):
-    opts, items = parse_args(args[1:], (func.options_spec or '\n').format, func.argspec, func.desc, '{} @ {}'.format(appname, func.name))
+    opts, items = parse_args(args[1:], *cli_params_for(func))
     if func.args_count is not None and func.args_count != len(items):
         if func.args_count == 0:
             raise SystemExit('Unknown extra argument(s) supplied to {}'.format(func.name))

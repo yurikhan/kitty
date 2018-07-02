@@ -35,8 +35,10 @@
 typedef struct {
     struct xkb_context*     context;
     struct xkb_keymap*      keymap;
+    struct xkb_keymap*      default_keymap;
     struct xkb_state*       state;
     struct xkb_state*       clean_state;
+    struct xkb_state*       default_state;
     struct xkb_compose_state* composeState;
 
     xkb_mod_index_t         controlIdx;
@@ -81,3 +83,4 @@ GLFWbool glfw_xkb_should_repeat(_GLFWXKBData *xkb, xkb_keycode_t scancode);
 const char* glfw_xkb_keysym_name(xkb_keysym_t sym);
 xkb_keysym_t glfw_xkb_sym_for_key(int key);
 void glfw_xkb_handle_key_event(_GLFWwindow *window, _GLFWXKBData *xkb, xkb_keycode_t scancode, int action);
+int glfw_xkb_keysym_from_name(const char *name, GLFWbool case_sensitive);

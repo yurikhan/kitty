@@ -4,23 +4,37 @@
 
 import os
 import pwd
-import shlex
 import sys
 from collections import namedtuple
 
 from .fast_data_types import set_boss as set_c_boss
 
 appname = 'kitty'
-version = (0, 10, 1)
+version = (0, 11, 2)
 str_version = '.'.join(map(str, version))
 _plat = sys.platform.lower()
 is_macos = 'darwin' in _plat
 base = os.path.dirname(os.path.abspath(__file__))
-editor = shlex.split(os.environ.get('EDITOR', 'vim'))
 
 
 ScreenGeometry = namedtuple('ScreenGeometry', 'xstart ystart xnum ynum dx dy')
 WindowGeometry = namedtuple('WindowGeometry', 'left top right bottom xnum ynum')
+
+
+def kitty_exe():
+    ans = getattr(kitty_exe, 'ans', None)
+    if ans is None:
+        rpath = getattr(sys, 'bundle_exe_dir', None)
+        if not rpath:
+            items = frozenset(os.environ['PATH'].split(os.pathsep))
+            for candidate in items:
+                if os.access(os.path.join(candidate, 'kitty'), os.X_OK):
+                    rpath = candidate
+                    break
+            else:
+                rpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'launcher')
+        ans = kitty_exe.ans = os.path.join(rpath, 'kitty')
+    return ans
 
 
 def _get_config_dir():

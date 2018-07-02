@@ -5,9 +5,10 @@
  * Distributed under terms of the GPL3 license.
  */
 
-#include "threading.h"
 #include "state.h"
+#include "threading.h"
 #include "screen.h"
+#include "fonts.h"
 #include <termios.h>
 #include <unistd.h>
 #include <float.h>
@@ -110,16 +111,22 @@ handle_signal(int sig_num) {
 
 static inline bool
 self_pipe(int fds[2]) {
+#ifdef __APPLE__
     int flags;
     flags = pipe(fds);
     if (flags != 0) return false;
-    flags = fcntl(fds[0], F_GETFD);
-    if (flags == -1) {  return false; }
-    if (fcntl(fds[0], F_SETFD, flags | FD_CLOEXEC) == -1) { return false; }
-    flags = fcntl(fds[0], F_GETFL);
-    if (flags == -1) { return false; }
-    if (fcntl(fds[0], F_SETFL, flags | O_NONBLOCK) == -1) { return false; }
+    for (int i = 0; i < 2; i++) {
+        flags = fcntl(fds[i], F_GETFD);
+        if (flags == -1) {  return false; }
+        if (fcntl(fds[i], F_SETFD, flags | FD_CLOEXEC) == -1) { return false; }
+        flags = fcntl(fds[i], F_GETFL);
+        if (flags == -1) { return false; }
+        if (fcntl(fds[i], F_SETFL, flags | O_NONBLOCK) == -1) { return false; }
+    }
     return true;
+#else
+    return pipe2(fds, O_CLOEXEC | O_NONBLOCK) == 0;
+#endif
 }
 
 
@@ -486,7 +493,7 @@ static double last_render_at = -DBL_MAX;
 
 static inline double
 cursor_width(double w, bool vert, OSWindow *os_window) {
-    double dpi = vert ? global_state.logical_dpi_x : global_state.logical_dpi_y;
+    double dpi = vert ? os_window->fonts_data->logical_dpi_x : os_window->fonts_data->logical_dpi_y;
     double ans = w * dpi / 72.0;  // as pixels
     double factor = 2.0 / (vert ? os_window->viewport_width : os_window->viewport_height);
     return ans * factor;
@@ -552,20 +559,6 @@ update_window_title(Window *w, OSWindow *os_window) {
     return false;
 }
 
-static PyObject*
-simple_render_screen(PyObject UNUSED *self, PyObject *args) {
-#define simple_render_screen_doc "Render a Screen object, with no cursor"
-    Screen *screen;
-    float xstart, ystart, dx, dy;
-    static ssize_t vao_idx = -1, gvao_idx = -1;
-    if (vao_idx == -1) vao_idx = create_cell_vao();
-    if (gvao_idx == -1) gvao_idx = create_graphics_vao();
-    if (!PyArg_ParseTuple(args, "O!ffff", &Screen_Type, &screen, &xstart, &ystart, &dx, &dy)) return NULL;
-    send_cell_data_to_gpu(vao_idx, gvao_idx, xstart, ystart, dx, dy, screen, current_os_window());
-    draw_cells(vao_idx, gvao_idx, xstart, ystart, dx, dy, screen, current_os_window(), true);
-    Py_RETURN_NONE;
-}
-
 static inline bool
 prepare_to_render_os_window(OSWindow *os_window, double now, unsigned int *active_window_id, color_type *active_window_bg, unsigned int *num_visible_windows) {
 #define TD os_window->tab_bar_render_data
@@ -615,12 +608,12 @@ render_os_window(OSWindow *os_window, double now, unsigned int active_window_id,
     Tab *tab = os_window->tabs + os_window->active_tab;
     BorderRects *br = &tab->border_rects;
     draw_borders(br->vao_idx, br->num_border_rects, br->rect_buf, br->is_dirty, os_window->viewport_width, os_window->viewport_height, active_window_bg, num_visible_windows, os_window);
-    if (TD.screen && os_window->num_tabs > 1) draw_cells(TD.vao_idx, 0, TD.xstart, TD.ystart, TD.dx, TD.dy, TD.screen, os_window, true);
+    if (TD.screen && os_window->num_tabs > 1) draw_cells(TD.vao_idx, 0, TD.xstart, TD.ystart, TD.dx, TD.dy, TD.screen, os_window, true, false);
     for (unsigned int i = 0; i < tab->num_windows; i++) {
         Window *w = tab->windows + i;
         if (w->visible && WD.screen) {
             bool is_active_window = i == tab->active_window;
-            draw_cells(WD.vao_idx, WD.gvao_idx, WD.xstart, WD.ystart, WD.dx, WD.dy, WD.screen, os_window, is_active_window);
+            draw_cells(WD.vao_idx, WD.gvao_idx, WD.xstart, WD.ystart, WD.dx, WD.dy, WD.screen, os_window, is_active_window, true);
             if (is_active_window && WD.screen->cursor_render_info.is_visible && (!WD.screen->cursor_render_info.is_focused || WD.screen->cursor_render_info.shape != CURSOR_BLOCK)) {
                 draw_cursor(&WD.screen->cursor_render_info, os_window->is_focused);
             }
@@ -661,6 +654,7 @@ render(double now) {
         }
         unsigned int active_window_id = 0, num_visible_windows = 0;
         color_type active_window_bg = 0;
+        if (!w->fonts_data) { log_error("No fonts data found for window id: %llu", w->id); continue; }
         if (prepare_to_render_os_window(w, now, &active_window_id, &active_window_bg, &num_visible_windows)) needs_render = true;
         if (w->last_active_window_id != active_window_id || w->last_active_tab != w->active_tab || w->focused_at_last_render != w->is_focused) needs_render = true;
         if (needs_render) render_os_window(w, now, active_window_id, active_window_bg, num_visible_windows);
@@ -760,8 +754,25 @@ process_pending_closes(ChildMonitor *self) {
             remove_os_window(os_window->id);
         } else has_open_windows = true;
     }
+#ifdef __APPLE__
+    if (!OPT(macos_quit_when_last_window_closed)) {
+        if (!has_open_windows && !application_quit_requested()) has_open_windows = true;
+    }
+#endif
     return has_open_windows;
 }
+
+#ifdef __APPLE__
+// If we create new OS windows during wait_events(), using global menu actions
+// via the mouse causes a crash because of the way autorelease pools work in
+// glfw/cocoa. So we use a flag instead.
+static unsigned int cocoa_pending_actions = 0;
+
+void
+set_cocoa_pending_action(CocoaPendingAction action) {
+    cocoa_pending_actions |= action;
+}
+#endif
 
 static PyObject*
 main_loop(ChildMonitor *self, PyObject *a UNUSED) {
@@ -773,6 +784,13 @@ main_loop(ChildMonitor *self, PyObject *a UNUSED) {
         if (global_state.has_pending_resizes) process_pending_resizes(now);
         render(now);
         wait_for_events();
+#ifdef __APPLE__
+        if (cocoa_pending_actions) {
+            if (cocoa_pending_actions & PREFERENCES_WINDOW) { call_boss(edit_config_file, NULL); }
+            if (cocoa_pending_actions & NEW_OS_WINDOW) { call_boss(new_os_window, NULL); }
+            cocoa_pending_actions = 0;
+        }
+#endif
         parse_input(self);
         if (global_state.close_all_windows) close_all_windows();
         has_open_windows = process_pending_closes(self);
@@ -1330,7 +1348,6 @@ safe_pipe(PYNOARG) {
 }
 
 static PyMethodDef module_methods[] = {
-    METHOD(simple_render_screen, METH_VARARGS)
     METHODB(safe_pipe, METH_NOARGS),
     {NULL}  /* Sentinel */
 };

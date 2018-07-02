@@ -36,7 +36,6 @@ version = tuple(
 )
 _plat = sys.platform.lower()
 is_macos = 'darwin' in _plat
-is_travis = os.environ.get('TRAVIS') == 'true'
 env = None
 
 PKGCONFIG = os.environ.get('PKGCONFIG_EXE', 'pkg-config')
@@ -162,7 +161,7 @@ class Env:
         self.cc, self.cppflags, self.cflags, self.ldflags, self.ldpaths = cc, cppflags, cflags, ldflags, ldpaths
 
     def copy(self):
-        return Env(self.cc, list(self.cppflags), list(self.cflags), list(self.ldflags), list(self.ldflags))
+        return Env(self.cc, list(self.cppflags), list(self.cflags), list(self.ldflags), list(self.ldpaths))
 
 
 def init_env(
@@ -220,7 +219,8 @@ def init_env(
         cppflags.append('-DWITH_PROFILER')
         cflags.append('-g3')
         ldflags.append('-lprofiler')
-    return Env(cc, cppflags, cflags, ldflags)
+    ldpaths = []
+    return Env(cc, cppflags, cflags, ldflags, ldpaths=ldpaths)
 
 
 def kitty_env():
@@ -247,9 +247,6 @@ def kitty_env():
     ans.ldpaths += pylib + font_libs + gl_libs + libpng
     if is_macos:
         ans.ldpaths.extend('-framework Cocoa'.split())
-        if is_travis and 'SW' in os.environ:
-            cflags.append('-I{}/include'.format(os.environ['SW']))
-            ans.ldpaths.append('-L{}/lib'.format(os.environ['SW']))
     else:
         ans.ldpaths += ['-lrt']
         if '-ldl' not in ans.ldpaths:
@@ -507,7 +504,7 @@ def build_asan_launcher(args):
     run_tool(cmd, desc='Creating {} ...'.format(emphasis('asan-launcher')))
 
 
-def build_linux_launcher(args, launcher_dir='.', for_bundle=False, sh_launcher=False):
+def build_linux_launcher(args, launcher_dir='.', for_bundle=False, sh_launcher=False, for_freeze=False):
     cflags = '-Wall -Werror -fpie'.split()
     cppflags = []
     libs = []
@@ -516,7 +513,7 @@ def build_linux_launcher(args, launcher_dir='.', for_bundle=False, sh_launcher=F
         libs.append('-lprofiler')
     else:
         cflags.append('-O3')
-    if for_bundle:
+    if for_bundle or for_freeze:
         cppflags.append('-DFOR_BUNDLE')
         cppflags.append('-DPYVER="{}"'.format(sysconfig.get_python_version()))
     elif sh_launcher:
@@ -527,6 +524,8 @@ def build_linux_launcher(args, launcher_dir='.', for_bundle=False, sh_launcher=F
     cppflags += shlex.split(os.environ.get('CPPFLAGS', ''))
     cflags += shlex.split(os.environ.get('CFLAGS', ''))
     ldflags = shlex.split(os.environ.get('LDFLAGS', ''))
+    if for_freeze:
+        ldflags += ['-Wl,-rpath,$ORIGIN/../lib']
     cmd = [env.cc] + cppflags + cflags + [
         'linux-launcher.c', '-o',
         os.path.join(launcher_dir, exe)
@@ -534,7 +533,44 @@ def build_linux_launcher(args, launcher_dir='.', for_bundle=False, sh_launcher=F
     run_tool(cmd)
 
 
-def package(args, for_bundle=False, sh_launcher=False):  # {{{
+# Packaging {{{
+
+
+def copy_man_pages(ddir):
+    mandir = os.path.join(ddir, 'share', 'man')
+    safe_makedirs(mandir)
+    try:
+        shutil.rmtree(os.path.join(mandir, 'man1'))
+    except FileNotFoundError:
+        pass
+    src = os.path.join(base, 'docs/_build/man')
+    if not os.path.exists(src):
+        raise SystemExit('''\
+The kitty man page is missing. If you are building from git then run:
+make && make docs
+(needs the sphinx documentation system to be installed)
+''')
+    shutil.copytree(src, os.path.join(mandir, 'man1'))
+
+
+def copy_html_docs(ddir):
+    htmldir = os.path.join(ddir, 'share', 'doc', appname, 'html')
+    safe_makedirs(os.path.dirname(htmldir))
+    try:
+        shutil.rmtree(htmldir)
+    except FileNotFoundError:
+        pass
+    src = os.path.join(base, 'docs/_build/html')
+    if not os.path.exists(src):
+        raise SystemExit('''\
+The kitty html docs are missing. If you are building from git then run:
+make && make docs
+(needs the sphinx documentation system to be installed)
+''')
+    shutil.copytree(src, htmldir)
+
+
+def package(args, for_bundle=False, sh_launcher=False):
     ddir = args.prefix
     if for_bundle or sh_launcher:
         args.libdir_name = 'lib'
@@ -553,7 +589,7 @@ def package(args, for_bundle=False, sh_launcher=False):  # {{{
         return [
             x for x in entries
             if '.' in x and x.rpartition('.')[2] not in
-            ('py', 'so', 'conf', 'glsl')
+            ('py', 'so', 'glsl')
         ]
 
     shutil.copytree('kitty', os.path.join(libdir, 'kitty'), ignore=src_ignore)
@@ -567,8 +603,10 @@ def package(args, for_bundle=False, sh_launcher=False):  # {{{
     shutil.copy2('kitty/launcher/kitty', os.path.join(libdir, 'kitty', 'launcher'))
     launcher_dir = os.path.join(ddir, 'bin')
     safe_makedirs(launcher_dir)
-    build_linux_launcher(args, launcher_dir, for_bundle, sh_launcher)
+    build_linux_launcher(args, launcher_dir, for_bundle, sh_launcher, args.for_freeze)
     if not is_macos:  # {{{ linux desktop gunk
+        copy_man_pages(ddir)
+        copy_html_docs(ddir)
         icdir = os.path.join(ddir, 'share', 'icons', 'hicolor', '256x256', 'apps')
         safe_makedirs(icdir)
         shutil.copy2('logo/kitty.png', icdir)
@@ -582,7 +620,7 @@ Version=1.0
 Type=Application
 Name=kitty
 GenericName=Terminal emulator
-Comment=A modern, hackable, featureful, OpenGL based terminal emulator
+Comment=A fast, feature full, GPU based terminal emulator
 TryExec=kitty
 Exec=kitty
 Icon=kitty
@@ -668,7 +706,7 @@ def clean():
         os.unlink(x)
 
 
-def option_parser():
+def option_parser():  # {{{
     p = argparse.ArgumentParser()
     p.add_argument(
         'action',
@@ -717,11 +755,18 @@ def option_parser():
         help='Use the -pg compile flag to add profiling information'
     )
     p.add_argument(
+        '--for-freeze',
+        default=False,
+        action='store_true',
+        help='Internal use'
+    )
+    p.add_argument(
         '--libdir-name',
         default='lib',
         help='The name of the directory inside --prefix in which to store compiled files. Defaults to "lib"'
     )
     return p
+# }}}
 
 
 def main():
@@ -745,6 +790,8 @@ def main():
         )
     elif args.action == 'linux-package':
         build(args, native_optimizations=False)
+        if not os.path.exists(os.path.join(base, 'docs/_build/html')):
+            run_tool(['make', 'docs'])
         package(args)
     elif args.action == 'osx-bundle':
         build(args, native_optimizations=False)

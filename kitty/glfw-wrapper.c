@@ -1,7 +1,7 @@
 
-#include <dlfcn.h>
 #include "data-types.h"
 #include "glfw-wrapper.h"
+#include <dlfcn.h>
 
 static void* handle = NULL;
 
@@ -359,6 +359,10 @@ load_glfw(const char* path) {
 
     *(void **) (&glfwSetCocoaTextInputFilter_impl) = dlsym(handle, "glfwSetCocoaTextInputFilter");
 
+    *(void **) (&glfwSetApplicationShouldHandleReopen_impl) = dlsym(handle, "glfwSetApplicationShouldHandleReopen");
+
+    *(void **) (&glfwGetCocoaKeyEquivalent_impl) = dlsym(handle, "glfwGetCocoaKeyEquivalent");
+
     *(void **) (&glfwGetX11Display_impl) = dlsym(handle, "glfwGetX11Display");
 
     *(void **) (&glfwGetX11Window_impl) = dlsym(handle, "glfwGetX11Window");
@@ -366,6 +370,8 @@ load_glfw(const char* path) {
     *(void **) (&glfwSetX11SelectionString_impl) = dlsym(handle, "glfwSetX11SelectionString");
 
     *(void **) (&glfwGetX11SelectionString_impl) = dlsym(handle, "glfwGetX11SelectionString");
+
+    *(void **) (&glfwGetXKBScancode_impl) = dlsym(handle, "glfwGetXKBScancode");
 
     return NULL;
 }

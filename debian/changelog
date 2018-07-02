@@ -1,3 +1,11 @@
+kitty (0.11.2-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+    + Lenna image removed
+    + Accepts -T to set the terminal's title
+
+ -- James McCoy <jamessan@debian.org>  Mon, 02 Jul 2018 08:05:12 -0400
+
 kitty (0.10.1-1) unstable; urgency=medium
 
   * New upstream release

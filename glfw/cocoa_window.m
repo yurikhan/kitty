@@ -209,7 +209,7 @@ static int translateFlags(NSUInteger flags)
     return mods;
 }
 
-#define debug_key(...) if (_glfw.ns.debug_keyboard) NSLog(__VA_ARGS__)
+#define debug_key(...) if (_glfw.hints.init.debugKeyboard) NSLog(__VA_ARGS__)
 
 static inline const char*
 format_mods(int mods) {
@@ -480,6 +480,15 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
         _glfwInputWindowCloseRequest(window);
 
     return NSTerminateCancel;
+}
+
+static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
+
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag
+{
+    if (!handle_reopen_callback) return YES;
+    if (handle_reopen_callback(flag)) return YES;
+    return NO;
 }
 
 - (void)applicationDidChangeScreenParameters:(NSNotification *) notification
@@ -2087,4 +2096,103 @@ GLFWAPI GLFWcocoatextinputfilterfun glfwSetCocoaTextInputFilter(GLFWwindow *hand
     GLFWcocoatextinputfilterfun previous = window->ns.textInputFilterCallback;
     window->ns.textInputFilterCallback = callback;
     return previous;
+}
+
+GLFWAPI GLFWapplicationshouldhandlereopenfun glfwSetApplicationShouldHandleReopen(GLFWapplicationshouldhandlereopenfun callback) {
+    GLFWapplicationshouldhandlereopenfun previous = handle_reopen_callback;
+    handle_reopen_callback = callback;
+    return previous;
+}
+
+GLFWAPI void glfwGetCocoaKeyEquivalent(int glfw_key, int glfw_mods, unsigned short *cocoa_key, int *cocoa_mods) {
+    *cocoa_key = 0;
+    *cocoa_mods = 0;
+
+    if (glfw_mods & GLFW_MOD_SHIFT)
+        *cocoa_mods |= NSEventModifierFlagShift;
+    if (glfw_mods & GLFW_MOD_CONTROL)
+        *cocoa_mods |= NSEventModifierFlagControl;
+    if (glfw_mods & GLFW_MOD_ALT)
+        *cocoa_mods |= NSEventModifierFlagOption;
+    if (glfw_mods & GLFW_MOD_SUPER)
+        *cocoa_mods |= NSEventModifierFlagCommand;
+    if (glfw_mods & GLFW_MOD_CAPS_LOCK)
+        *cocoa_mods |= NSEventModifierFlagCapsLock;
+
+    switch(glfw_key) {
+#define K(ch, name) case GLFW_KEY_##name: *cocoa_key = ch; break;
+        K('a', A);
+        K('b', B);
+        K('c', C);
+        K('d', D);
+        K('e', E);
+        K('f', F);
+        K('g', G);
+        K('h', H);
+        K('i', I);
+        K('j', J);
+        K('k', K);
+        K('l', L);
+        K('m', M);
+        K('n', N);
+        K('o', O);
+        K('p', P);
+        K('q', Q);
+        K('r', R);
+        K('s', S);
+        K('t', T);
+        K('u', U);
+        K('v', V);
+        K('w', W);
+        K('x', X);
+        K('y', Y);
+        K('z', Z);
+        K('0', 0);
+        K('1', 1);
+        K('2', 2);
+        K('3', 3);
+        K('5', 5);
+        K('6', 6);
+        K('7', 7);
+        K('8', 8);
+        K('9', 9);
+        K('\'', APOSTROPHE);
+        K(',', COMMA);
+        K('.', PERIOD);
+        K('/', SLASH);
+        K('-', MINUS);
+        K('=', EQUAL);
+        K(';', SEMICOLON);
+        K('[', LEFT_BRACKET);
+        K(']', RIGHT_BRACKET);
+        K('`', GRAVE_ACCENT);
+        K('\\', BACKSLASH);
+
+        K(0x35, ESCAPE);
+        K('\r', ENTER);
+        K('\t', TAB);
+        K(NSBackspaceCharacter, BACKSPACE);
+        K(NSInsertFunctionKey, INSERT);
+        K(NSDeleteCharacter, DELETE);
+        K(NSLeftArrowFunctionKey, LEFT);
+        K(NSRightArrowFunctionKey, RIGHT);
+        K(NSUpArrowFunctionKey, UP);
+        K(NSDownArrowFunctionKey, DOWN);
+        K(NSPageUpFunctionKey, PAGE_UP);
+        K(NSPageDownFunctionKey, PAGE_DOWN);
+        K(NSHomeFunctionKey, HOME);
+        K(NSEndFunctionKey, END);
+        K(NSPrintFunctionKey, PRINT_SCREEN);
+        case GLFW_KEY_F1 ... GLFW_KEY_F24:
+            *cocoa_key = NSF1FunctionKey + (glfw_key - GLFW_KEY_F1); break;
+        case GLFW_KEY_KP_0 ... GLFW_KEY_KP_9:
+            *cocoa_key = NSEventModifierFlagNumericPad | (0x52 + (glfw_key - GLFW_KEY_KP_0)); break;
+        K((unichar)(0x41|NSEventModifierFlagNumericPad), KP_DECIMAL);
+        K((unichar)(0x43|NSEventModifierFlagNumericPad), KP_MULTIPLY);
+        K((unichar)(0x45|NSEventModifierFlagNumericPad), KP_ADD);
+        K((unichar)(0x4B|NSEventModifierFlagNumericPad), KP_DIVIDE);
+        K((unichar)(0x4E|NSEventModifierFlagNumericPad), KP_SUBTRACT);
+        K((unichar)(0x51|NSEventModifierFlagNumericPad), KP_EQUAL);
+#undef K
+    }
 }

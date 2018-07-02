@@ -32,3 +32,14 @@ rendered_logo: logo/kitty.iconset/icon_256x256.png
 
 app: rendered_logo
 	python3 setup.py kitty.app $(VVAL)
+
+man:
+	$(MAKE) FAIL_WARN=$(FAIL_WARN) -C docs man
+
+html:
+	$(MAKE) FAIL_WARN=$(FAIL_WARN) -C docs html
+
+linkcheck:
+	$(MAKE) FAIL_WARN=$(FAIL_WARN) -C docs linkcheck
+
+docs: man html

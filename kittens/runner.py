@@ -12,7 +12,7 @@ aliases = {'url_hints': 'hints'}
 
 
 def resolved_kitten(k):
-    return aliases.get(k, k)
+    return aliases.get(k, k).replace('-', '_')
 
 
 def import_kitten_main_module(config_dir, kitten):
@@ -76,15 +76,60 @@ def launch(args):
 def deserialize(output):
     import json
     if output.startswith('OK: '):
-        prefix, sz, rest = output.split(' ', 2)
-        return json.loads(rest[:int(sz)])
+        try:
+            prefix, sz, rest = output.split(' ', 2)
+            return json.loads(rest[:int(sz)])
+        except Exception:
+            raise ValueError('Failed to parse kitten output: {!r}'.format(output))
 
 
-def run_kitten(kitten):
+def run_kitten(kitten, run_name='__main__'):
     import runpy
     kitten = resolved_kitten(kitten)
     set_debug(kitten)
-    runpy.run_module('kittens.{}.main'.format(kitten), run_name='__main__')
+    try:
+        runpy.run_module('kittens.{}.main'.format(kitten), run_name=run_name)
+    except ImportError:
+        raise SystemExit('No kitten named {}'.format(kitten))
+
+
+def all_kitten_names():
+    ans = getattr(all_kitten_names, 'ans', None)
+    if ans is None:
+        n = []
+        import glob
+        base = os.path.dirname(os.path.abspath(__file__))
+        for x in glob.glob(os.path.join(base, '*', '__init__.py')):
+            q = os.path.basename(os.path.dirname(x))
+            if q != 'tui':
+                n.append(q)
+        all_kitten_names.ans = ans = frozenset(n)
+    return ans
+
+
+def list_kittens():
+    print('You must specify the name of a kitten to run')
+    print('Choose from:')
+    print()
+    for kitten in all_kitten_names():
+        print(kitten)
+
+
+def get_kitten_cli_docs(kitten):
+    sys.cli_docs = {}
+    run_kitten(kitten, run_name='__doc__')
+    ans = sys.cli_docs
+    del sys.cli_docs
+    if 'help_text' in ans and 'usage' in ans and 'options' in ans:
+        return ans
+
+
+def get_kitten_conf_docs(kitten):
+    sys.all_options = None
+    run_kitten(kitten, run_name='__conf__')
+    ans = sys.all_options
+    del sys.all_options
+    return ans
 
 
 def main():

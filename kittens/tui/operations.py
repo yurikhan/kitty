@@ -78,6 +78,13 @@ def set_cursor_position(x, y) -> str:  # (0, 0) is top left
     return '\033[{};{}H'.format(y + 1, x + 1)
 
 
+def set_cursor_shape(shape='block', blink=True) -> str:
+    val = {'block': 1, 'underline': 3, 'bar': 5}.get(shape, 1)
+    if not blink:
+        val += 1
+    return '\033[{} q'.format(val)
+
+
 def set_scrolling_region(screen_size=None, top=None, bottom=None) -> str:
     if screen_size is None:
         return '\033[r'
@@ -182,10 +189,11 @@ def init_state(alternate_screen=True):
         reset_mode('IRM') + reset_mode('DECKM') + reset_mode('DECSCNM') +
         set_mode('DECARM') + reset_mode('DECOM') + set_mode('DECAWM') +
         set_mode('DECTCEM') + reset_mode('MOUSE_BUTTON_TRACKING') +
-        reset_mode('MOUSE_MOTION_TRACKING') + reset_mode('MOUSE_MOVE_TRACKING')
-        + reset_mode('FOCUS_TRACKING') + reset_mode('MOUSE_UTF8_MODE') +
+        reset_mode('MOUSE_MOTION_TRACKING') + reset_mode('MOUSE_MOVE_TRACKING') +
+        reset_mode('FOCUS_TRACKING') + reset_mode('MOUSE_UTF8_MODE') +
         reset_mode('MOUSE_SGR_MODE') + reset_mode('MOUSE_UTF8_MODE') +
         set_mode('BRACKETED_PASTE') + set_mode('EXTENDED_KEYBOARD') +
+        '\033]30001\033\\' +
         '\033[*x'  # reset DECSACE to default region select
     )
     if alternate_screen:
@@ -200,6 +208,7 @@ def reset_state(normal_screen=True):
         ans += reset_mode('ALTERNATE_SCREEN')
     ans += RESTORE_PRIVATE_MODE_VALUES
     ans += RESTORE_CURSOR
+    ans += '\033]30101\033\\'
     return ans
 
 
@@ -218,16 +227,21 @@ def alternate_screen(f=None):
     print(reset_mode('ALTERNATE_SCREEN'), end='', file=f)
 
 
-def set_default_colors(fg=None, bg=None) -> str:
+def set_default_colors(fg=None, bg=None, cursor=None, select_bg=None, select_fg=None) -> str:
     ans = ''
-    if fg is None:
-        ans += '\x1b]110\x1b\\'
-    else:
-        ans += '\x1b]10;{}\x1b\\'.format(color_as_sharp(fg if isinstance(fg, Color) else to_color(fg)))
-    if bg is None:
-        ans += '\x1b]111\x1b\\'
-    else:
-        ans += '\x1b]11;{}\x1b\\'.format(color_as_sharp(bg if isinstance(bg, Color) else to_color(bg)))
+
+    def item(which, num):
+        nonlocal ans
+        if which is None:
+            ans += '\x1b]1{}\x1b\\'.format(num)
+        else:
+            ans += '\x1b]{};{}\x1b\\'.format(num, color_as_sharp(which if isinstance(which, Color) else to_color(which)))
+
+    item(fg, 10)
+    item(bg, 11)
+    item(cursor, 12)
+    item(select_bg, 17)
+    item(select_fg, 19)
     return ans
 
 
@@ -235,7 +249,15 @@ def write_to_clipboard(data, use_primary=False) -> str:
     if isinstance(data, str):
         data = data.encode('utf-8')
     from base64 import standard_b64encode
-    return '\x1b]52;{};{}\x07'.format('p' if use_primary else 'c', standard_b64encode(data).decode('ascii'))
+    fmt = 'p' if use_primary else 'c'
+
+    def esc(chunk):
+        return '\x1b]52;{};{}\x07'.format(fmt, chunk)
+    ans = esc('!')  # clear clipboard buffer
+    for chunk in (data[i:i+512] for i in range(0, len(data), 512)):
+        chunk = standard_b64encode(chunk).decode('ascii')
+        ans += esc(chunk)
+    return ans
 
 
 def request_from_clipboard(use_primary=False) -> str:

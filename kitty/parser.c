@@ -13,7 +13,7 @@
 extern PyTypeObject Screen_Type;
 
 // utils {{{
-static uint64_t pow10[] = {
+static uint64_t pow10_array[] = {
     1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000, 10000000000
 };
 
@@ -26,9 +26,9 @@ utoi(uint32_t *buf, unsigned int sz) {
         if (*p == '0') { p++; sz--; }
         else break;
     }
-    if (sz < sizeof(pow10)/sizeof(pow10[0])) {
+    if (sz < sizeof(pow10_array)/sizeof(pow10_array[0])) {
         for (int i = sz-1, j=0; i >= 0; i--, j++) {
-            ans += (p[i] - '0') * pow10[j];
+            ans += (p[i] - '0') * pow10_array[j];
         }
     }
     return ans;
@@ -343,6 +343,14 @@ dispatch_osc(Screen *screen, PyObject DUMP_UNUSED *dump_callback) {
                 break;
             case 52:
                 DISPATCH_OSC(clipboard_control);
+                break;
+            case 30001:
+                REPORT_COMMAND(screen_push_dynamic_colors);
+                screen_push_dynamic_colors(screen);
+                break;
+            case 30101:
+                REPORT_COMMAND(screen_pop_dynamic_colors);
+                screen_pop_dynamic_colors(screen);
                 break;
             default:
                 REPORT_ERROR("Unknown OSC code: %u", code);
@@ -693,6 +701,22 @@ dispatch_csi(Screen *screen, PyObject DUMP_UNUSED *dump_callback) {
                 break;
             }
             REPORT_ERROR("Unknown CSI s sequence with start and end modifiers: '%c' '%c' and %u parameters", start_modifier, end_modifier, num_params);
+            break;
+        case 't':
+            if (!start_modifier && !end_modifier && num_params == 1) {
+                switch(params[0]) {
+                    case 14:
+                    case 16:
+                    case 18:
+                        CALL_CSI_HANDLER1(screen_report_size, 0);
+                        break;
+                    default:
+                        REPORT_ERROR("Unknown CSI t sequences with parameter: '%u'", params[0]);
+                        break;
+                }
+                break;
+            }
+            REPORT_ERROR("Unknown CSI t sequence with start and end modifiers: '%c' '%c' and %u parameters", start_modifier, end_modifier, num_params);
             break;
         case 'u':
             if (!start_modifier && !end_modifier && !num_params) {

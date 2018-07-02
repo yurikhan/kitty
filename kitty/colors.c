@@ -108,8 +108,8 @@ patch_color_profiles(PyObject *module UNUSED, PyObject *args) {
         v = PyDict_GetItemString(spec, key);
         if (v) {
             color_type color = PyLong_AsUnsignedLong(v);
-            for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(profiles); i++) {
-                self = (ColorProfile*)PyTuple_GET_ITEM(profiles, i);
+            for (Py_ssize_t j = 0; j < PyTuple_GET_SIZE(profiles); j++) {
+                self = (ColorProfile*)PyTuple_GET_ITEM(profiles, j);
                 self->color_table[i] = color;
                 if (change_configured) self->orig_color_table[i] = color;
                 self->dirty = true;
@@ -149,6 +149,37 @@ colorprofile_to_color(ColorProfile *self, color_type entry, color_type defval) {
     }
 }
 
+
+static PyObject*
+as_dict(ColorProfile *self, PyObject *args UNUSED) {
+#define as_dict_doc "Return all colors as a dictionary of color_name to integer (names are the same as used in kitty.conf)"
+    PyObject *ans = PyDict_New();
+    if (ans == NULL) return PyErr_NoMemory();
+    for (unsigned i = 0; i < arraysz(self->color_table); i++) {
+        static char buf[32] = {0};
+        snprintf(buf, sizeof(buf) - 1, "color%u", i);
+        PyObject *val = PyLong_FromUnsignedLong(self->color_table[i]);
+        if (!val) { Py_CLEAR(ans); return PyErr_NoMemory(); }
+        int ret = PyDict_SetItemString(ans, buf, val);
+        Py_CLEAR(val);
+        if (ret != 0) { Py_CLEAR(ans); return NULL; }
+    }
+#define D(attr, name) { \
+    color_type c = colorprofile_to_color(self, self->overridden.attr, 0xffffffff); \
+    if (c != 0xffffffff) { \
+        PyObject *val = PyLong_FromUnsignedLong(c); \
+        if (!val) { Py_CLEAR(ans); return PyErr_NoMemory(); } \
+        int ret = PyDict_SetItemString(ans, #name, val); \
+        Py_CLEAR(val); \
+        if (ret != 0) { Py_CLEAR(ans); return NULL; } \
+    }}
+    D(default_fg, foreground); D(default_bg, background);
+    D(cursor_color, cursor); D(highlight_fg, selection_foreground);
+    D(highlight_bg, selection_background);
+
+#undef D
+    return ans;
+}
 
 static PyObject*
 as_color(ColorProfile *self, PyObject *val) {
@@ -220,6 +251,21 @@ copy_color_table_to_buffer(ColorProfile *self, color_type *buf, int offset, size
     self->dirty = false;
 }
 
+void
+colorprofile_push_dynamic_colors(ColorProfile *self) {
+    if (self->dynamic_color_stack_idx >= arraysz(self->dynamic_color_stack)) {
+        memmove(self->dynamic_color_stack, self->dynamic_color_stack + 1, sizeof(self->dynamic_color_stack) - sizeof(self->dynamic_color_stack[0]));
+        self->dynamic_color_stack_idx = arraysz(self->dynamic_color_stack) - 1;
+    }
+    self->dynamic_color_stack[self->dynamic_color_stack_idx++] = self->overridden;
+}
+
+void
+colorprofile_pop_dynamic_colors(ColorProfile *self) {
+    if (!self->dynamic_color_stack_idx) return;
+    self->overridden = self->dynamic_color_stack[--(self->dynamic_color_stack_idx)];
+}
+
 static PyObject*
 color_table_address(ColorProfile *self, PyObject *a UNUSED) {
 #define color_table_address_doc "Pointer address to start of color table"
@@ -260,6 +306,7 @@ static PyMemberDef members[] = {
 static PyMethodDef methods[] = {
     METHOD(update_ansi_color_table, METH_O)
     METHOD(reset_color_table, METH_NOARGS)
+    METHOD(as_dict, METH_NOARGS)
     METHOD(color_table_address, METH_NOARGS)
     METHOD(as_color, METH_O)
     METHOD(reset_color, METH_O)

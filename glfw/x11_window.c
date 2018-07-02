@@ -25,12 +25,12 @@
 //
 //========================================================================
 
+#define _GNU_SOURCE
 #include "internal.h"
+#include "backend_utils.h"
 
 #include <X11/cursorfont.h>
 #include <X11/Xmd.h>
-
-#include <sys/select.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -50,50 +50,52 @@
 
 #define _GLFW_XDND_VERSION 5
 
-
-// Wait for data to arrive using select
+// Wait for data to arrive using poll
 // This avoids blocking other threads via the per-display Xlib lock that also
 // covers GLX functions
 //
 static GLFWbool waitForEvent(double* timeout)
 {
-    fd_set fds;
-    const int fd = ConnectionNumber(_glfw.x11.display);
-    int count = fd + 1;
+    nfds_t count = 2;
 
 #if defined(__linux__)
-    if (_glfw.linjs.inotify > fd)
-        count = _glfw.linjs.inotify + 1;
+    if (_glfw.linjs.inotify > 0)
+    {
+        count = 3;
+        _glfw.x11.eventLoopData.fds[2].fd = _glfw.linjs.inotify;
+    }
 #endif
     for (;;)
     {
-        FD_ZERO(&fds);
-        FD_SET(fd, &fds);
-#if defined(__linux__)
-        if (_glfw.linjs.inotify > 0)
-            FD_SET(_glfw.linjs.inotify, &fds);
-#endif
-
+        for (nfds_t i = 0; i < count; i++) _glfw.x11.eventLoopData.fds[i].revents = 0;
         if (timeout)
         {
-            const long seconds = (long) *timeout;
-            const long microseconds = (long) ((*timeout - seconds) * 1e6);
-            struct timeval tv = { seconds, microseconds };
             const uint64_t base = _glfwPlatformGetTimerValue();
-
-            const int result = select(count, &fds, NULL, NULL, &tv);
-            const int error = errno;
-
+            const int result = pollWithTimeout(_glfw.x11.eventLoopData.fds, count, *timeout);
             *timeout -= (_glfwPlatformGetTimerValue() - base) /
                 (double) _glfwPlatformGetTimerFrequency();
 
             if (result > 0)
+            {
+                if (_glfw.x11.eventLoopData.fds[0].revents & POLLIN) drainFd(_glfw.x11.eventLoopData.fds[0].fd);
                 return GLFW_TRUE;
-            if ((result == -1 && error == EINTR) || *timeout <= 0.0)
+            }
+            if (result == 0)
                 return GLFW_FALSE;
+            if (*timeout > 0 && (errno == EINTR || errno == EAGAIN)) continue;
+            return GLFW_FALSE;
         }
-        else if (select(count, &fds, NULL, NULL, NULL) != -1 || errno != EINTR)
-            return GLFW_TRUE;
+        else {
+            const int result = poll(_glfw.x11.eventLoopData.fds, count, -1);
+            if (result > 0)
+            {
+                if (_glfw.x11.eventLoopData.fds[0].revents & POLLIN) drainFd(_glfw.x11.eventLoopData.fds[0].fd);
+                return GLFW_TRUE;
+            }
+            if (result == 0)
+                return GLFW_FALSE;
+            if (errno != EINTR && errno != EAGAIN) return GLFW_FALSE;
+        }
     }
 }
 
@@ -1142,6 +1144,24 @@ static void releaseMonitor(_GLFWwindow* window)
     }
 }
 
+static void onConfigChange()
+{
+    float xscale, yscale;
+    _glfwGetSystemContentScaleX11(&xscale, &yscale, GLFW_TRUE);
+
+    if (xscale != _glfw.x11.contentScaleX || yscale != _glfw.x11.contentScaleY)
+    {
+        _GLFWwindow* window = _glfw.windowListHead;
+        _glfw.x11.contentScaleX = xscale;
+        _glfw.x11.contentScaleY = yscale;
+        while (window)
+        {
+            _glfwInputWindowContentScale(window, xscale, yscale);
+            window = window->next;
+        }
+    }
+}
+
 // Process the specified X event
 //
 static void processEvent(XEvent *event)
@@ -1157,6 +1177,14 @@ static void processEvent(XEvent *event)
             _glfwPollMonitorsX11();
             return;
         }
+    }
+
+    if (event->type == PropertyNotify &&
+        event->xproperty.window == _glfw.x11.root &&
+        event->xproperty.atom == _glfw.x11.RESOURCE_MANAGER)
+    {
+        onConfigChange();
+        return;
     }
 
     if (event->type == GenericEvent)
@@ -2597,6 +2625,7 @@ void _glfwPlatformPostEmptyEvent(void)
 
     XSendEvent(_glfw.x11.display, _glfw.x11.helperWindowHandle, False, 0, &event);
     XFlush(_glfw.x11.display);
+    while (write(_glfw.x11.eventLoopData.wakeupFds[1], "w", 1) < 0 && errno == EINTR);
 }
 
 void _glfwPlatformGetCursorPos(_GLFWwindow* window, double* xpos, double* ypos)
@@ -2907,4 +2936,8 @@ GLFWAPI const char* glfwGetX11SelectionString(void)
 {
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
     return getSelectionString(_glfw.x11.PRIMARY);
+}
+
+GLFWAPI int glfwGetXKBScancode(const char* keyName, GLFWbool caseSensitive) {
+    return glfw_xkb_keysym_from_name(keyName, caseSensitive);
 }

@@ -25,7 +25,9 @@
 //
 //========================================================================
 
+#define _GNU_SOURCE
 #include "internal.h"
+#include "backend_utils.h"
 
 #include <X11/Xresource.h>
 
@@ -34,6 +36,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <locale.h>
+#include <fcntl.h>
 
 
 // Check whether the specified atom is supported
@@ -454,7 +457,7 @@ static GLFWbool initExtensions(void)
 
 // Retrieve system content scale via folklore heuristics
 //
-static void getSystemContentScale(float* xscale, float* yscale)
+void _glfwGetSystemContentScaleX11(float* xscale, float* yscale, GLFWbool bypass_cache)
 {
     // NOTE: Default to the display-wide DPI as we don't currently have a policy
     //       for which monitor a window is considered to be on
@@ -466,7 +469,20 @@ static void getSystemContentScale(float* xscale, float* yscale)
     // NOTE: Basing the scale on Xft.dpi where available should provide the most
     //       consistent user experience (matches Qt, Gtk, etc), although not
     //       always the most accurate one
-    char* rms = XResourceManagerString(_glfw.x11.display);
+    char* rms = NULL;
+    char* owned_rms = NULL;
+
+    if (bypass_cache)
+    {
+        _glfwGetWindowPropertyX11(_glfw.x11.root,
+                                  _glfw.x11.RESOURCE_MANAGER,
+                                  XA_STRING,
+                                  (unsigned char**) &owned_rms);
+        rms = owned_rms;
+    } else {
+        rms = XResourceManagerString(_glfw.x11.display);
+    }
+
     if (rms)
     {
         XrmDatabase db = XrmGetStringDatabase(rms);
@@ -483,6 +499,7 @@ static void getSystemContentScale(float* xscale, float* yscale)
 
             XrmDestroyDatabase(db);
         }
+        XFree(owned_rms);
     }
 
     *xscale = xdpi / 96.f;
@@ -589,7 +606,6 @@ Cursor _glfwCreateCursorX11(const GLFWimage* image, int xhot, int yhot)
     return cursor;
 }
 
-
 //////////////////////////////////////////////////////////////////////////
 //////                       GLFW platform API                      //////
 //////////////////////////////////////////////////////////////////////////
@@ -598,6 +614,13 @@ int _glfwPlatformInit(void)
 {
     XInitThreads();
     XrmInitialize();
+
+    if (pipe2(_glfw.x11.eventLoopData.wakeupFds, O_CLOEXEC | O_NONBLOCK) != 0)
+    {
+        _glfwInputError(GLFW_PLATFORM_ERROR,
+                "X11: failed to create self pipe");
+        return GLFW_FALSE;
+    }
 
     _glfw.x11.display = XOpenDisplay(NULL);
     if (!_glfw.x11.display)
@@ -617,11 +640,16 @@ int _glfwPlatformInit(void)
         return GLFW_FALSE;
     }
 
+    initPollData(_glfw.x11.eventLoopData.fds, _glfw.x11.eventLoopData.wakeupFds[0], ConnectionNumber(_glfw.x11.display));
+    _glfw.x11.eventLoopData.fds[2].events = POLLIN;
+
     _glfw.x11.screen = DefaultScreen(_glfw.x11.display);
     _glfw.x11.root = RootWindow(_glfw.x11.display, _glfw.x11.screen);
     _glfw.x11.context = XUniqueContext();
+    _glfw.x11.RESOURCE_MANAGER = XInternAtom(_glfw.x11.display, "RESOURCE_MANAGER", True);
+    XSelectInput(_glfw.x11.display, _glfw.x11.root, PropertyChangeMask);
 
-    getSystemContentScale(&_glfw.x11.contentScaleX, &_glfw.x11.contentScaleY);
+    _glfwGetSystemContentScaleX11(&_glfw.x11.contentScaleX, &_glfw.x11.contentScaleY, GLFW_FALSE);
 
     if (!initExtensions())
         return GLFW_FALSE;
@@ -668,6 +696,7 @@ void _glfwPlatformTerminate(void)
     {
         XCloseDisplay(_glfw.x11.display);
         _glfw.x11.display = NULL;
+        _glfw.x11.eventLoopData.fds[0].fd = -1;
     }
 
     if (_glfw.x11.xcursor.handle)
@@ -714,6 +743,7 @@ void _glfwPlatformTerminate(void)
 #if defined(__linux__)
     _glfwTerminateJoysticksLinux();
 #endif
+    closeFds(_glfw.x11.eventLoopData.wakeupFds, sizeof(_glfw.x11.eventLoopData.wakeupFds)/sizeof(_glfw.x11.eventLoopData.wakeupFds[0]));
 }
 
 const char* _glfwPlatformGetVersionString(void)

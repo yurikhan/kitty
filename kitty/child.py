@@ -23,7 +23,7 @@ def cmdline_of_process(pid):
     if is_macos:
         # TODO: macOS implementation, see DarwinProcess.c in htop for inspiration
         raise NotImplementedError()
-    return open('/proc/{}/cmdline'.format(pid), 'rb').read().decode('utf-8').split('\0')
+    return list(filter(None, open('/proc/{}/cmdline'.format(pid), 'rb').read().decode('utf-8').split('\0')))
 
 
 def remove_cloexec(fd):
@@ -83,12 +83,13 @@ class Child:
         if stdin is not None:
             os.close(stdin_read_fd)
             fast_data_types.thread_write(stdin_write_fd, stdin)
+        fcntl.fcntl(self.child_fd, fcntl.F_SETFL, fcntl.fcntl(self.child_fd, fcntl.F_GETFL) | os.O_NONBLOCK)
         return pid
 
     @property
     def cmdline(self):
         try:
-            return cmdline_of_process(self.pid)
+            return cmdline_of_process(self.pid) or list(self.argv)
         except Exception:
             return list(self.argv)
 

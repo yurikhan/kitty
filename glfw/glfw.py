@@ -43,7 +43,12 @@ def init_env(env, pkg_config, at_least_version, module='x11'):
     else:
         ans.ldpaths.extend('-lrt -lm -ldl'.split())
     sinfo = json.load(open(os.path.join(base, 'source-info.json')))
-    ans.sources = sinfo['common']['sources'] + sinfo[module]['sources']
+    module_sources = list(sinfo[module]['sources'])
+    if module in ('x11', 'wayland'):
+        remove = 'linux_joystick.c' if is_bsd else 'null_joystick.c'
+        module_sources.remove(remove)
+
+    ans.sources = sinfo['common']['sources'] + module_sources
     ans.all_headers = [x for x in os.listdir(base) if x.endswith('.h')]
 
     if module in ('x11', 'wayland'):
@@ -93,13 +98,13 @@ def collect_source_information():
 
     def extract_sources(group, start_pos=0):
         for which in 'HEADERS SOURCES'.split():
-            yield which.lower(), filter(
+            yield which.lower(), list(filter(
                 lambda x: x[0] not in '"$',
                 re.search(
                     r'{0}_{1}\s+([^)]+?)[)]'.format(group, which),
                     raw[start_pos:]
                 ).group(1).strip().split()
-            )
+            ))
 
     wayland_protocols = re.search(r'WaylandProtocols\s+(\S+)\s+', mraw).group(1)
     wayland_protocols = list(map(int, wayland_protocols.split('.')))
@@ -107,13 +112,13 @@ def collect_source_information():
         'common': dict(extract_sources('common')),
         'wayland_protocols': wayland_protocols,
     }
-    joystick = 'null' if is_bsd else 'linux'
     for group in 'cocoa win32 x11 wayland osmesa'.split():
         m = re.search('_GLFW_' + group.upper(), raw)
         ans[group] = dict(extract_sources('glfw', m.start()))
         if group in ('x11', 'wayland'):
-            ans[group]['headers'].append('{}_joystick.h'.format(joystick))
-            ans[group]['sources'].append('{}_joystick.c'.format(joystick))
+            for joystick in ('linux', 'null'):
+                ans[group]['headers'].append('{}_joystick.h'.format(joystick))
+                ans[group]['sources'].append('{}_joystick.c'.format(joystick))
         if group == 'wayland':
             ans[group]['protocols'] = p = []
             for m in re.finditer(r'WAYLAND_PROTOCOLS_PKGDATADIR\}/(.+?)"?$', raw, flags=re.M):
@@ -197,10 +202,13 @@ def generate_wrappers(glfw_header, glfw_native_header):
     void* glfwGetCocoaWindow(GLFWwindow* window)
     uint32_t glfwGetCocoaMonitor(GLFWmonitor* monitor)
     GLFWcocoatextinputfilterfun glfwSetCocoaTextInputFilter(GLFWwindow* window, GLFWcocoatextinputfilterfun callback)
+    GLFWapplicationshouldhandlereopenfun glfwSetApplicationShouldHandleReopen(GLFWapplicationshouldhandlereopenfun callback)
+    void glfwGetCocoaKeyEquivalent(int glfw_key, int glfw_mods, void* cocoa_key, void* cocoa_mods)
     void* glfwGetX11Display(void)
     int32_t glfwGetX11Window(GLFWwindow* window)
     void glfwSetX11SelectionString(const char* string)
     const char* glfwGetX11SelectionString(void)
+    int glfwGetXKBScancode(const char* key_name, int case_sensitive)
 '''.splitlines():
         if line:
             functions.append(Function(line.strip(), check_fail=False))
@@ -214,6 +222,8 @@ def generate_wrappers(glfw_header, glfw_native_header):
 #include <stddef.h>
 #include <stdint.h>
 typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int);
+typedef int (* GLFWapplicationshouldhandlereopenfun)(int);
+
 {}
 
 {}
@@ -224,9 +234,9 @@ const char* load_glfw(const char* path);
         f.write(header)
 
     code = '''
-#include <dlfcn.h>
 #include "data-types.h"
 #include "glfw-wrapper.h"
+#include <dlfcn.h>
 
 static void* handle = NULL;
 

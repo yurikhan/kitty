@@ -29,6 +29,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <dlfcn.h>
+#include <poll.h>
 
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
@@ -282,6 +283,9 @@ typedef struct _GLFWlibraryX11
     Atom            ATOM_PAIR;
     Atom            GLFW_SELECTION;
 
+    // XRM database atom
+    Atom            RESOURCE_MANAGER;
+
     struct {
         GLFWbool    available;
         void*       handle;
@@ -378,6 +382,11 @@ typedef struct _GLFWlibraryX11
         PFN_XRenderFindVisualFormat FindVisualFormat;
     } xrender;
 
+    struct {
+        struct pollfd fds[3];
+        int wakeupFds[2];
+    } eventLoopData;
+
 } _GLFWlibraryX11;
 
 // X11-specific per-monitor data
@@ -402,7 +411,6 @@ typedef struct _GLFWcursorX11
 
 } _GLFWcursorX11;
 
-
 void _glfwPollMonitorsX11(void);
 void _glfwSetVideoModeX11(_GLFWmonitor* monitor, const GLFWvidmode* desired);
 void _glfwRestoreVideoModeX11(_GLFWmonitor* monitor);
@@ -419,4 +427,5 @@ void _glfwGrabErrorHandlerX11(void);
 void _glfwReleaseErrorHandlerX11(void);
 void _glfwInputErrorX11(int error, const char* message);
 
+void _glfwGetSystemContentScaleX11(float* xscale, float* yscale, GLFWbool bypass_cache);
 void _glfwPushSelectionToManagerX11(void);

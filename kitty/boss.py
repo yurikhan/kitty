@@ -11,37 +11,29 @@ from gettext import gettext as _
 from weakref import WeakValueDictionary
 
 from .cli import create_opts, parse_args
-from .config import (
-    MINIMUM_FONT_SIZE, initial_window_size, prepare_config_file_for_editing
-)
-from .config_utils import to_cmdline
+from .conf.utils import to_cmdline
+from .config import initial_window_size_func, prepare_config_file_for_editing
+from .config_data import MINIMUM_FONT_SIZE
 from .constants import (
-    appname, config_dir, editor, set_boss, supports_primary_selection
+    appname, config_dir, kitty_exe, set_boss, supports_primary_selection
 )
 from .fast_data_types import (
     ChildMonitor, background_opacity_of, change_background_opacity,
     create_os_window, current_os_window, destroy_global_data,
-    destroy_sprite_map, get_clipboard_string, glfw_post_empty_event,
-    layout_sprite_map, mark_os_window_for_close, set_clipboard_string,
-    set_dpi_from_os_window, set_in_sequence_mode, show_window,
-    toggle_fullscreen, viewport_for_window
+    get_clipboard_string, glfw_post_empty_event, global_font_size,
+    mark_os_window_for_close, os_window_font_size, patch_global_colors,
+    set_clipboard_string, set_in_sequence_mode, toggle_fullscreen
 )
-from .fonts.render import prerender, resize_fonts, set_font_family
 from .keys import get_shortcut, shortcut_matches
 from .remote_control import handle_cmd
 from .rgb import Color, color_from_int
 from .session import create_session
 from .tabs import SpecialWindow, SpecialWindowInstance, TabManager
 from .utils import (
-    end_startup_notification, get_primary_selection, init_startup_notification,
-    log_error, open_url, parse_address_spec, remove_socket_file, safe_print,
-    set_primary_selection, single_instance
+    get_editor, get_primary_selection, log_error, open_url, parse_address_spec,
+    remove_socket_file, safe_print, set_primary_selection, single_instance,
+    startup_notification_handler
 )
-
-
-def initialize_renderer():
-    layout_sprite_map()
-    prerender()
 
 
 def listen_on(spec):
@@ -83,12 +75,13 @@ class DumpCommands:  # {{{
 
 class Boss:
 
-    def __init__(self, os_window_id, opts, args, cached_values):
+    def __init__(self, os_window_id, opts, args, cached_values, new_os_window_trigger):
         self.window_id_map = WeakValueDictionary()
         self.startup_colors = {k: opts[k] for k in opts if isinstance(opts[k], Color)}
         self.pending_sequences = None
         self.cached_values = cached_values
         self.os_window_map = {}
+        self.os_window_death_actions = {}
         self.cursor_blinking = True
         self.shutting_down = False
         talk_fd = getattr(single_instance, 'socket', None)
@@ -102,28 +95,24 @@ class Boss:
             talk_fd, listen_fd
         )
         set_boss(self)
-        self.current_font_size = opts.font_size
-        set_font_family(opts)
         self.opts, self.args = opts, args
-        initialize_renderer()
-        startup_session = create_session(opts, args)
+        startup_session = create_session(opts, args, default_session=opts.startup_session)
+        self.keymap = self.opts.keymap.copy()
+        if new_os_window_trigger is not None:
+            self.keymap.pop(new_os_window_trigger, None)
         self.add_os_window(startup_session, os_window_id=os_window_id)
 
-    def add_os_window(self, startup_session, os_window_id=None, wclass=None, wname=None, size=None, startup_id=None):
-        dpi_changed = False
+    def add_os_window(self, startup_session, os_window_id=None, wclass=None, wname=None, opts_for_size=None, startup_id=None):
         if os_window_id is None:
-            w, h = initial_window_size(self.opts, self.cached_values) if size is None else size
+            opts_for_size = opts_for_size or self.opts
             cls = wclass or self.args.cls or appname
-            os_window_id = create_os_window(w, h, appname, wname or self.args.name or cls, cls)
-            if startup_id:
-                ctx = init_startup_notification(os_window_id, startup_id)
-            dpi_changed = show_window(os_window_id)
-            if startup_id:
-                end_startup_notification(ctx)
+            with startup_notification_handler(do_notify=startup_id is not None, startup_id=startup_id) as pre_show_callback:
+                os_window_id = create_os_window(
+                        initial_window_size_func(opts_for_size, self.cached_values),
+                        pre_show_callback,
+                        appname, wname or self.args.name or cls, cls)
         tm = TabManager(os_window_id, self.opts, self.args, startup_session)
         self.os_window_map[os_window_id] = tm
-        if dpi_changed:
-            self.on_dpi_change(os_window_id)
         return os_window_id
 
     def list_os_windows(self):
@@ -251,7 +240,9 @@ class Boss:
                 if not os.path.isabs(args.directory):
                     args.directory = os.path.join(msg['cwd'], args.directory)
                 session = create_session(opts, args, respect_cwd=True)
-                self.add_os_window(session, wclass=args.cls, wname=args.name, size=initial_window_size(opts, self.cached_values), startup_id=startup_id)
+                os_window_id = self.add_os_window(session, wclass=args.cls, wname=args.name, opts_for_size=opts, startup_id=startup_id)
+                if msg.get('notify_on_os_window_death'):
+                    self.os_window_death_actions[os_window_id] = partial(self.notify_on_os_window_death, msg['notify_on_os_window_death'])
             else:
                 log_error('Unknown message received from peer, ignoring')
 
@@ -315,52 +306,76 @@ class Boss:
             tm.activate_tab_at(x)
 
     def on_window_resize(self, os_window_id, w, h, dpi_changed):
-        tm = self.os_window_map.get(os_window_id)
-        if tm is not None:
-            if dpi_changed:
-                if set_dpi_from_os_window(os_window_id):
-                    self.on_dpi_change(os_window_id)
-                else:
-                    tm.resize()
-            else:
+        if dpi_changed:
+            self.on_dpi_change(os_window_id)
+        else:
+            tm = self.os_window_map.get(os_window_id)
+            if tm is not None:
                 tm.resize()
 
-    def increase_font_size(self):
-        self.set_font_size(
-            min(
-                self.opts.font_size * 5, self.current_font_size +
-                self.opts.font_size_delta))
+    def increase_font_size(self):  # legacy
+        cfs = global_font_size()
+        self.set_font_size(min(self.opts.font_size * 5, cfs + 2.0))
 
-    def decrease_font_size(self):
-        self.set_font_size(self.current_font_size - self.opts.font_size_delta)
+    def decrease_font_size(self):  # legacy
+        cfs = global_font_size()
+        self.set_font_size(max(MINIMUM_FONT_SIZE, cfs - 2.0))
 
-    def restore_font_size(self):
+    def restore_font_size(self):  # legacy
         self.set_font_size(self.opts.font_size)
 
-    def _change_font_size(self, new_size=None, on_dpi_change=False):
-        if new_size is not None:
-            self.current_font_size = new_size
-        old_cell_width, old_cell_height = viewport_for_window()[-2:]
-        windows = tuple(filter(None, self.window_id_map.values()))
-        resize_fonts(self.current_font_size, on_dpi_change=on_dpi_change)
-        layout_sprite_map()
-        prerender()
-        for window in windows:
-            window.screen.rescale_images(old_cell_width, old_cell_height)
-            window.screen.refresh_sprite_positions()
-        for tm in self.os_window_map.values():
-            tm.resize()
-            tm.refresh_sprite_positions()
-        glfw_post_empty_event()
+    def set_font_size(self, new_size):  # legacy
+        self.change_font_size(True, None, new_size)
 
-    def set_font_size(self, new_size):
-        new_size = max(MINIMUM_FONT_SIZE, new_size)
-        if new_size == self.current_font_size:
-            return
-        self._change_font_size(new_size)
+    def change_font_size(self, all_windows, increment_operation, amt):
+        def calc_new_size(old_size):
+            new_size = old_size
+            if amt == 0:
+                new_size = self.opts.font_size
+            else:
+                if increment_operation:
+                    new_size += (1 if increment_operation == '+' else -1) * amt
+                else:
+                    new_size = amt
+                new_size = max(MINIMUM_FONT_SIZE, min(new_size, self.opts.font_size * 5))
+            return new_size
+
+        if all_windows:
+            current_global_size = global_font_size()
+            new_size = calc_new_size(current_global_size)
+            if new_size != current_global_size:
+                global_font_size(new_size)
+            os_windows = tuple(self.os_window_map.keys())
+        else:
+            os_windows = []
+            w = self.active_window
+            if w is not None:
+                os_windows.append(w.os_window_id)
+        if os_windows:
+            final_windows = {}
+            for wid in os_windows:
+                current_size = os_window_font_size(wid)
+                if current_size:
+                    new_size = calc_new_size(current_size)
+                    if new_size != current_size:
+                        final_windows[wid] = new_size
+            if final_windows:
+                self._change_font_size(final_windows)
+
+    def _change_font_size(self, sz_map):
+        for os_window_id, sz in sz_map.items():
+            tm = self.os_window_map.get(os_window_id)
+            if tm is not None:
+                os_window_font_size(os_window_id, sz)
+                tm.resize()
 
     def on_dpi_change(self, os_window_id):
-        self._change_font_size()
+        tm = self.os_window_map.get(os_window_id)
+        if tm is not None:
+            sz = os_window_font_size(os_window_id)
+            if sz:
+                os_window_font_size(os_window_id, sz, True)
+                tm.resize()
 
     def _set_os_window_background_opacity(self, os_window_id, opacity):
         change_background_opacity(os_window_id, max(0.1, min(opacity, 1.0)))
@@ -404,7 +419,7 @@ class Boss:
 
     def dispatch_special_key(self, key, scancode, action, mods):
         # Handles shortcuts, return True if the key was consumed
-        key_action = get_shortcut(self.opts.keymap, mods, key, scancode)
+        key_action = get_shortcut(self.keymap, mods, key, scancode)
         if key_action is None:
             sequences = get_shortcut(self.opts.sequence_map, mods, key, scancode)
             if sequences:
@@ -517,19 +532,36 @@ class Boss:
             tm.destroy()
         for window_id in tuple(w.id for w in self.window_id_map.values() if getattr(w, 'os_window_id', None) == os_window_id):
             self.window_id_map.pop(window_id, None)
+        action = self.os_window_death_actions.pop(os_window_id, None)
+        if action is not None:
+            action()
 
-    def display_scrollback(self, window, data):
+    def notify_on_os_window_death(self, address):
+        import socket
+        s = socket.socket(family=socket.AF_UNIX)
+        try:
+            s.connect(address)
+            s.sendall(b'c')
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except EnvironmentError:
+                pass
+            s.close()
+        except Exception:
+            pass
+
+    def display_scrollback(self, window, data, cmd):
         tab = self.active_tab
         if tab is not None and window.overlay_for is None:
             tab.new_special_window(
                 SpecialWindow(
-                    self.opts.scrollback_pager, data, _('History'), overlay_for=window.id))
+                    cmd, data, _('History'), overlay_for=window.id))
 
     def edit_config_file(self, *a):
         confpath = prepare_config_file_for_editing()
         # On macOS vim fails to handle SIGWINCH if it occurs early, so add a
         # small delay.
-        cmd = ['kitty', '+runpy', 'import os, sys, time; time.sleep(0.05); os.execvp(sys.argv[1], sys.argv[1:])'] + editor + [confpath]
+        cmd = [kitty_exe(), '+runpy', 'import os, sys, time; time.sleep(0.05); os.execvp(sys.argv[1], sys.argv[1:])'] + get_editor() + [confpath]
         self.new_os_window(*cmd)
 
     def get_output(self, source_window, num_lines=1):
@@ -568,7 +600,7 @@ class Boss:
             copts = {k: self.opts[k] for k in ('select_by_word_characters', 'open_url_with')}
             overlay_window = tab.new_special_window(
                 SpecialWindow(
-                    ['kitty', '+runpy', 'from kittens.runner import main; main()'] + args,
+                    [kitty_exe(), '+runpy', 'from kittens.runner import main; main()'] + args,
                     stdin=data,
                     env={
                         'KITTY_COMMON_OPTS': json.dumps(copts),
@@ -615,7 +647,7 @@ class Boss:
                     break
 
     def kitty_shell(self, window_type):
-        cmd = ['kitty', '@']
+        cmd = [kitty_exe(), '@']
         if window_type == 'tab':
             window = self._new_tab(cmd).active_window
         elif window_type == 'os_window':
@@ -653,7 +685,6 @@ class Boss:
         for tm in self.os_window_map.values():
             tm.destroy()
         self.os_window_map = {}
-        destroy_sprite_map()
         destroy_global_data()
 
     def paste_to_active_window(self, text):
@@ -785,3 +816,4 @@ class Boss:
                     setattr(self.opts, k, color_from_int(v))
         for tm in self.all_tab_managers:
             tm.tab_bar.patch_colors(spec)
+        patch_global_colors(spec, configured)

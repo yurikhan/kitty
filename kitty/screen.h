@@ -58,6 +58,7 @@ typedef struct {
     PyObject_HEAD
 
     unsigned int columns, lines, margin_top, margin_bottom, charset, scrolled_by, last_selection_scrolled_by;
+    CellPixelSize cell_size;
     id_type window_id;
     uint32_t utf8_state, utf8_codepoint, *g0_charset, *g1_charset, *g_charset;
     unsigned int current_charset;
@@ -138,6 +139,8 @@ void screen_erase_characters(Screen *self, unsigned int count);
 void screen_set_margins(Screen *self, unsigned int top, unsigned int bottom);
 void screen_change_charset(Screen *, uint32_t to);
 void screen_handle_cmd(Screen *, PyObject *cmd);
+void screen_push_dynamic_colors(Screen *);
+void screen_pop_dynamic_colors(Screen *);
 void screen_handle_print(Screen *, PyObject *cmd);
 void screen_designate_charset(Screen *, uint32_t which, uint32_t as);
 void screen_use_latin1(Screen *, bool);
@@ -157,7 +160,7 @@ void screen_apply_selection(Screen *self, void *address, size_t size);
 bool screen_is_selection_dirty(Screen *self);
 bool screen_has_selection(Screen*);
 bool screen_invert_colors(Screen *self);
-void screen_update_cell_data(Screen *self, void *address, size_t sz);
+void screen_update_cell_data(Screen *self, void *address, size_t sz, FONTS_DATA_HANDLE);
 bool screen_is_cursor_visible(Screen *self);
 bool screen_selection_range_for_line(Screen *self, index_type y, index_type *start, index_type *end);
 bool screen_selection_range_for_word(Screen *self, index_type x, index_type *, index_type *, index_type *start, index_type *end);
@@ -169,6 +172,9 @@ unsigned long screen_current_char_width(Screen *self);
 void screen_mark_url(Screen *self, index_type start_x, index_type start_y, index_type end_x, index_type end_y);
 void screen_handle_graphics_command(Screen *self, const GraphicsCommand *cmd, const uint8_t *payload);
 bool screen_open_url(Screen*);
+void screen_dirty_sprite_positions(Screen *self);
+void screen_rescale_images(Screen *self);
+void screen_report_size(Screen *, unsigned int which);
 #define DECLARE_CH_SCREEN_HANDLER(name) void screen_##name(Screen *screen);
 DECLARE_CH_SCREEN_HANDLER(bell)
 DECLARE_CH_SCREEN_HANDLER(backspace)
