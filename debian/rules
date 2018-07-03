@@ -17,21 +17,13 @@ export OVERRIDE_CFLAGS OVERRIDE_CPPFLAGS OVERRIDE_LDFLAGS
 override_dh_auto_clean:
 	python3 setup.py --verbose clean
 
+override_dh_auto_build-arch: export HOME=$(CURDIR)/debian/fakehome
 override_dh_auto_build-arch:
 	python3 setup.py --verbose linux-package
 
+override_dh_auto_build-indep: export HOME=$(CURDIR)/debian/fakehome
 override_dh_auto_build-indep:
-	for f in $$(find -type f -name '*.asciidoc'); do ./debian/rules "html/$${f%.asciidoc}.html"; done
-	cp --parents --recursive \
-		key_encoding.json \
-		logo/kitty.png \
-		screenshots \
-		html/
-
-html/%.html: html
-html/%.html: %.asciidoc
-	mkdir -p html
-	asciidoctor -a reproducible -a 'webfonts!' --safe --backend html5 -o "$@" "$<"
+	make docs
 
 override_dh_auto_test: export HOME=$(CURDIR)/debian/fakehome
 override_dh_auto_test:

@@ -25,7 +25,7 @@ Build-Depends:
  python3-dev (>= 3.5),
  zlib1g-dev,
 Build-Depends-Indep:
- asciidoctor
+ python3-sphinx
 
 Package: kitty
 Architecture: any

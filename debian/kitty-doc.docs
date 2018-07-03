@@ -1,3 +1,1 @@
-*.asciidoc
-key_encoding.json
-html/
+debian/tmp/usr/share/doc/kitty/html/
