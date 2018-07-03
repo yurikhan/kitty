@@ -55,6 +55,11 @@ Package: kitty-doc
 Architecture: all
 Multi-Arch: foreign
 Section: doc
+Built-Using:
+ ${sphinxdoc:Built-Using},
+Depends:
+ ${misc:Depends},
+ ${sphinxdoc:Depends},
 Breaks: kitty (<< 0.9.1-1~)
 Replaces: kitty (<< 0.9.1-1~)
 Description: fast, featureful, GPU based terminal emulator (documentation)
