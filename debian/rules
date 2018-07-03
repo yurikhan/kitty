@@ -41,6 +41,11 @@ override_dh_auto_install:
 override_dh_install:
 	dh_install -Xlib/kitty/terminfo
 
+override_dh_installdocs:
+	dh_installdocs
+	# Remove PayPal's tracking pixel
+	sed -i '/pixel\.gif/d' debian/kitty-doc/usr/share/doc/kitty/html/support.html
+
 override_dh_python3:
 	dh_python3 --no-ext-rename
 
