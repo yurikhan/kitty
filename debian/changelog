@@ -1,10 +1,18 @@
-kitty (0.11.2-1) UNRELEASED; urgency=medium
+kitty (0.11.2-1) unstable; urgency=medium
 
   * New upstream release
     + Lenna image removed
     + Accepts -T to set the terminal's title
+  * Update copyright for new release
+  * Replace manual doc generation with upstream's docs target
+  * Install example kitty.conf from new location
+  * Enable dh sphinxdoc addon
+  * lintian:
+    + Remove PayPal tracking pixel from support.html
+    + Disable the "Fork me" ribbon
+  * Add kitty as an alternative for x-terminal-emulator. (Closes: #900704)
 
- -- James McCoy <jamessan@debian.org>  Mon, 02 Jul 2018 08:05:12 -0400
+ -- James McCoy <jamessan@debian.org>  Wed, 04 Jul 2018 14:02:55 -0400
 
 kitty (0.10.1-1) unstable; urgency=medium
 
