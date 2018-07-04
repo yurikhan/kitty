@@ -1,8 +1,8 @@
-kitty (0.11.2-2) UNRELEASED; urgency=medium
+kitty (0.11.2-2) unstable; urgency=medium
 
   * Move python3-sphinx to Build-Depends, since arch builds also build docs.
 
- -- James McCoy <jamessan@debian.org>  Wed, 04 Jul 2018 18:02:46 -0400
+ -- James McCoy <jamessan@debian.org>  Wed, 04 Jul 2018 18:05:21 -0400
 
 kitty (0.11.2-1) unstable; urgency=medium
 
