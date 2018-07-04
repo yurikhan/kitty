@@ -1,8 +1,9 @@
-kitty (0.11.2-3) UNRELEASED; urgency=medium
+kitty (0.11.2-3) unstable; urgency=medium
 
-  * UNRELEASED
+  * Avoid stripping PayPal pixel when not building docs
+  * Declare compliance with Policy 4.1.5, no changes needed
 
- -- James McCoy <jamessan@debian.org>  Wed, 04 Jul 2018 18:52:11 -0400
+ -- James McCoy <jamessan@debian.org>  Wed, 04 Jul 2018 19:42:34 -0400
 
 kitty (0.11.2-2) unstable; urgency=medium
 
