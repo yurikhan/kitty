@@ -17,14 +17,9 @@ export OVERRIDE_CFLAGS OVERRIDE_CPPFLAGS OVERRIDE_LDFLAGS
 override_dh_auto_clean:
 	python3 setup.py --verbose clean
 
-FORKME = forkme_right_darkblue_121621.png
-
-docs/_static/$(FORKME):
-	cp debian/$(FORKME) $@
-
 override_dh_auto_build: export HOME=$(CURDIR)/debian/fakehome
-override_dh_auto_build: MAKEFLAGS=SPHINXOPTS=-Dhtml_theme_options.github_banner=$(FORKME)
-override_dh_auto_build: docs/_static/$(FORKME)
+override_dh_auto_build: MAKEFLAGS=SPHINXOPTS=-Dhtml_theme_options.github_banner=false
+override_dh_auto_build:
 	python3 setup.py --verbose linux-package
 
 override_dh_auto_test: export HOME=$(CURDIR)/debian/fakehome
