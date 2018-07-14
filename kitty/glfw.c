@@ -8,7 +8,7 @@
 #include "fonts.h"
 #include <structmember.h>
 #include "glfw-wrapper.h"
-extern bool cocoa_make_window_resizable(void *w);
+extern bool cocoa_make_window_resizable(void *w, bool);
 extern void cocoa_create_global_menu(void);
 extern void cocoa_set_hide_from_tasks(void);
 extern void cocoa_set_titlebar_color(void *w, color_type color);
@@ -202,6 +202,7 @@ push_focus_history(OSWindow *w) {
 
 static void
 window_focus_callback(GLFWwindow *w, int focused) {
+    global_state.active_drag_in_window = 0;
     if (!set_callback_window(w)) return;
     global_state.callback_os_window->is_focused = focused ? true : false;
     if (focused) {
@@ -455,8 +456,10 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
         if (OPT(macos_hide_from_tasks)) cocoa_set_hide_from_tasks();
 #endif
 #define CC(dest, shape) {\
-    dest##_cursor = glfwCreateStandardCursor(GLFW_##shape##_CURSOR); \
-    if (dest##_cursor == NULL) { log_error("Failed to create the %s mouse cursor, using default cursor.", #shape); }}
+    if (!dest##_cursor) { \
+        dest##_cursor = glfwCreateStandardCursor(GLFW_##shape##_CURSOR); \
+        if (dest##_cursor == NULL) { log_error("Failed to create the %s mouse cursor, using default cursor.", #shape); } \
+}}
     CC(standard, IBEAM); CC(click, HAND); CC(arrow, ARROW);
 #undef CC
         is_first_window = false;
@@ -492,10 +495,8 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
     glfwSetWindowFocusCallback(glfw_window, window_focus_callback);
     glfwSetDropCallback(glfw_window, drop_callback);
 #ifdef __APPLE__
-    if (OPT(macos_hide_titlebar)) {
-        if (glfwGetCocoaWindow) { if (!cocoa_make_window_resizable(glfwGetCocoaWindow(glfw_window))) { PyErr_Print(); } }
-        else log_error("Failed to load glfwGetCocoaWindow");
-    }
+    if (glfwGetCocoaWindow) cocoa_make_window_resizable(glfwGetCocoaWindow(glfw_window), OPT(macos_window_resizable));
+    else log_error("Failed to load glfwGetCocoaWindow");
 #endif
     double now = monotonic();
     w->is_focused = true;
@@ -678,6 +679,9 @@ toggle_fullscreen(PYNOARG) {
         const GLFWvidmode* mode = glfwGetVideoMode(monitor);
         if (w->before_fullscreen.is_set) glfwSetWindowMonitor(w->handle, NULL, w->before_fullscreen.x, w->before_fullscreen.y, w->before_fullscreen.w, w->before_fullscreen.h, mode->refreshRate);
         else glfwSetWindowMonitor(w->handle, NULL, 0, 0, 600, 400, mode->refreshRate);
+#ifdef __APPLE__
+        if (glfwGetCocoaWindow) cocoa_make_window_resizable(glfwGetCocoaWindow(w->handle), OPT(macos_window_resizable));
+#endif
         Py_RETURN_FALSE;
     }
 }
@@ -840,6 +844,39 @@ set_smallest_allowed_resize(PyObject *self UNUSED, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject*
+set_custom_cursor(PyObject *self UNUSED, PyObject *args) {
+    int shape;
+    int x=0, y=0;
+    Py_ssize_t sz;
+    PyObject *images;
+    if (!PyArg_ParseTuple(args, "iO!|ii", &shape, &PyTuple_Type, &images, &x, &y)) return NULL;
+    static GLFWimage gimages[16] = {{0}};
+    size_t count = MIN((size_t)PyTuple_GET_SIZE(images), arraysz(gimages));
+    for (size_t i = 0; i < count; i++) {
+        if (!PyArg_ParseTuple(PyTuple_GET_ITEM(images, i), "s#ii", &gimages[i].pixels, &sz, &gimages[i].width, &gimages[i].height)) return NULL;
+        if (gimages[i].width * gimages[i].height * 4 != sz) {
+            PyErr_SetString(PyExc_ValueError, "The image data size does not match its width and height");
+            return NULL;
+        }
+    }
+#define CASE(which, dest) {\
+    case which: \
+        standard_cursor = glfwCreateCursor(gimages, x, y, count); \
+        if (standard_cursor == NULL) { PyErr_SetString(PyExc_ValueError, "Failed to create custom cursor"); return NULL; } \
+        break; \
+}
+    switch(shape) {
+        CASE(GLFW_IBEAM_CURSOR, standard_cursor);
+        CASE(GLFW_HAND_CURSOR, click_cursor);
+        CASE(GLFW_ARROW_CURSOR, arrow_cursor);
+        default:
+            PyErr_SetString(PyExc_ValueError, "Unknown cursor shape");
+            return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
 #ifdef __APPLE__
 void
 get_cocoa_key_equivalent(int key, int mods, unsigned short *cocoa_key, int *cocoa_mods) {
@@ -849,6 +886,7 @@ get_cocoa_key_equivalent(int key, int mods, unsigned short *cocoa_key, int *coco
 // Boilerplate {{{
 
 static PyMethodDef module_methods[] = {
+    METHODB(set_custom_cursor, METH_VARARGS),
     METHODB(set_smallest_allowed_resize, METH_VARARGS),
     METHODB(create_os_window, METH_VARARGS),
     METHODB(set_default_window_icon, METH_VARARGS),
@@ -892,6 +930,7 @@ init_glfw(PyObject *m) {
     ADDC(GLFW_PRESS);
     ADDC(GLFW_REPEAT);
     ADDC(GLFW_TRUE); ADDC(GLFW_FALSE);
+    ADDC(GLFW_IBEAM_CURSOR); ADDC(GLFW_HAND_CURSOR); ADDC(GLFW_ARROW_CURSOR);
 
 // --- Keys --------------------------------------------------------------------
 

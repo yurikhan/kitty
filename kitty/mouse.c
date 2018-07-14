@@ -119,6 +119,16 @@ contains_mouse(Window *w, OSWindow *os_window) {
     return (w->visible && window_left(w, os_window) <= x && x <= window_right(w, os_window) && window_top(w, os_window) <= y && y <= window_bottom(w, os_window));
 }
 
+static inline double
+distance_to_window(Window *w, OSWindow *os_window) {
+    double x = global_state.callback_os_window->mouse_x, y = global_state.callback_os_window->mouse_y;
+    double cx = (window_left(w, os_window) + window_right(w, os_window)) / 2.0;
+    double cy = (window_top(w, os_window) + window_bottom(w, os_window)) / 2.0;
+    return (x - cx) * (x - cx) + (y - cy) * (y - cy);
+}
+
+static bool clamp_to_window = false;
+
 static inline bool
 cell_for_pos(Window *w, unsigned int *x, unsigned int *y, OSWindow *os_window) {
     WindowGeometry *g = &w->geometry;
@@ -128,6 +138,10 @@ cell_for_pos(Window *w, unsigned int *x, unsigned int *y, OSWindow *os_window) {
     double mouse_x = global_state.callback_os_window->mouse_x;
     double mouse_y = global_state.callback_os_window->mouse_y;
     double left = window_left(w, os_window), top = window_top(w, os_window), right = window_right(w, os_window), bottom = window_bottom(w, os_window);
+    if (clamp_to_window) {
+        mouse_x = MIN(MAX(mouse_x, left), right);
+        mouse_y = MIN(MAX(mouse_y, top), bottom);
+    }
     if (mouse_x < left || mouse_y < top || mouse_x > right || mouse_y > bottom) return false;
     if (mouse_x >= g->right) qx = screen->columns - 1;
     else if (mouse_x >= g->left) qx = (unsigned int)((double)(mouse_x - g->left) / os_window->fonts_data->cell_width);
@@ -147,10 +161,15 @@ update_drag(bool from_button, Window *w, bool is_release, int modifiers) {
     Screen *screen = w->render_data.screen;
     if (from_button) {
         if (is_release) {
+            global_state.active_drag_in_window = 0;
+            w->last_drag_scroll_at = 0;
             if (screen->selection.in_progress)
                 screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, true);
         }
-        else screen_start_selection(screen, w->mouse_cell_x, w->mouse_cell_y, modifiers == (int)OPT(rectangle_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | GLFW_MOD_SHIFT), EXTEND_CELL);
+        else {
+            global_state.active_drag_in_window = w->id;
+            screen_start_selection(screen, w->mouse_cell_x, w->mouse_cell_y, modifiers == (int)OPT(rectangle_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | GLFW_MOD_SHIFT), EXTEND_CELL);
+        }
     } else if (screen->selection.in_progress) {
         screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, false);
     }
@@ -340,10 +359,18 @@ HANDLER(handle_button_event) {
     }
 }
 
+static inline int
+currently_pressed_button() {
+    for (int i = 0; i < GLFW_MOUSE_BUTTON_5; i++) {
+        if (global_state.callback_os_window->mouse_button_pressed[i]) return i;
+    }
+    return -1;
+}
+
 HANDLER(handle_event) {
     switch(button) {
         case -1:
-            for (int i = 0; i < GLFW_MOUSE_BUTTON_5; i++) { if (global_state.callback_os_window->mouse_button_pressed[i]) { button = i; break; } }
+            button = currently_pressed_button();
             handle_move_event(w, button, modifiers, window_idx);
             break;
         case GLFW_MOUSE_BUTTON_LEFT:
@@ -373,6 +400,16 @@ mouse_in_region(Region *r) {
 }
 
 static inline Window*
+window_for_id(id_type window_id) {
+    Tab *t = global_state.callback_os_window->tabs + global_state.callback_os_window->active_tab;
+    for (unsigned int i = 0; i < t->num_windows; i++) {
+        Window *w = t->windows + i;
+        if (w->id == window_id) return w;
+    }
+    return NULL;
+}
+
+static inline Window*
 window_for_event(unsigned int *window_idx, bool *in_tab_bar) {
     Region central, tab_bar;
 	os_window_regions(global_state.callback_os_window, &central, &tab_bar);
@@ -386,7 +423,21 @@ window_for_event(unsigned int *window_idx, bool *in_tab_bar) {
         }
     }
     return NULL;
+}
 
+static inline Window*
+closest_window_for_event(unsigned int *window_idx) {
+    Window *ans = NULL;
+    double closest_distance = UINT_MAX;
+    if (global_state.callback_os_window->num_tabs > 0) {
+        Tab *t = global_state.callback_os_window->tabs + global_state.callback_os_window->active_tab;
+        for (unsigned int i = 0; i < t->num_windows; i++) {
+            Window *w = t->windows + i;
+            double d = distance_to_window(w, global_state.callback_os_window);
+            if (d < closest_distance) { ans = w; closest_distance = d; *window_idx = i; }
+        }
+    }
+    return ans;
 }
 
 void
@@ -405,12 +456,34 @@ mouse_event(int button, int modifiers) {
     MouseShape old_cursor = mouse_cursor_shape;
     bool in_tab_bar;
     unsigned int window_idx = 0;
-    Window *w = window_for_event(&window_idx, &in_tab_bar);
+    Window *w = NULL;
+    if (button == -1 && global_state.active_drag_in_window) {  // drag move
+        w = window_for_id(global_state.active_drag_in_window);
+        if (w) {
+            button = currently_pressed_button();
+            if (button == GLFW_MOUSE_BUTTON_LEFT) {
+                clamp_to_window = true;
+                handle_move_event(w, button, modifiers, window_idx);
+                clamp_to_window = false;
+                return;
+            }
+        }
+
+    }
+    w = window_for_event(&window_idx, &in_tab_bar);
     if (in_tab_bar) {
         mouse_cursor_shape = HAND;
         handle_tab_bar_mouse(button, modifiers);
     } else if(w) {
         handle_event(w, button, modifiers, window_idx);
+    } else if (button == GLFW_MOUSE_BUTTON_LEFT && global_state.callback_os_window->mouse_button_pressed[button]) {
+        // initial click, clamp it to the closest window
+        w = closest_window_for_event(&window_idx);
+        if (w) {
+            clamp_to_window = true;
+            handle_event(w, button, modifiers, window_idx);
+            clamp_to_window = false;
+        }
     }
     if (mouse_cursor_shape != old_cursor) {
         set_mouse_cursor(mouse_cursor_shape);

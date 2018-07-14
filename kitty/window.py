@@ -7,7 +7,7 @@ import os
 import sys
 import weakref
 from collections import deque
-from enum import Enum
+from enum import IntEnum
 
 from .child import cwd_of_process
 from .config import build_ansi_color_table
@@ -33,7 +33,7 @@ from .utils import (
 )
 
 
-class DynamicColor(Enum):
+class DynamicColor(IntEnum):
     default_fg, default_bg, cursor_color, highlight_fg, highlight_bg = range(1, 6)
 
 
@@ -94,6 +94,7 @@ class Window:
 
     def __init__(self, tab, child, opts, args, override_title=None):
         self.action_on_close = None
+        self.layout_data = None
         self.needs_attention = False
         self.override_title = override_title
         self.overlay_window_id = None
@@ -101,12 +102,12 @@ class Window:
         self.default_title = os.path.basename(child.argv[0] or appname)
         self.child_title = self.default_title
         self.id = add_window(tab.os_window_id, tab.id, self.title)
-        self.clipboard_control_buffers = {'p': '', 'c': ''}
         if not self.id:
             raise Exception('No tab with id: {} in OS Window: {} was found, or the window counter wrapped'.format(tab.id, tab.os_window_id))
         self.tab_id = tab.id
         self.os_window_id = tab.os_window_id
         self.tabref = weakref.ref(tab)
+        self.clipboard_control_buffers = {'p': '', 'c': ''}
         self.destroyed = False
         self.click_queue = deque(maxlen=3)
         self.geometry = WindowGeometry(0, 0, 0, 0, 0, 0)

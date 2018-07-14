@@ -10,7 +10,7 @@ from collections import namedtuple
 from .fast_data_types import set_boss as set_c_boss
 
 appname = 'kitty'
-version = (0, 11, 2)
+version = (0, 11, 3)
 str_version = '.'.join(map(str, version))
 _plat = sys.platform.lower()
 is_macos = 'darwin' in _plat
@@ -58,7 +58,10 @@ def _get_config_dir():
 
     candidate = os.path.abspath(os.path.expanduser(os.environ.get('XDG_CONFIG_HOME') or '~/.config'))
     ans = os.path.join(candidate, appname)
-    os.makedirs(ans, exist_ok=True)
+    try:
+        os.makedirs(ans, exist_ok=True)
+    except FileExistsError:
+        raise SystemExit('A file {} already exists. It must be a directory, not a file.'.format(ans))
     return ans
 
 
@@ -102,6 +105,7 @@ def wakeup():
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 terminfo_dir = os.path.join(base_dir, 'terminfo')
 logo_data_file = os.path.join(base_dir, 'logo', 'kitty.rgba')
+beam_cursor_data_file = os.path.join(base_dir, 'logo', 'beam-cursor.png')
 try:
     shell_path = pwd.getpwuid(os.geteuid()).pw_shell or '/bin/sh'
 except KeyError:

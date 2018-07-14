@@ -449,6 +449,13 @@ o('window_border_width', 1.0, option_type=positive_float, long_text=_('''
 The width (in pts) of window borders. Will be rounded to the nearest number of pixels based on screen resolution.
 Note that borders are displayed only when more than one window is visible. They are meant to separate multiple windows.'''))
 
+o('draw_minimal_borders', True, long_text=_('''
+Draw only the minimum borders needed. This means that only the minimum
+needed borders for inactive windows are drawn. That is only the borders
+that separate the inactive window from a neighbor. Note that setting
+a non-zero window margin overrides this and causes all borders to be drawn.
+'''))
+
 o('window_margin_width', 0.0, option_type=positive_float, long_text=_('''
 The window margin (in pts) (blank area outside the border)'''))
 
@@ -715,7 +722,10 @@ kitty will stay running, even with no open windows, as is the expected
 behavior on macOS.
 '''))
 
-
+o('macos_window_resizable', True, long_text=_('''
+Disable this if you want kitty top-level (OS) windows to not be resizable
+on macOS.
+'''))
 # }}}
 
 g('shortcuts')  # {{{

@@ -3,6 +3,40 @@ Changelog
 
 |kitty| is a feature full, cross-platform, *fast*, GPU based terminal emulator.
 
+0.11.3 [2018-07-10]
+------------------------------
+
+- Draw only the minimum borders needed for inactive windows. That is only the borders
+  that separate the inactive window from a neighbor. Note that setting
+  a non-zero window margin overrides this and causes all borders to be drawn.
+  The old behavior of drawing all borders can be restored via the
+  :opt:`draw_minimal_borders` setting in kitty.conf.
+
+- macOS: Add an option :opt:`macos_window_resizable` to control if kitty
+  top-level windows are resizable using the mouse or not (:iss:`698`)
+
+- macOS: Use a custom mouse cursor that shows up well on both light and dark backgrounds
+  (:iss:`359`)
+
+- macOS: Workaround for switching from fullscreen to windowed mode with the
+  titlebar hidden causing window resizing to not work. (:iss:`711`)
+
+- Fix triple-click to select line not working when the entire line is filled
+  (:iss:`703`)
+
+- When dragging to select with the mouse "grab" the mouse so that if it strays
+  into neighboring windows, the selection is still updated (:pull:`624`)
+
+- When clicking in the margin/border area of a window, map the click to the
+  nearest cell in the window. Avoids selection with the mouse failing when
+  starting the selection just outside the window.
+
+- When drag-scrolling stop the scroll when the mouse button is released.
+
+- Fix a regression in the previous release that caused pasting large amounts
+  of text to be duplicated (:iss:`709`)
+
+
 0.11.2 [2018-07-01]
 ------------------------------
 
