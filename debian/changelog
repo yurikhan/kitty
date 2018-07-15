@@ -1,8 +1,10 @@
-kitty (0.11.3-1) UNRELEASED; urgency=medium
+kitty (0.11.3-1) unstable; urgency=medium
 
   * New upstream release
+  * Register kitty's HTML docs with doc-base
+  * lintian: Add ${misc:Depends} to kitty-terminfo
 
- -- James McCoy <jamessan@debian.org>  Fri, 13 Jul 2018 23:11:00 -0400
+ -- James McCoy <jamessan@debian.org>  Sun, 15 Jul 2018 08:55:48 -0400
 
 kitty (0.11.2-3) unstable; urgency=medium
 
