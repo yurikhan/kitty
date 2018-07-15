@@ -1,0 +1,8 @@
+Document: kitty
+Title: kitty user guide
+Author: Kovid Goyal
+Section: Terminal Emulators
+
+Format: HTML
+Index: /usr/share/doc/kitty/html/index.html
+Files: /usr/share/doc/kitty/html/*.html /usr/share/doc/kitty/html/kittens/*.html
