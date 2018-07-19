@@ -230,13 +230,13 @@ To delete an extra cursor use::
 
 
 this will delete an extra cursor with ``id=1``, if it exists. To delete
-all extra cursors, don't specify an ``id`` use::
+all extra cursors, don't specify an ``id``, use::
 
     <ESC>_Ca=d<ESC>\
 
 Extra cursors are designed to be as "inert" as possible, in order to leave
 their semantics up to the application rather than the terminal emulator. This
-means that deleting character, inserting characters, deleting lines, inserting
+means that deleting characters, inserting characters, deleting lines, inserting
 lines, scrolling the screen, etc. all have no effect on extra cursors. Indeed,
 apart from the actions listed below nothing affects the extra cursors.
 
