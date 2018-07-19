@@ -238,9 +238,9 @@ Extra cursors are designed to be as "inert" as possible, in order to leave
 their semantics up to the application rather than the terminal emulator. This
 means that deleting characters, inserting characters, deleting lines, inserting
 lines, scrolling the screen, etc. all have no effect on extra cursors. Indeed,
-apart from the actions listed below nothing affects the extra cursors.
+apart from the actions listed below nothing affects extra cursors.
 
-The following actions do affect extra cursors, as noted:
+The following actions do affect extra cursors:
 
 - Reset: All extra cursors are deleted
 
