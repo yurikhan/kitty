@@ -184,3 +184,73 @@ changes even after it exits. To avoid this, kitty introduces a new pair of
 These escape codes save/restore the so called *dynamic colors*, default
 background, default foreground, selection background, selection foreground and
 cursor color.
+
+
+Multiple cursors
+---------------------
+
+Modern text editors have the concept of multiple cursors, which come in handy
+when you want to make the same change in many different places. To support
+this feature, kitty has escape codes that allow programs to ask it to display
+multiple cursors. Currently the color and shape of the extra cursors are the
+same as that of the main cursor, but support for changing these could be added
+in the future, if needed. See :iss:`720` for discussion.
+
+All extra cursor escape codes are of the form::
+
+    <ESC>_C<control data><ESC>\
+
+This is a so-called *Application Programming Command (APC)*. Most terminal
+emulators ignore APC codes, making it safe to use. The control data is a
+comma-separated list of unordered ``key=value`` pairs. Extra cursors are identified
+by ids which are 32-bit unsigned non-zero integers, specified using the ``i`` key
+in the control data.
+
+
+To display an extra cursor, use::
+
+    <ESC>_Ci=1<ESC>\
+
+
+This will put an extra cursor at the current position of the
+main cursor. If you want to put the cursor elsewhere, use::
+
+    <ESC>_Ci=1,r=10,c=3<ESC>\
+
+
+which will put an extra cursor at row number 10 and column number 2 (uses
+1-based indexing, from top left corner of screen, does not take margins or
+`DECOM <https://www.vt100.net/docs/vt510-rm/DECOM.html>`_ into account). Moving
+an existing cursor is the same as creating a new cursor, the exact same escape
+code is used, with the id set to the id of the cursor to be moved.
+
+To delete an extra cursor use::
+
+    <ESC>_Ca=d,i=1<ESC>\
+
+
+this will delete an extra cursor with ``id=1``, if it exists. To delete
+all extra cursors, don't specify an ``id`` use::
+
+    <ESC>_Ca=d<ESC>\
+
+Extra cursors are designed to be as "inert" as possible, in order to leave
+their semantics up to the application rather than the terminal emulator. This
+means that deleting character, inserting characters, deleting lines, inserting
+lines, scrolling the screen, etc. all have no effect on extra cursors. Indeed,
+apart from the actions listed below nothing affects the extra cursors.
+
+The following actions do affect extra cursors, as noted:
+
+- Reset: All extra cursors are deleted
+
+- Clear screen: All extra cursors are deleted
+
+- Switching between primary and alternate screen and vice versa, all extra
+  cursors are deleted.
+
+- Vertical scrolling: Not sure about this, should it scroll the extra cursors?
+
+
+Resource limits: Terminal emulators may have a maximum number of extra cursors
+they allow. This number must be at least 256.
