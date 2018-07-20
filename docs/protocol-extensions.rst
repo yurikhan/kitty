@@ -260,4 +260,6 @@ The following actions do affect extra cursors:
 
 
 Resource limits: Terminal emulators may have a maximum number of extra cursors
-they allow. This number must be at least 256.
+they allow. This number must be at least 256. This limit should be exposed via
+the terminals terminfo database as the numeric property "cursors". This key can
+also be used by applications to detect if the terminal supports extra cursors.
