@@ -218,7 +218,7 @@ main cursor. If you want to put the cursor elsewhere, use::
     <ESC>_Ci=1,r=10,c=3<ESC>\
 
 
-which will put an extra cursor at row number 10 and column number 2 (uses
+which will put an extra cursor at row number 10 and column number 3 (uses
 1-based indexing, from top left corner of screen, does not take margins or
 `DECOM <https://www.vt100.net/docs/vt510-rm/DECOM.html>`_ into account). Moving
 an existing cursor is the same as creating a new cursor, the exact same escape
@@ -242,12 +242,19 @@ apart from the actions listed below nothing affects extra cursors.
 
 The following actions do affect extra cursors:
 
-- Reset: All extra cursors are deleted
+- Reset: All extra cursors are deleted (this is the terminfo "rs1" capability)
 
-- Clear screen: All extra cursors are deleted
+- Clear screen: All extra cursors are deleted (this is the terminfo "clear"
+  capability)
 
 - Switching between primary and alternate screen and vice versa, all extra
-  cursors are deleted.
+  cursors are deleted. Note that if a switch is made to the current screen, it
+  is a no-op.
+
+- Resizing the screen: Extra cursors are unaffected, except if they are out of
+  bounds in which case they are moved into bounds. The exact algorithm for this
+  is undefined, applications should not rely on any particular post-resize
+  locations.
 
 - Vertical scrolling: Not sure about this, should it scroll the extra cursors?
 
