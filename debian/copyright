@@ -18,11 +18,12 @@ Copyright: 2002-2006, Marcus Geelnard
            2014, Jonas Ådahl <jadahl@gmail.com>
            2002-2006, Marcus Geelnard
            2012, Torsten Walluhn <tw@mad-cad.net>
+           2014-2018 Kovid Goyal <kovid@kovidgoyal.net>
 License: Zlib
 
 Files: glfw/glfw.py
-       glfw/xkb_glfw.*
-Copyright: 2014,2017-2018, Kovid Goyal <kovid at kovidgoyal.net>
+       glfw/backend_utils.c
+Copyright: 2017-2018, Kovid Goyal <kovid at kovidgoyal.net>
 License: GPL-3+
 
 Files: kitty_tests/FiraCode-Medium.otf
