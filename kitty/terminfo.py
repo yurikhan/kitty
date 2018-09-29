@@ -38,7 +38,7 @@ bool_capabilities = {
     # https://github.com/kovidgoyal/kitty/blob/master/protocol-extensions.asciidoc
     'Su',
 
-    # The following are entries that we dont use
+    # The following are entries that we don't use
     # # background color erase
     # 'bce',
 }
@@ -283,7 +283,7 @@ string_capabilities = {
     # Set RGB background color (non-standard used by neovim)
     'setrgbb': r'\E[48:2:%p1%d:%p2%d:%p3%dm',
 
-    # The following are entries that we dont use
+    # The following are entries that we don't use
     # # display status line
     # 'dsl': r'\E]2;\007',
     # # return from status line
@@ -438,7 +438,7 @@ queryable_capabilities.update(string_capabilities)
 extra = (bool_capabilities | numeric_capabilities.keys() | string_capabilities.keys()) - set(termcap_aliases.values())
 no_termcap_for = frozenset('Su Tc setrgbf setrgbb'.split())
 if extra - no_termcap_for:
-    raise Exception('Termcap aliases not complete, missing: {}'.format(extra))
+    raise Exception('Termcap aliases not complete, missing: {}'.format(extra - no_termcap_for))
 del extra
 
 
@@ -468,7 +468,7 @@ def get_capabilities(query_string):
     try:
         for q in query_string.split(';'):
             name = qname = unhexlify(q).decode('utf-8')
-            if name == 'TN':
+            if name in ('TN', 'name'):
                 val = names[0]
             else:
                 try:
@@ -477,7 +477,7 @@ def get_capabilities(query_string):
                     try:
                         qname = termcap_aliases[name]
                         val = queryable_capabilities[qname]
-                    except Exception as e:
+                    except Exception:
                         from .utils import log_error
                         log_error(ERROR_PREFIX, 'Unknown terminfo property:', name)
                         raise

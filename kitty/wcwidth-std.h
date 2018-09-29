@@ -1,4 +1,4 @@
-// unicode data, built from the unicode standard on: 2018-06-14
+// unicode data, built from the unicode standard on: 2018-08-04
 // see gen-wcwidth.py
 #pragma once
 #include "data-types.h"
@@ -8,7 +8,7 @@ START_ALLOW_CASE_RANGE
 static int
 wcwidth_std(int32_t code) {
 	switch(code) {
-		// Marks (2234 codepoints) {{{
+		// Marks (2240 codepoints) {{{
 		case 0x0:
 			return 0;
 		case 0x300 ... 0x36f:
@@ -307,6 +307,8 @@ wcwidth_std(int32_t code) {
 			return 0;
 		case 0x1dfb ... 0x1dff:
 			return 0;
+		case 0x200d:
+			return 0;
 		case 0x20d0 ... 0x20f0:
 			return 0;
 		case 0x2cef ... 0x2cf1:
@@ -559,11 +561,13 @@ wcwidth_std(int32_t code) {
 			return 0;
 		case 0x1e944 ... 0x1e94a:
 			return 0;
+		case 0x1f3fb ... 0x1f3ff:
+			return 0;
 		case 0xe0100 ... 0xe01ef:
 			return 0;
 		// }}}
 
-		// Non-printing characters (2264 codepoints) {{{
+		// Non-printing characters (2263 codepoints) {{{
 		case 0x1 ... 0x1f:
 			return -1;
 		case 0x7f ... 0x9f:
@@ -582,7 +586,9 @@ wcwidth_std(int32_t code) {
 			return -1;
 		case 0x180e:
 			return -1;
-		case 0x200b ... 0x200f:
+		case 0x200b ... 0x200c:
+			return -1;
+		case 0x200e ... 0x200f:
 			return -1;
 		case 0x202a ... 0x202e:
 			return -1;
@@ -1209,7 +1215,7 @@ wcwidth_std(int32_t code) {
 			return -2;
 		// }}}
 
-		// East Asian double width (181796 codepoints) {{{
+		// East Asian double width (181791 codepoints) {{{
 		case 0x1100 ... 0x115f:
 			return 2;
 		case 0x231a ... 0x231b:
@@ -1386,7 +1392,9 @@ wcwidth_std(int32_t code) {
 			return 2;
 		case 0x1f3f4:
 			return 2;
-		case 0x1f3f8 ... 0x1f43e:
+		case 0x1f3f8 ... 0x1f3fa:
+			return 2;
+		case 0x1f400 ... 0x1f43e:
 			return 2;
 		case 0x1f440:
 			return 2;

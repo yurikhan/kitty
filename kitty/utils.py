@@ -15,16 +15,13 @@ from time import monotonic
 from .constants import (
     appname, is_macos, is_wayland, supports_primary_selection
 )
-from .fast_data_types import (
-    GLSL_VERSION, close_tty, log_error_string, open_tty, redirect_std_streams,
-    x11_display
-)
 from .rgb import Color, to_color
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
 
 def load_shaders(name):
+    from .fast_data_types import GLSL_VERSION
     vert = open(os.path.join(BASE, '{}_vertex.glsl'.format(name))).read().replace('GLSL_VERSION', str(GLSL_VERSION), 1)
     frag = open(os.path.join(BASE, '{}_fragment.glsl'.format(name))).read().replace('GLSL_VERSION', str(GLSL_VERSION), 1)
     return vert, frag
@@ -38,6 +35,7 @@ def safe_print(*a, **k):
 
 
 def log_error(*a, **k):
+    from .fast_data_types import log_error_string
     try:
         msg = k.get('sep', ' ').join(map(str, a)) + k.get('end', '')
         log_error_string(msg.replace('\0', ''))
@@ -180,6 +178,7 @@ def detach(fork=True, setsid=True, redirect=True):
     if setsid:
         os.setsid()
     if redirect:
+        from .fast_data_types import redirect_std_streams
         redirect_std_streams(os.devnull)
 
 
@@ -192,9 +191,10 @@ def adjust_line_height(cell_height, val):
 def init_startup_notification_x11(window_handle, startup_id=None):
     # https://specifications.freedesktop.org/startup-notification-spec/startup-notification-latest.txt
     from kitty.fast_data_types import init_x11_startup_notification
-    sid = startup_id or os.environ.pop('DESKTOP_STARTUP_ID', None)  # ensure child processes dont get this env var
+    sid = startup_id or os.environ.pop('DESKTOP_STARTUP_ID', None)  # ensure child processes don't get this env var
     if not sid:
         return
+    from .fast_data_types import x11_display
     display = x11_display()
     if not display:
         return
@@ -369,10 +369,12 @@ def write_all(fd, data):
 class TTYIO:
 
     def __enter__(self):
+        from .fast_data_types import open_tty
         self.tty_fd, self.original_termios = open_tty(True)
         return self
 
     def __exit__(self, *a):
+        from .fast_data_types import close_tty
         close_tty(self.tty_fd, self.original_termios)
 
     def send(self, data):
@@ -404,6 +406,26 @@ def natsort_ints(iterable):
     return sorted(iterable, key=alphanum_key)
 
 
+def exe_exists(exe):
+    for loc in os.environ.get('PATH', '').split(os.pathsep):
+        if loc and os.access(os.path.join(loc, exe), os.X_OK):
+            return os.path.join(loc, exe)
+    return False
+
+
 def get_editor():
-    import shlex
-    return shlex.split(os.environ.get('EDITOR', 'vim'))
+    ans = getattr(get_editor, 'ans', False)
+    if ans is False:
+        import shlex
+        ans = os.environ.get('EDITOR')
+        if not ans or not exe_exists(shlex.split(ans)[0]):
+            for q in ('vim', 'vi', 'emacs', 'micro', 'nano'):
+                r = exe_exists(q)
+                if r:
+                    ans = r
+                    break
+            else:
+                ans = 'vim'
+        ans = shlex.split(ans)
+        get_editor.ans = ans
+    return ans

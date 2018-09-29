@@ -12,8 +12,6 @@
 #include <AvailabilityMacros.h>
 // Needed for _NSGetProgname
 #include <crt_externs.h>
-typedef void* rusage_info_t;  // needed for libproc.h
-#include <libproc.h>
 
 #if (MAC_OS_X_VERSION_MAX_ALLOWED < 101200)
 #define NSWindowStyleMaskResizable NSResizableWindowMask
@@ -99,6 +97,12 @@ cocoa_set_new_window_trigger(PyObject *self UNUSED, PyObject *args) {
     new_window_mods = nwm;
     if (new_window_key) Py_RETURN_TRUE;
     Py_RETURN_FALSE;
+}
+
+void
+cocoa_update_nsgl_context(void* id) {
+    NSOpenGLContext *ctx = id;
+    [ctx update];
 }
 
 void
@@ -220,6 +224,35 @@ cocoa_make_window_resizable(void *w, bool resizable) {
     return true;
 }
 
+void
+cocoa_focus_window(void *w) {
+    NSWindow *window = (NSWindow*)w;
+    [window makeKeyWindow];
+}
+
+bool
+cocoa_toggle_fullscreen(void *w, bool traditional) {
+    NSWindow *window = (NSWindow*)w;
+    bool made_fullscreen = true;
+    NSWindowStyleMask sm = [window styleMask];
+    bool in_fullscreen = sm & NSWindowStyleMaskFullScreen;
+    if (traditional) {
+        if (!(in_fullscreen)) {
+            sm |= NSWindowStyleMaskBorderless | NSWindowStyleMaskFullScreen;
+            [[NSApplication sharedApplication] setPresentationOptions: NSApplicationPresentationAutoHideMenuBar | NSApplicationPresentationAutoHideDock];
+        } else {
+            made_fullscreen = false;
+            sm &= ~(NSWindowStyleMaskBorderless | NSWindowStyleMaskFullScreen);
+            [[NSApplication sharedApplication] setPresentationOptions: NSApplicationPresentationDefault];
+        }
+        [window setStyleMask: sm];
+    } else {
+        if (in_fullscreen) made_fullscreen = false;
+        [window toggleFullScreen: nil];
+    }
+    return made_fullscreen;
+}
+
 static PyObject*
 cocoa_get_lang(PyObject UNUSED *self) {
     NSString* locale = nil;
@@ -232,15 +265,6 @@ cocoa_get_lang(PyObject UNUSED *self) {
     }
     if (!locale) { Py_RETURN_NONE; }
     return Py_BuildValue("s", [locale UTF8String]);
-}
-
-static PyObject*
-cwd_of_process(PyObject *self UNUSED, PyObject *pid_) {
-    long pid = PyLong_AsLong(pid_);
-    struct proc_vnodepathinfo vpi;
-    int ret = proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &vpi, sizeof(vpi));
-    if (ret < 0) { PyErr_SetFromErrno(PyExc_OSError); return NULL; }
-    return PyUnicode_FromString(vpi.pvi_cdir.vip_path);
 }
 
 void
@@ -276,7 +300,6 @@ cocoa_set_titlebar_color(void *w, color_type titlebar_color)
 
 static PyMethodDef module_methods[] = {
     {"cocoa_get_lang", (PyCFunction)cocoa_get_lang, METH_NOARGS, ""},
-    {"cwd_of_process", (PyCFunction)cwd_of_process, METH_O, ""},
     {"cocoa_set_new_window_trigger", (PyCFunction)cocoa_set_new_window_trigger, METH_VARARGS, ""},
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };

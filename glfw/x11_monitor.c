@@ -152,6 +152,11 @@ void _glfwPollMonitorsX11(void)
             }
 
             ci = XRRGetCrtcInfo(_glfw.x11.display, sr, oi->crtc);
+            if (!ci)
+            {
+                XRRFreeOutputInfo(oi);
+                continue;
+            }
             if (ci->rotation == RR_Rotate_90 || ci->rotation == RR_Rotate_270)
             {
                 widthMM  = oi->mm_height;
@@ -321,13 +326,15 @@ void _glfwPlatformGetMonitorPos(_GLFWmonitor* monitor, int* xpos, int* ypos)
 
         sr = XRRGetScreenResourcesCurrent(_glfw.x11.display, _glfw.x11.root);
         ci = XRRGetCrtcInfo(_glfw.x11.display, sr, monitor->x11.crtc);
+        if (ci)
+        {
+            if (xpos)
+                *xpos = ci->x;
+            if (ypos)
+                *ypos = ci->y;
 
-        if (xpos)
-            *xpos = ci->x;
-        if (ypos)
-            *ypos = ci->y;
-
-        XRRFreeCrtcInfo(ci);
+            XRRFreeCrtcInfo(ci);
+        }
         XRRFreeScreenResources(sr);
     }
 }
@@ -406,9 +413,13 @@ void _glfwPlatformGetVideoMode(_GLFWmonitor* monitor, GLFWvidmode* mode)
         sr = XRRGetScreenResourcesCurrent(_glfw.x11.display, _glfw.x11.root);
         ci = XRRGetCrtcInfo(_glfw.x11.display, sr, monitor->x11.crtc);
 
-        *mode = vidmodeFromModeInfo(getModeInfo(sr, ci->mode), ci);
+        if (ci) {
+            const XRRModeInfo* mi = getModeInfo(sr, ci->mode);
+            if (mi)  // mi can be NULL if the monitor has been disconnected
+                *mode = vidmodeFromModeInfo(mi, ci);
 
-        XRRFreeCrtcInfo(ci);
+            XRRFreeCrtcInfo(ci);
+        }
         XRRFreeScreenResources(sr);
     }
     else
@@ -501,4 +512,3 @@ GLFWAPI RROutput glfwGetX11Monitor(GLFWmonitor* handle)
     _GLFW_REQUIRE_INIT_OR_RETURN(None);
     return monitor->x11.output;
 }
-

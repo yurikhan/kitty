@@ -95,6 +95,21 @@ for a list of key names. The name to use is the part after the :code:`XKB_KEY_`
 prefix. Note that you should only use an XKB key name for keys that are not present
 in the list of GLFW keys.
 
+Finally, you can use raw system key codes to map keys. To see the system key code
+for a key, start kitty with the :option:`kitty --debug-keyboard` option. Then kitty will
+output some debug text for every key event. In that text look for ``native_code``
+the value of that becomes the key name in the shortcut. For example:
+
+.. code-block:: none
+
+    on_key_input: glfw key: 65 native_code: 0x61 action: PRESS mods: 0x0 text: 'a'
+
+Here, the key name for the :kbd:`A` key is :kbd:`0x61` and you can use it with::
+
+    map ctrl+0x61 something
+
+to map :kbd:`ctrl+a` to something.
+
 You can use the special action :code:`no_op` to unmap a keyboard shortcut that is
 assigned in the default configuration.
 
@@ -131,7 +146,12 @@ You can also create shortcuts to go to specific tabs, with 1 being the first tab
     map ctrl+alt+2 goto_tab 2
 
 Just as with :code:`new_window` above, you can also pass the name of arbitrary
-commands to run when using new_tab and use :code:`new_tab_with_cwd`.
+commands to run when using new_tab and use :code:`new_tab_with_cwd`. Finally,
+if you want the new tab to open next to the current tab rather than at the
+end of the tabs list, use::
+
+    map ctrl+t new_tab !neighbor [optional cmd to run]
+
 ''')],
     'shortcuts.layout': [
             _('Layout management'), '',
@@ -140,6 +160,11 @@ You can also create shortcuts to switch to specific layouts::
 
     map ctrl+alt+t goto_layout tall
     map ctrl+alt+s goto_layout stack
+
+Similarly, to switch back to the previous layout::
+
+   map ctrl+alt+p last_used_layout
+
 ''')],
     'shortcuts.fonts': [
         _('Font sizes'), _('''\
@@ -266,7 +291,16 @@ def to_cursor_shape(x):
         )
 
 
+def cursor_text_color(x):
+    if x.lower() == 'background':
+        return
+    return to_color(x)
+
+
 o('cursor', '#cccccc', _('Default cursor color'), option_type=to_color)
+o('cursor_text_color', '#111111', option_type=cursor_text_color, long_text=_('''
+Choose the color of text under the cursor. If you want it rendered with the
+background color of the cell underneath instead, use the special keyword: background'''))
 o('cursor_shape', 'block', option_type=to_cursor_shape, long_text=_(
     'The cursor shape can be one of (block, beam, underline)'))
 o('cursor_blink_interval', 0.5, option_type=positive_float, long_text=_('''
@@ -281,9 +315,19 @@ o('cursor_stop_blinking_after', 15.0, option_type=positive_float)
 
 g('scrollback')  # {{{
 
-o('scrollback_lines', 2000, option_type=positive_int, long_text=_('''
+
+def scrollback_lines(x):
+    x = int(x)
+    if x < 0:
+        x = 2 ** 32 - 1
+    return x
+
+
+o('scrollback_lines', 2000, option_type=scrollback_lines, long_text=_('''
 Number of lines of history to keep in memory for scrolling back. Memory is allocated
-on demand.'''))
+on demand. Negative numbers are (effectively) infinite scrollback. Note that using
+very large scrollback is not recommended a it can slow down resizing of the terminal
+and also use large amounts of RAM.'''))
 
 o('scrollback_pager', 'less --chop-long-lines --RAW-CONTROL-CHARS +INPUT_LINE_NUMBER', option_type=to_cmdline, long_text=_('''
 Program with which to view scrollback in a new window. The scrollback buffer is
@@ -293,8 +337,9 @@ INPUT_LINE_NUMBER in the command line above will be replaced by an integer
 representing which line should be at the top of the screen.'''))
 
 o('wheel_scroll_multiplier', 5.0, long_text=_('''
-Modify the amount scrolled by the mouse wheel or touchpad. Use
-negative numbers to change scroll direction.'''))
+Modify the amount scrolled by the mouse wheel. Note this is only used for low
+precision scrolling devices, not for high precision scrolling on platforms such
+as macOS and Wayland. Use negative numbers to change scroll direction.'''))
 # }}}
 
 g('mouse')  # {{{
@@ -422,7 +467,7 @@ def to_layout_names(raw):
     parts = [x.strip().lower() for x in raw.split(',')]
     ans = []
     for p in parts:
-        if p == '*':
+        if p in ('*', 'all'):
             ans.extend(sorted(all_layouts))
             continue
         name = p.partition(':')[0]
@@ -434,7 +479,7 @@ def to_layout_names(raw):
 
 o('enabled_layouts', '*', option_type=to_layout_names, long_text=_('''
 The enabled window layouts. A comma separated list of layout names. The special
-value :code:`*` means all layouts. The first listed layout will be used as the
+value :code:`all` means all layouts. The first listed layout will be used as the
 startup layout. For a list of available layouts, see the :ref:`layouts`.
 '''))
 
@@ -637,6 +682,19 @@ opening new windows, closing windows, reading the content of windows, etc.
 Note that this even works over ssh connections.
 '''))
 
+o(
+    '+env', '',
+    add_to_default=False,
+    long_text=_('''
+Specify environment variables to set in all child processes. Note that
+environment variables are expanded recursively, so if you use::
+
+    env MYVAR1=a
+    env MYVAR2=${MYVAR}/${HOME}/b
+
+The value of MYVAR2 will be :code:`a/<path to home directory>/b`.
+'''))
+
 
 def startup_session(x):
     if x.lower() == 'none':
@@ -666,9 +724,13 @@ program, even one running on a remote server via SSH can read your clipboard.
 '''))
 
 o('term', 'xterm-kitty', long_text=_('''
-The value of the TERM environment variable to set. Changing this can break
-many terminal programs, only change it if you know what you are doing, not
-because you read some advice on Stack Overflow to change it.
+The value of the TERM environment variable to set. Changing this can break many
+terminal programs, only change it if you know what you are doing, not because
+you read some advice on Stack Overflow to change it. The TERM variable if used
+by various programs to get information about the capabilities and behavior of
+the terminal. If you change it, depending on what programs you run, and how
+different the terminal you are changing it to is, various things from
+key-presses, to colors, to various advanced features may not work.
 '''))
 
 # }}}
@@ -726,6 +788,23 @@ o('macos_window_resizable', True, long_text=_('''
 Disable this if you want kitty top-level (OS) windows to not be resizable
 on macOS.
 '''))
+
+o('macos_thicken_font', 0, option_type=positive_float, long_text=_('''
+Draw an extra border around the font with the given width, to increase
+legibility at small font sizes. For example, a value of 0.75 will
+result in rendering that looks similar to sub-pixel antialiasing at
+common font sizes.
+'''))
+
+o('macos_traditional_fullscreen', False, long_text=_('''
+Use the traditional full-screen transition, that is faster, but less pretty.
+'''))
+
+# Disabled by default because of https://github.com/kovidgoyal/kitty/issues/794
+o('macos_custom_beam_cursor', False, long_text=_('''
+Enable/disable custom mouse cursor for macOS that is easier to see on both
+light and dark backgrounds. WARNING: this might make your mouse cursor
+invisible on dual GPU machines.'''))
 # }}}
 
 g('shortcuts')  # {{{
@@ -772,13 +851,25 @@ k('scroll_page_down', 'kitty_mod+page_down', 'scroll_page_down', _('Scroll page 
 k('scroll_home', 'kitty_mod+home', 'scroll_home', _('Scroll to top'))
 k('scroll_end', 'kitty_mod+end', 'scroll_end', _('Scroll to bottom'))
 k('show_scrollback', 'kitty_mod+h', 'show_scrollback', _('Browse scrollback buffer in less'), long_text=_('''
-You can send the contents of the current screen + history buffer as stdin to an arbitrary program using
-the placeholders @text (which is the plain text) and @ansi (which includes text styling escape codes).
-For only the current screen, use @screen or @ansi_screen.
-For example, the following command opens the scrollback buffer in less in a new window::
 
-    map kitty_mod+y new_window @ansi less +G -R
-'''))
+You can pipe the contents of the current screen + history buffer as
+:file:`STDIN` to an arbitrary program using the ``pipe`` function. For example,
+the following opens the scrollback buffer in less in an overlay window::
+
+    map f1 pipe @ansi overlay less +G -R
+
+Placeholders available are: @text (which is plain text) and @ansi (which
+includes text styling escape codes). For only the current screen, use @screen
+or @ansi_screen. For the secondary screen, use @alternate and @ansi_alternate.
+The secondary screen is the screen not currently displayed. For
+example if you run a fullscreen terminal application, the secondary screen will
+be the screen you return to when quitting the application. You can also use
+``none`` for no :file:`STDIN` input.
+
+To open in a new window, tab or new OS window, use ``window``, ``tab``, or
+``os_window`` respectively. You can also use ``none`` in which case the data
+will be piped into the program without creating any windows, useful if the
+program is a GUI program that creates its own windows. '''))
 
 
 # }}}
@@ -793,6 +884,13 @@ You can open a new window with the current working directory set to the
 working directory of the current window using::
 
     map ctrl+alt+enter    new_window_with_cwd
+
+You can open a new window that is allowed to control kitty via
+the kitty remote control facility by prefixing the command line with @.
+Any programs running in that window will be allowed to control kitty.
+For example::
+
+    map ctrl+enter new_window @ some_program
 '''))
 if is_macos:
     k('new_os_window', 'cmd+n', 'new_os_window', _('New OS window'))
@@ -817,7 +915,11 @@ k('tenth_window', 'kitty_mod+0', 'tenth_window', _('Tenth window'))
 # }}}
 
 g('shortcuts.tab')  # {{{
+if is_macos:
+    k('next_tab', 'ctrl+tab', 'next_tab', _('Next tab'))
 k('next_tab', 'kitty_mod+right', 'next_tab', _('Next tab'))
+if is_macos:
+    k('previous_tab', 'ctrl+shift+tab', 'previous_tab', _('Previous tab'))
 k('previous_tab', 'kitty_mod+left', 'previous_tab', _('Previous tab'))
 k('new_tab', 'kitty_mod+t', 'new_tab', _('New tab'))
 k('close_tab', 'kitty_mod+q', 'close_tab', _('Close tab'))
@@ -863,7 +965,7 @@ Useful with git, which uses sha1 hashes to identify commits'''))
 
 g('shortcuts.misc')  # {{{
 k('toggle_fullscreen', 'kitty_mod+f11', 'toggle_fullscreen', _('Toggle fullscreen'))
-k('input_unicode_character', 'kitty_mod+u', 'input_unicode_character', _('Unicode input'))
+k('input_unicode_character', 'kitty_mod+u', 'kitten unicode_input', _('Unicode input'))
 k('edit_config_file', 'kitty_mod+f2', 'edit_config_file', _('Edit config file'))
 k('kitty_shell', 'kitty_mod+escape', 'kitty_shell window', _('Open the kitty command shell'), long_text=_('''
 Open the kitty shell in a new window/tab/overlay/os_window to control kitty using commands.'''))
@@ -871,6 +973,17 @@ k('increase_background_opacity', 'kitty_mod+a>m', 'set_background_opacity +0.1',
 k('decrease_background_opacity', 'kitty_mod+a>l', 'set_background_opacity -0.1', _('Decrease background opacity'))
 k('full_background_opacity', 'kitty_mod+a>1', 'set_background_opacity 1', _('Make background fully opaque'))
 k('reset_background_opacity', 'kitty_mod+a>d', 'set_background_opacity default', _('Reset background opacity'))
+k('reset_terminal', 'kitty_mod+delete', 'clear_terminal reset active', _('Reset the terminal'),
+    long_text=_('''
+You can create shortcuts to clear/reset the terminal. For example::
+
+    map kitty_mod+f9 clear_terminal reset active
+    map kitty_mod+f10 clear_terminal clear active
+    map kitty_mod+f11 clear_terminal scrollback active
+
+These will reset screen/clear screen/clear screen+scrollback respectively. If you want to
+operate on all windows instead of just the current one, use :italic:`all` instead of :italic`active`.
+'''))
 k('send_text', 'ctrl+shift+alt+h', 'send_text all Hello World', _('Send arbitrary text on key presses'),
   add_to_default=False, long_text=_('''
 You can tell kitty to send arbitrary (UTF-8) encoded text to

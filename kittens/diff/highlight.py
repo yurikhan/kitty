@@ -133,6 +133,7 @@ def highlight_collection(collection, aliases=None):
     jobs = {}
     ans = {}
     with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+        highlight_collection.processes = executor._processes
         for path, item_type, other_path in collection:
             if item_type != 'rename':
                 for p in (path, other_path):

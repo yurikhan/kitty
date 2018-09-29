@@ -16,11 +16,10 @@ from .constants import (
 )
 from .fast_data_types import (
     BLIT_PROGRAM, CELL_BG_PROGRAM, CELL_FG_PROGRAM, CELL_PROGRAM,
-    CELL_SPECIAL_PROGRAM, CSI, CURSOR_PROGRAM, DCS, DECORATION, DIM,
-    GRAPHICS_PREMULT_PROGRAM, GRAPHICS_PROGRAM, OSC, REVERSE, SCROLL_FULL,
-    SCROLL_LINE, SCROLL_PAGE, STRIKETHROUGH, Screen, add_window,
-    cell_size_for_window, compile_program, get_clipboard_string,
-    glfw_post_empty_event, init_cell_program, init_cursor_program,
+    CELL_SPECIAL_PROGRAM, CSI, DCS, DECORATION, DIM, GRAPHICS_PREMULT_PROGRAM,
+    GRAPHICS_PROGRAM, OSC, REVERSE, SCROLL_FULL, SCROLL_LINE, SCROLL_PAGE,
+    STRIKETHROUGH, Screen, add_window, cell_size_for_window, compile_program,
+    get_clipboard_string, glfw_post_empty_event, init_cell_program,
     set_clipboard_string, set_titlebar_color, set_window_render_data,
     update_window_title, update_window_visibility, viewport_for_window
 )
@@ -56,9 +55,14 @@ def calculate_gl_geometry(window_geometry, viewport_width, viewport_height, cell
     return ScreenGeometry(xstart, ystart, window_geometry.xnum, window_geometry.ynum, dx, dy)
 
 
-def load_shader_programs(semi_transparent=0):
+def load_shader_programs(semi_transparent=0, cursor_text_color=None):
     compile_program(BLIT_PROGRAM, *load_shaders('blit'))
     v, f = load_shaders('cell')
+
+    def color_as_vec3(x):
+        return 'vec3({}, {}, {})'.format(x.red / 255, x.green / 255, x.blue / 255)
+
+    cursor_text_color = color_as_vec3(cursor_text_color) if cursor_text_color else 'bg'
     for which, p in {
             'SIMPLE': CELL_PROGRAM,
             'BACKGROUND': CELL_BG_PROGRAM,
@@ -66,7 +70,13 @@ def load_shader_programs(semi_transparent=0):
             'FOREGROUND': CELL_FG_PROGRAM,
     }.items():
         vv, ff = v.replace('WHICH_PROGRAM', which), f.replace('WHICH_PROGRAM', which)
-        for gln, pyn in {'REVERSE_SHIFT': REVERSE, 'STRIKE_SHIFT': STRIKETHROUGH, 'DIM_SHIFT': DIM, 'DECORATION_SHIFT': DECORATION}.items():
+        for gln, pyn in {
+                'REVERSE_SHIFT': REVERSE,
+                'STRIKE_SHIFT': STRIKETHROUGH,
+                'DIM_SHIFT': DIM,
+                'DECORATION_SHIFT': DECORATION,
+                'CURSOR_TEXT_COLOR': cursor_text_color,
+        }.items():
             vv = vv.replace('{{{}}}'.format(gln), str(pyn), 1)
         if semi_transparent:
             vv = vv.replace('#define NOT_TRANSPARENT', '#define TRANSPARENT')
@@ -80,8 +90,6 @@ def load_shader_programs(semi_transparent=0):
         ff = f.replace('ALPHA_TYPE', which)
         compile_program(p, v, ff)
     init_cell_program()
-    compile_program(CURSOR_PROGRAM, *load_shaders('cursor'))
-    init_cursor_program()
 
 
 def setup_colors(screen, opts):
@@ -95,12 +103,15 @@ class Window:
     def __init__(self, tab, child, opts, args, override_title=None):
         self.action_on_close = None
         self.layout_data = None
+        self.pty_resized_once = False
         self.needs_attention = False
         self.override_title = override_title
         self.overlay_window_id = None
         self.overlay_for = None
         self.default_title = os.path.basename(child.argv[0] or appname)
         self.child_title = self.default_title
+        self.title_stack = deque(maxlen=10)
+        self.allow_remote_control = child.allow_remote_control
         self.id = add_window(tab.os_window_id, tab.id, self.title)
         if not self.id:
             raise Exception('No tab with id: {} in OS Window: {} was found, or the window counter wrapped'.format(tab.id, tab.os_window_id))
@@ -126,12 +137,15 @@ class Window:
         return 'Window(title={}, id={}, overlay_for={}, overlay_window_id={})'.format(
                 self.title, self.id, self.overlay_for, self.overlay_window_id)
 
-    def as_dict(self):
+    def as_dict(self, is_focused=False):
         return dict(
             id=self.id,
+            is_focused=is_focused,
             title=self.override_title or self.title,
             pid=self.child.pid,
-            cwd=self.child.current_cwd or self.child.cwd, cmdline=self.child.cmdline
+            cwd=self.child.current_cwd or self.child.cwd,
+            cmdline=self.child.cmdline,
+            env=self.child.environ,
         )
 
     @property
@@ -152,6 +166,12 @@ class Window:
                 if pat.search(x) is not None:
                     return True
             return False
+        if field == 'env':
+            key_pat, val_pat = pat
+            for key, val in self.child.environ.items():
+                if key_pat.search(key) is not None and (
+                        val_pat is None or val_pat.search(val) is not None):
+                    return True
         return False
 
     def set_visible_in_layout(self, window_idx, val):
@@ -183,6 +203,9 @@ class Window:
             sg = self.update_position(new_geometry)
             self.needs_layout = False
             boss.child_monitor.resize_pty(self.id, *current_pty_size)
+            if not self.pty_resized_once:
+                self.pty_resized_once = True
+                self.child.mark_terminal_ready()
         else:
             sg = self.update_position(new_geometry)
         self.geometry = g = new_geometry
@@ -391,6 +414,16 @@ class Window:
                         write('c', set_clipboard_string)
                 if 'write-primary' in self.opts.clipboard_control:
                     write('p', set_primary_selection)
+
+    def manipulate_title_stack(self, pop, title, icon):
+        if title:
+            if pop:
+                if self.title_stack:
+                    self.child_title = self.title_stack.pop()
+                    self.title_updated()
+            else:
+                if self.child_title:
+                    self.title_stack.append(self.child_title)
     # }}}
 
     def text_for_selection(self):
@@ -403,10 +436,13 @@ class Window:
             self.screen.reset_callbacks()
         self.screen = None
 
-    def as_text(self, as_ansi=False, add_history=False, add_wrap_markers=False):
+    def as_text(self, as_ansi=False, add_history=False, add_wrap_markers=False, alternate_screen=False):
         lines = []
-        add_history = add_history and not self.screen.is_using_alternate_linebuf()
-        f = self.screen.as_text_non_visual if add_history else self.screen.as_text
+        add_history = add_history and not self.screen.is_using_alternate_linebuf() and not alternate_screen
+        if alternate_screen:
+            f = self.screen.as_text_alternate
+        else:
+            f = self.screen.as_text_non_visual if add_history else self.screen.as_text
         f(lines.append, as_ansi, add_wrap_markers)
         if add_history:
             h = []
@@ -442,6 +478,10 @@ class Window:
                     if len(text) == len(new_text):
                         break
                     text = new_text
+            else:
+                # Workaround for broken editors like nano that cannot handle
+                # newlines in pasted text see https://github.com/kovidgoyal/kitty/issues/994
+                text = b'\r'.join(text.splitlines())
             self.screen.paste(text)
 
     def copy_to_clipboard(self):

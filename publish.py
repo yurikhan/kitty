@@ -331,8 +331,14 @@ def require_git_master(branch='master'):
         raise SystemExit('You must be in the {} git branch'.format(branch))
 
 
+def require_penv():
+    if 'PENV' not in os.environ:
+        raise SystemExit('The PENV env var is not present, required for uploading releases')
+
+
 def main():
     require_git_master()
+    require_penv()
     parser = argparse.ArgumentParser(description='Publish kitty')
     parser.add_argument(
         '--only',
@@ -341,13 +347,16 @@ def main():
         help='Only run the specified action, by default the specified action and all sub-sequent actions are run')
     parser.add_argument(
         'action',
-        default='build',
+        default='all',
         nargs='?',
-        choices=ALL_ACTIONS,
+        choices=list(ALL_ACTIONS) + ['all'],
         help='The action to start with')
     args = parser.parse_args()
-    idx = ALL_ACTIONS.index(args.action)
-    actions = ALL_ACTIONS[idx:]
+    if args.action == 'all':
+        actions = list(ALL_ACTIONS)
+    else:
+        idx = ALL_ACTIONS.index(args.action)
+        actions = ALL_ACTIONS[idx:]
     if args.only:
         del actions[1:]
     else:

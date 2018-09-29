@@ -171,6 +171,14 @@ find_substitute_face(CFStringRef str, CTFontRef old_font) {
         else start++;
         if (new_font == NULL) { PyErr_SetString(PyExc_ValueError, "Failed to find fallback CTFont"); return NULL; }
         if (new_font == old_font) { CFRelease(new_font); continue; }
+        CFStringRef name = CTFontCopyPostScriptName(new_font);
+        CFComparisonResult cr = CFStringCompare(name, CFSTR("LastResort"), 0);
+        CFRelease(name);
+        if (cr == kCFCompareEqualTo) {
+            CFRelease(new_font);
+            PyErr_SetString(PyExc_ValueError, "Failed to find fallback CTFont other than the LastResort font");
+            return NULL;
+        }
         return new_font;
     }
     PyErr_SetString(PyExc_ValueError, "CoreText returned the same font as a fallback font");
@@ -364,10 +372,14 @@ render_glyphs(CTFontRef font, unsigned int width, unsigned int height, unsigned 
     CGContextSetShouldAntialias(render_ctx, true);
     CGContextSetShouldSmoothFonts(render_ctx, true);
     CGContextSetGrayFillColor(render_ctx, 1, 1); // white glyphs
-    CGContextSetTextDrawingMode(render_ctx, kCGTextFill);
+    CGContextSetGrayStrokeColor(render_ctx, 1, 1);
+    CGContextSetLineWidth(render_ctx, global_state.opts.macos_thicken_font);
+    CGContextSetTextDrawingMode(render_ctx, kCGTextFillStroke);
     CGContextSetTextMatrix(render_ctx, CGAffineTransformIdentity);
     CGContextSetTextPosition(render_ctx, 0, height - baseline);
     CTFontDrawGlyphs(font, glyphs, positions, num_glyphs, render_ctx);
+    CGContextRelease(render_ctx);
+    CGColorSpaceRelease(gray_color_space);
 }
 
 static inline bool

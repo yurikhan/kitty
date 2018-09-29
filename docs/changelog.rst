@@ -3,6 +3,197 @@ Changelog
 
 |kitty| is a feature full, cross-platform, *fast*, GPU based terminal emulator.
 
+0.12.3 [2018-09-29]
+------------------------------
+
+- macOS: Fix kitty window not being rendered on macOS Mojave until the window is
+  moved or resized at least once (:iss:`887`)
+
+- Unicode input: Fix an error when searching for the string 'fir' (:iss:`1035`)
+
+
+0.12.2 [2018-09-24]
+------------------------------
+
+- A new ``last_used_layout`` function that can be mapped to a shortcut to
+  switch to the previously used window layout (:iss:`870`)
+
+- New ``neighboring_window`` and ``move_window`` functions to switch to
+  neighboring windows in the current layout, and move them around, similar to
+  window movement in vim (:iss:`916`)
+
+- A new ``pipe`` function that can be used to pipe the contents of the screen
+  and scrollback buffer to any desired program running in a new window, tab or
+  overlay window. (:iss:`933`)
+
+- Add a new :option:`kitty --start-as` command line flag to start kitty
+  full-screen/maximized/minimized. This replaces the ``--start-in-fullscreen``
+  flag introduced in the previous release (:iss:`935`)
+
+- When mapping the ``new_tab`` action allow specifying that the tab should open
+  next to the current tab instead of at the end of the tabs list (:iss:`979`)
+
+- macOS: Add a new :opt:`macos_thicken_font` to make text rendering
+  on macs thicker, which makes it similar to the result of
+  sub-pixel antialiasing (:pull:`950`)
+
+- macOS: Add an option :opt:`macos_traditional_fullscreen` to make
+  full-screening of kitty windows much faster, but less pretty. (:iss:`911`)
+
+- Fix a bug causing incorrect line ordering when viewing the scrollback buffer
+  if the scrollback buffer is full (:iss:`960`)
+
+- Fix drag-scrolling not working when the mouse leaves the window confines
+  (:iss:`917`)
+
+- Workaround for broken editors like nano that cannot handle newlines in pasted text
+  (:iss:`994`)
+
+- Linux: Ensure that the python embedded in the kitty binary build uses
+  UTF-8 mode to process command-line arguments (:iss:`924`)
+
+- Linux: Handle fonts that contain monochrome bitmaps (such as the Terminus TTF
+  font) (:pull:`934`)
+
+- Have the :option:`kitty --title` flag apply to all windows created
+  using :option:`kitty --session` (:iss:`921`)
+
+- Revert change for backspacing of wide characters in the previous release,
+  as it breaks backspacing in some wide character aware programs (:iss:`875`)
+
+- Fix kitty @set-colors not working for tab backgrounds when using the `fade` tabbar style
+  (:iss:`937`)
+
+- macOS: Fix resizing semi-transparent windows causing the windows to be
+  invisible during the resize (:iss:`941`)
+
+- Linux: Fix window icon not set on X11 for the first OS window (:iss:`961`)
+
+- macOS: Add an :opt:`macos_custom_beam_cursor` option to use a special
+  mouse cursor image that can be seen on both light and dark backgrounds
+  (:iss:`359`)
+
+- Remote control: Fix the ``focus_window`` command not focusing the
+  top-level OS window of the specified kitty window (:iss:`1003`)
+
+- Fix using :opt:`focus_follows_mouse` causing text selection with the
+  mouse to malfunction when using multiple kitty windows (:iss:`1002`)
+
+0.12.1 [2018-09-08]
+------------------------------
+
+- Add a new ``--start-in-fullscreen`` command line flag to start
+  kitty in full screen mode (:iss:`856`)
+
+- macOS: Fix a character that cannot be rendered in any font causing
+  font fallback for all subsequent characters that cannot be rendered in the
+  main font to fail (:iss:`799`)
+
+- Linux: Do not enable IME input via ibus unless the ``GLFW_IM_MODULE=ibus``
+  environment variable is set. IME causes key processing latency and even
+  missed keystrokes for many people, so it is now off by default.
+
+- Fix backspacing of wide characters in wide-character unaware programs not working (:iss:`875`)
+
+- Linux: Fix number pad arrow keys not working when Numlock is off (:iss:`857`)
+
+- Wayland: Implement support for clipboard copy/paste (:iss:`855`)
+
+- Allow mapping shortcuts using the raw key code from the OS (:iss:`848`)
+
+- Allow mapping of individual key-presses without modifiers as shortcuts
+
+- Fix legacy invocation of icat as `kitty icat` not working (:iss:`850`)
+
+- Improve rendering of wavy underline at small font sizes (:iss:`853`)
+
+- Fix a regression in 0.12.0 that broke dynamic resizing of layouts (:iss:`860`)
+
+- Wayland: Allow using the :option:`kitty --class` command line flag
+  to set the app id (:iss:`862`)
+
+- Add completion of the kitty command for the fish shell (:pull:`829`)
+
+- Linux: Fix XCompose rules with no defined symbol not working (:iss:`880`)
+
+- Linux: Fix crash with some Nvidia drivers when creating tabs in the first
+  top level-window after creating a second top-level window. (:iss:`873`)
+
+- macOS: Diff kitten: Fix syntax highlighting not working because of
+  a bug in the 0.12.0 macOS package
+
+0.12.0 [2018-09-01]
+------------------------------
+
+- Preserve the mouse selection even when the contents of the screen are
+  scrolled or overwritten provided the new text does not intersect the
+  selected lines.
+
+- Linux: Implement support for Input Method Extensions (multilingual input
+  using standard keyboards) via `IBus
+  <https://github.com/ibus/ibus/wiki/ReadMe>`_ (:iss:`469`)
+
+- Implement completion for the kitty command in bash and zsh. See
+  :ref:`completion`.
+
+- Render the text under the cursor in a fixed color, configurable via
+  the option :opt:`cursor_text_color` (:iss:`126`)
+
+- Add an option :opt:`env` to set environment variables in child processes
+  from kitty.conf
+
+- Implement high precision scrolling with the trackpad on platforms such as
+  macOS and Wayland that implement it. (:pull:`819`)
+
+- macOS: Allow scrolling window contents using mouse wheel/trackpad even when the
+  window is not the active window (:iss:`729`)
+
+- Remote control: Allow changing the current window layout with a new
+  :ref:`at_goto-layout` command (:iss:`845`)
+
+- Remote control: Allow matching windows by the environment variables of their
+  child process as well
+
+- Allow running kittens via the remote control system (:iss:`738`)
+
+- Allow enabling remote control in only some kitty windows
+
+- Add a keyboard shortcut to reset the terminal (:sc:`reset_terminal`). It
+  takes parameters so you can define your own shortcuts to clear the
+  screen/scrollback also (:iss:`747`)
+
+- Fix one-pixel line appearing at window edges at some window sizes when
+  displaying images with background opacity enabled (:iss:`741`)
+
+- diff kitten: Fix error when right hand side file is binary and left hand side
+  file is text (:pull:`752`)
+
+- kitty @ new-window: Add a new option :option:`kitty @ new-window --window-type`
+  to create top-level OS windows (:iss:`770`)
+
+- macOS: The :opt:`focus_follows_mouse` option now also works across top-level kitty OS windows
+  (:iss:`754`)
+
+- Fix detection of URLs in HTML source code (URLs inside quotes) (:iss:`785`)
+
+- Implement support for emoji skin tone modifiers (:iss:`787`)
+
+- Round-trip the zwj unicode character. Rendering of sequences containing zwj
+  is still not implemented, since it can cause the collapse of an unbounded
+  number of characters into a single cell. However, kitty at least preserves
+  the zwj by storing it as a combining character.
+
+- macOS: Disable the custom mouse cursor. Using a custom cursor fails on dual
+  GPU machines. I give up, Apple users will just have to live with the
+  limitations of their choice of OS. (:iss:`794`)
+
+- macOS: Fix control+tab key combination not working (:iss:`801`)
+
+- Linux: Fix slow startup on some systems caused by GLFW searching for
+  joysticks. Since kitty does not use joysticks, disable joystick support.
+  (:iss:`830`)
+
+
 0.11.3 [2018-07-10]
 ------------------------------
 
@@ -10,7 +201,7 @@ Changelog
   that separate the inactive window from a neighbor. Note that setting
   a non-zero window margin overrides this and causes all borders to be drawn.
   The old behavior of drawing all borders can be restored via the
-  :opt:`draw_minimal_borders` setting in kitty.conf.
+  :opt:`draw_minimal_borders` setting in kitty.conf. (:iss:`699`)
 
 - macOS: Add an option :opt:`macos_window_resizable` to control if kitty
   top-level windows are resizable using the mouse or not (:iss:`698`)
@@ -295,7 +486,7 @@ Changelog
 
 - When triple-clicking select all wrapped lines belonging to a single logical line.
 
-- hints kitten: Detect bracketed URLs and dont include the closing bracket in the URL.
+- hints kitten: Detect bracketed URLs and don't include the closing bracket in the URL.
 
 - When calling pass_selection_to_program use the current directory of the child
   process as the cwd of the program.

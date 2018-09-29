@@ -2,6 +2,7 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
+import time
 from binascii import hexlify
 from functools import partial
 
@@ -226,6 +227,30 @@ class TestParser(BaseTest):
         pb('\033[0c', ('report_device_attributes', 0, 0))
         self.ae(c.wtcbuf, b'\x9b?62;c')
 
+    def test_pending(self):
+        s = self.create_screen()
+        timeout = 0.1
+        s.set_pending_timeout(timeout)
+        pb = partial(self.parse_bytes_dump, s)
+        pb('\033P=1s\033\\', ('screen_start_pending_mode',))
+        pb('a')
+        self.ae(str(s.line(0)), '')
+        pb('\033P=2s\033\\', ('screen_stop_pending_mode',), ('draw', 'a'))
+        self.ae(str(s.line(0)), 'a')
+        pb('\033P=1s\033\\', ('screen_start_pending_mode',))
+        pb('b')
+        self.ae(str(s.line(0)), 'a')
+        time.sleep(timeout)
+        pb('c', ('draw', 'bc'))
+        self.ae(str(s.line(0)), 'abc')
+        pb('\033P=1s\033\\d', ('screen_start_pending_mode',))
+        pb('\033P=2s\033\\', ('screen_stop_pending_mode',), ('draw', 'd'))
+        pb('\033P=1s\033\\e', ('screen_start_pending_mode',))
+        pb('\033P'), pb('='), pb('2s')
+        pb('\033\\', ('screen_stop_pending_mode',), ('draw', 'e'))
+        pb('\033P=1sxyz;.;\033\\''\033P=2skjf".,><?_+)98\033\\', ('screen_start_pending_mode',), ('screen_stop_pending_mode',))
+        pb('\033P=1s\033\\f\033P=1s\033\\', ('screen_start_pending_mode',), ('screen_start_pending_mode',))
+
     def test_oth_codes(self):
         s = self.create_screen()
         pb = partial(self.parse_bytes_dump, s)
@@ -265,19 +290,19 @@ class TestParser(BaseTest):
         pb = partial(self.parse_bytes_dump, s)
         uint32_max = 2**32 - 1
         t('i=%d' % uint32_max, id=uint32_max)
-        e('i=%d' % (uint32_max + 1), 'id is too large')
+        e('i=%d' % (uint32_max + 1), 'Malformed GraphicsCommand control block, number is too large')
         pb('\033_Gi=12\033\\', c(id=12))
         t('a=t,t=d,s=100,z=-9', payload='X', action='t', transmission_type='d', data_width=100, z_index=-9, payload_sz=1)
         t('a=t,t=d,s=100,z=9', payload='payload', action='t', transmission_type='d', data_width=100, z_index=9, payload_sz=7)
         t('a=t,t=d,s=100,z=9', action='t', transmission_type='d', data_width=100, z_index=9)
-        e(',s=1', 'Malformed graphics control block, invalid key character: 0x2c')
-        e('W=1', 'Malformed graphics control block, invalid key character: 0x57')
-        e('1=1', 'Malformed graphics control block, invalid key character: 0x31')
-        e('a=t,,w=2', 'Malformed graphics control block, invalid key character: 0x2c')
-        e('s', 'Malformed graphics control block, no = after key')
-        e('s=', 'Malformed graphics control block, expecting an integer value')
-        e('s==', 'Malformed graphics control block, expecting an integer value for key: s')
-        e('s=1=', 'Malformed graphics control block, expecting a comma or semi-colon after a value, found: 0x3d')
+        e(',s=1', 'Malformed GraphicsCommand control block, invalid key character: 0x2c')
+        e('W=1', 'Malformed GraphicsCommand control block, invalid key character: 0x57')
+        e('1=1', 'Malformed GraphicsCommand control block, invalid key character: 0x31')
+        e('a=t,,w=2', 'Malformed GraphicsCommand control block, invalid key character: 0x2c')
+        e('s', 'Malformed GraphicsCommand control block, no = after key')
+        e('s=', 'Malformed GraphicsCommand control block, expecting an integer value')
+        e('s==', 'Malformed GraphicsCommand control block, expecting an integer value for key: s')
+        e('s=1=', 'Malformed GraphicsCommand control block, expecting a comma or semi-colon after a value, found: 0x3d')
 
     def test_deccara(self):
         s = self.create_screen()

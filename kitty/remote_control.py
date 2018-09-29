@@ -3,6 +3,7 @@
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 import json
+import os
 import re
 import sys
 import types
@@ -18,16 +19,24 @@ from .utils import TTYIO, parse_address_spec
 def handle_cmd(boss, window, cmd):
     cmd = json.loads(cmd)
     v = cmd['version']
+    no_response = cmd['no_response']
     if tuple(v)[:2] > version[:2]:
+        if no_response:
+            return
         return {'ok': False, 'error': 'The kitty client you are using to send remote commands is newer than this kitty instance. This is not supported.'}
     c = cmap[cmd['cmd']]
     func = partial(c.impl(), boss, window)
     payload = cmd.get('payload')
-    ans = func() if payload is None else func(payload)
+    try:
+        ans = func() if payload is None else func(payload)
+    except Exception:
+        if no_response:  # don't report errors if --no-response was used
+            return
+        raise
     response = {'ok': True}
     if ans is not None:
         response['data'] = ans
-    if not c.no_response:
+    if not c.no_response and not no_response:
         return response
 
 
@@ -137,6 +146,7 @@ def parse_rc_args(args):
 
 def main(args):
     global_opts, items = parse_rc_args(args)
+    global_opts.no_command_response = None
 
     if not items:
         from kitty.shell import main
@@ -156,7 +166,16 @@ def main(args):
     }
     if payload is not None:
         send['payload'] = payload
-    response = do_io(global_opts.to, send, func.no_response)
+    if global_opts.no_command_response is not None:
+        no_response = global_opts.no_command_response
+    else:
+        no_response = func.no_response
+    send['no_response'] = no_response
+    if not global_opts.to and 'KITTY_LISTEN_ON' in os.environ:
+        global_opts.to = os.environ['KITTY_LISTEN_ON']
+    response = do_io(global_opts.to, send, no_response)
+    if no_response:
+        return
     if not response.get('ok'):
         if response.get('tb'):
             print(response['tb'], file=sys.stderr)

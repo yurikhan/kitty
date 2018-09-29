@@ -89,6 +89,20 @@ class TestScreen(BaseTest):
         self.ae(str(s.line(4)), 'a\u0306b1\u030623')
         self.ae((s.cursor.x, s.cursor.y), (2, 4))
 
+    def test_emoji_skin_tone_modifiers(self):
+        s = self.create_screen()
+        q = chr(0x1f469) + chr(0x1f3fd)
+        s.draw(q)
+        self.ae(str(s.line(0)), q)
+        self.ae(s.cursor.x, 2)
+
+    def test_zwj(self):
+        s = self.create_screen(cols=20)
+        q = '\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466'
+        s.draw(q)
+        self.ae(q, str(s.line(0)))
+        self.ae(s.cursor.x, 8)
+
     def test_char_manipulation(self):
         s = self.create_screen()
 
@@ -207,6 +221,15 @@ class TestScreen(BaseTest):
         self.ae(str(s.line(0)), '')
         for i in range(1, 5):
             self.ae(str(s.line(i)), '12345')
+
+    def test_backspace_wide_characters(self):
+        s = self.create_screen()
+        s.draw('⛅')
+        self.ae(s.cursor.x, 2)
+        s.backspace()
+        s.draw(' ')
+        s.backspace()
+        self.ae(s.cursor.x, 1)
 
     def test_resize(self):
         s = self.create_screen(scrollback=6)

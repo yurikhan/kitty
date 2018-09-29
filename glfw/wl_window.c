@@ -37,6 +37,18 @@
 #include <sys/mman.h>
 
 
+#define URI_LIST_MIME "text/uri-list"
+
+
+static const char*
+clipboard_mime() {
+    static char buf[128] = {0};
+    if (buf[0] == 0) {
+        snprintf(buf, sizeof(buf), "application/glfw+clipboard-%d", getpid());
+    }
+    return buf;
+}
+
 static void handlePing(void* data,
                        struct wl_shell_surface* shellSurface,
                        uint32_t serial)
@@ -681,6 +693,8 @@ static GLFWbool createXdgSurface(_GLFWwindow* window)
     {
         setIdleInhibitor(window, GLFW_FALSE);
     }
+    if (strlen(window->wl.appId))
+        xdg_toplevel_set_app_id(window->wl.xdg.toplevel, window->wl.appId);
 
     wl_surface_commit(window->wl.surface);
     wl_display_roundtrip(_glfw.wl.display);
@@ -689,33 +703,75 @@ static GLFWbool createXdgSurface(_GLFWwindow* window)
 }
 
 static void
-dispatchPendingKeyRepeats() {
-    if (_glfw.wl.keyRepeatInfo.nextRepeatAt <= 0 || _glfw.wl.keyRepeatInfo.keyboardFocus != _glfw.wl.keyboardFocus || _glfw.wl.keyboardRepeatRate == 0) return;
-    double now = glfwGetTime();
-    while (_glfw.wl.keyRepeatInfo.nextRepeatAt <= now) {
-        glfw_xkb_handle_key_event(_glfw.wl.keyRepeatInfo.keyboardFocus, &_glfw.wl.xkb, _glfw.wl.keyRepeatInfo.key, GLFW_REPEAT);
-        _glfw.wl.keyRepeatInfo.nextRepeatAt += 1.0 / _glfw.wl.keyboardRepeatRate;
-        now = glfwGetTime();
+setCursorImage(_GLFWcursorWayland* cursorWayland)
+{
+    struct wl_cursor_image* image;
+    struct wl_buffer* buffer;
+    struct wl_surface* surface = _glfw.wl.cursorSurface;
+
+    if (!cursorWayland->cursor) {
+        buffer = cursorWayland->buffer;
+        toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.cursorAnimationTimer, 0);
+    } else
+    {
+        image = cursorWayland->cursor->images[cursorWayland->currentImage];
+        buffer = wl_cursor_image_get_buffer(image);
+        if (image->delay) {
+            changeTimerInterval(&_glfw.wl.eventLoopData, _glfw.wl.cursorAnimationTimer, ((double)image->delay) / 1000.0);
+            toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.cursorAnimationTimer, 1);
+        } else {
+            toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.cursorAnimationTimer, 0);
+        }
+
+        if (!buffer)
+            return;
+
+        cursorWayland->width = image->width;
+        cursorWayland->height = image->height;
+        cursorWayland->xhot = image->hotspot_x;
+        cursorWayland->yhot = image->hotspot_y;
     }
+
+    wl_pointer_set_cursor(_glfw.wl.pointer, _glfw.wl.pointerSerial,
+                          surface,
+                          cursorWayland->xhot,
+                          cursorWayland->yhot);
+    wl_surface_attach(surface, buffer, 0, 0);
+    wl_surface_damage(surface, 0, 0,
+                      cursorWayland->width, cursorWayland->height);
+    wl_surface_commit(surface);
 }
 
-static double
-adjustTimeoutForKeyRepeat(double timeout) {
-    if (_glfw.wl.keyRepeatInfo.nextRepeatAt <= 0 || _glfw.wl.keyRepeatInfo.keyboardFocus != _glfw.wl.keyboardFocus || _glfw.wl.keyboardRepeatRate == 0) return timeout;
-    double now = glfwGetTime();
-    if (timeout < 0 || now + timeout > _glfw.wl.keyRepeatInfo.nextRepeatAt) {
-        timeout = _glfw.wl.keyRepeatInfo.nextRepeatAt <= now ? 0 : ( (_glfw.wl.keyRepeatInfo.nextRepeatAt - now) + 0.001 );
+static void
+incrementCursorImage(_GLFWwindow* window)
+{
+    if (window && window->wl.decorations.focus == mainWindow) {
+        _GLFWcursor* cursor = window->wl.currentCursor;
+        if (cursor && cursor->wl.cursor)
+        {
+            cursor->wl.currentImage += 1;
+            cursor->wl.currentImage %= cursor->wl.cursor->image_count;
+            setCursorImage(&cursor->wl);
+            return;
+        }
     }
-    return timeout;
+    toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.cursorAnimationTimer, 1);
 }
+
+void
+animateCursorImage(id_type timer_id, void *data) {
+    incrementCursorImage(_glfw.wl.pointerFocus);
+}
+
 
 static void
 handleEvents(double timeout)
 {
     struct wl_display* display = _glfw.wl.display;
 
-    while (wl_display_prepare_read(display) != 0)
+    while (wl_display_prepare_read(display) != 0) {
         wl_display_dispatch_pending(display);
+    }
 
     // If an error different from EAGAIN happens, we have likely been
     // disconnected from the Wayland session, try to handle that the best we
@@ -732,25 +788,8 @@ handleEvents(double timeout)
         return;
     }
 
-    dispatchPendingKeyRepeats();
-    timeout = adjustTimeoutForKeyRepeat(timeout);
-    GLFWbool read_ok = GLFW_FALSE;
-    for (nfds_t i = 0; i < 2; i++) _glfw.wl.eventLoopData.fds[i].revents = 0;
-
-    if (timeout >= 0) {
-        const int result = pollWithTimeout(_glfw.wl.eventLoopData.fds, 2, timeout);
-        if (result > 0)
-        {
-            if (_glfw.wl.eventLoopData.fds[0].revents & POLLIN) drainFd(_glfw.wl.eventLoopData.fds[0].fd);
-            read_ok = _glfw.wl.eventLoopData.fds[1].revents & POLLIN;
-        }
-    } else {
-        if (poll(_glfw.wl.eventLoopData.fds, 2, -1) > 0) {
-            if (_glfw.wl.eventLoopData.fds[0].revents & POLLIN) drainFd(_glfw.wl.eventLoopData.fds[0].fd);
-            read_ok = _glfw.wl.eventLoopData.fds[1].revents & POLLIN;
-        }
-    }
-    if (read_ok) {
+    GLFWbool display_read_ok = pollForEvents(&_glfw.wl.eventLoopData, timeout);
+    if (display_read_ok) {
         wl_display_read_events(display);
         wl_display_dispatch_pending(display);
     }
@@ -758,7 +797,7 @@ handleEvents(double timeout)
     {
         wl_display_cancel_read(display);
     }
-    dispatchPendingKeyRepeats();
+    glfw_ibus_dispatch(&_glfw.wl.xkb.ibus);
 }
 
 // Translates a GLFW standard cursor to a theme cursor name
@@ -794,6 +833,7 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window,
 {
     window->wl.justCreated = GLFW_TRUE;
     window->wl.transparent = fbconfig->transparent;
+    strncpy(window->wl.appId, wndconfig->wl.appId, sizeof(window->wl.appId));
 
     if (!createSurface(window, wndconfig))
         return GLFW_FALSE;
@@ -1094,7 +1134,8 @@ void _glfwPlatformRequestWindowAttention(_GLFWwindow* window)
 int _glfwPlatformWindowBell(_GLFWwindow* window)
 {
     // TODO: Use an actual Wayland API to implement this when one becomes available
-    int fd = open("/dev/tty", O_WRONLY | O_CLOEXEC);
+    static char tty[L_ctermid + 1];
+    int fd = open(ctermid(tty), O_WRONLY | O_CLOEXEC);
     if (fd > -1) {
         int ret = write(fd, "\x07", 1) == 1 ? GLFW_TRUE : GLFW_FALSE;
         close(fd);
@@ -1200,16 +1241,19 @@ void _glfwPlatformSetWindowOpacity(_GLFWwindow* window, float opacity)
 
 void _glfwPlatformPollEvents(void)
 {
+    wl_display_dispatch_pending(_glfw.wl.display);
     handleEvents(0);
 }
 
 void _glfwPlatformWaitEvents(void)
 {
-    handleEvents(-1);
+    double timeout = wl_display_dispatch_pending(_glfw.wl.display) > 0 ? 0 : -1;
+    handleEvents(timeout);
 }
 
 void _glfwPlatformWaitEventsTimeout(double timeout)
 {
+    if (wl_display_dispatch_pending(_glfw.wl.display) > 0) timeout = 0;
     handleEvents(timeout);
 }
 
@@ -1281,14 +1325,15 @@ int _glfwPlatformCreateStandardCursor(_GLFWcursor* cursor, int shape)
         return GLFW_FALSE;
     }
 
-    cursor->wl.image = standardCursor->images[0];
+    cursor->wl.cursor = standardCursor;
+    cursor->wl.currentImage = 0;
     return GLFW_TRUE;
 }
 
 void _glfwPlatformDestroyCursor(_GLFWcursor* cursor)
 {
     // If it's a standard cursor we don't need to do anything here
-    if (cursor->wl.image)
+    if (cursor->wl.cursor)
         return;
 
     if (cursor->wl.buffer)
@@ -1394,10 +1439,7 @@ static GLFWbool isPointerLocked(_GLFWwindow* window)
 
 void _glfwPlatformSetCursor(_GLFWwindow* window, _GLFWcursor* cursor)
 {
-    struct wl_buffer* buffer;
     struct wl_cursor* defaultCursor;
-    struct wl_cursor_image* image;
-    struct wl_surface* surface = _glfw.wl.cursorSurface;
 
     if (!_glfw.wl.pointer)
         return;
@@ -1406,7 +1448,7 @@ void _glfwPlatformSetCursor(_GLFWwindow* window, _GLFWcursor* cursor)
 
     // If we're not in the correct window just save the cursor
     // the next time the pointer enters the window the cursor will change
-    if (window != _glfw.wl.pointerFocus)
+    if (window != _glfw.wl.pointerFocus || window->wl.decorations.focus != mainWindow)
         return;
 
     // Unlock possible pointer lock if no longer disabled.
@@ -1416,7 +1458,7 @@ void _glfwPlatformSetCursor(_GLFWwindow* window, _GLFWcursor* cursor)
     if (window->cursorMode == GLFW_CURSOR_NORMAL)
     {
         if (cursor)
-            image = cursor->wl.image;
+            setCursorImage(&cursor->wl);
         else
         {
             defaultCursor = wl_cursor_theme_get_cursor(_glfw.wl.cursorTheme,
@@ -1427,33 +1469,14 @@ void _glfwPlatformSetCursor(_GLFWwindow* window, _GLFWcursor* cursor)
                                 "Wayland: Standard cursor not found");
                 return;
             }
-            image = defaultCursor->images[0];
-        }
-
-        if (image)
-        {
-            buffer = wl_cursor_image_get_buffer(image);
-            if (!buffer)
-                return;
-            wl_pointer_set_cursor(_glfw.wl.pointer, _glfw.wl.pointerSerial,
-                                  surface,
-                                  image->hotspot_x,
-                                  image->hotspot_y);
-            wl_surface_attach(surface, buffer, 0, 0);
-            wl_surface_damage(surface, 0, 0,
-                              image->width, image->height);
-            wl_surface_commit(surface);
-        }
-        else
-        {
-            wl_pointer_set_cursor(_glfw.wl.pointer, _glfw.wl.pointerSerial,
-                                  surface,
-                                  cursor->wl.xhot,
-                                  cursor->wl.yhot);
-            wl_surface_attach(surface, cursor->wl.buffer, 0, 0);
-            wl_surface_damage(surface, 0, 0,
-                              cursor->wl.width, cursor->wl.height);
-            wl_surface_commit(surface);
+            _GLFWcursorWayland cursorWayland = {
+                defaultCursor,
+                NULL,
+                0, 0,
+                0, 0,
+                0
+            };
+            setCursorImage(&cursorWayland);
         }
     }
     else if (window->cursorMode == GLFW_CURSOR_DISABLED)
@@ -1468,18 +1491,330 @@ void _glfwPlatformSetCursor(_GLFWwindow* window, _GLFWcursor* cursor)
     }
 }
 
+static void _glfwSendClipboardText(void *data, struct wl_data_source *data_source, const char *mime_type, int fd)
+{
+    if (_glfw.wl.clipboardString) {
+        size_t len = strlen(_glfw.wl.clipboardString), pos = 0;
+        double start = glfwGetTime();
+        while (pos < len && glfwGetTime() - start < 2.0) {
+            ssize_t ret = write(fd, _glfw.wl.clipboardString + pos, len - pos);
+            if (ret < 0) {
+                if (errno == EAGAIN || errno == EINTR) continue;
+                _glfwInputError(GLFW_PLATFORM_ERROR,
+                    "Wayland: Could not copy writing to destination fd failed with error: %s", strerror(errno));
+                break;
+            }
+            if (ret > 0) {
+                start = glfwGetTime();
+                pos += ret;
+            }
+        }
+    }
+    close(fd);
+}
+
+static char* read_data_offer(struct wl_data_offer *data_offer, const char *mime) {
+    int pipefd[2];
+    if (pipe2(pipefd, O_CLOEXEC) != 0) return NULL;
+    wl_data_offer_receive(data_offer, mime, pipefd[1]);
+    close(pipefd[1]);
+    wl_display_flush(_glfw.wl.display);
+    size_t sz = 0, capacity = 0;
+    char *buf = NULL;
+    struct pollfd fds;
+    fds.fd = pipefd[0];
+    fds.events = POLLIN;
+    double start = glfwGetTime();
+#define bail(...) { \
+    _glfwInputError(GLFW_PLATFORM_ERROR, __VA_ARGS__); \
+    free(buf); buf = NULL; \
+    close(pipefd[0]); \
+    return NULL; \
+}
+
+    while (glfwGetTime() - start < 2) {
+        int ret = poll(&fds, 1, 2000);
+        if (ret == -1) {
+            if (errno == EINTR) continue;
+            bail("Wayland: Failed to poll clipboard data from pipe with error: %s", strerror(errno));
+        }
+        if (!ret) {
+            bail("Wayland: Failed to read clipboard data from pipe (timed out)");
+        }
+        if (capacity <= sz || capacity - sz <= 64) {
+            capacity += 4096;
+            buf = realloc(buf, capacity);
+            if (!buf) {
+                bail("Wayland: Failed to allocate memory to read clipboard data");
+            }
+        }
+        ret = read(pipefd[0], buf + sz, capacity - sz - 1);
+        if (ret == -1) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            bail("Wayland: Failed to read clipboard data from pipe with error: %s", strerror(errno));
+        }
+        if (ret == 0) { close(pipefd[0]); buf[sz] = 0; return buf; }
+        sz += ret;
+        start = glfwGetTime();
+    }
+    bail("Wayland: Failed to read clipboard data from pipe (timed out)");
+#undef bail
+
+}
+
+static const char* _glfwReceiveClipboardText(struct wl_data_offer *data_offer, const char *mime)
+{
+    if (_glfw.wl.clipboardSourceOffer == data_offer && _glfw.wl.clipboardSourceString)
+        return _glfw.wl.clipboardSourceString;
+    free(_glfw.wl.clipboardSourceString);
+    _glfw.wl.clipboardSourceString = read_data_offer(data_offer, mime);
+    return _glfw.wl.clipboardSourceString;
+}
+
+static void data_source_canceled(void *data, struct wl_data_source *wl_data_source) {
+    if (_glfw.wl.dataSourceForClipboard == wl_data_source)
+        _glfw.wl.dataSourceForClipboard = NULL;
+    wl_data_source_destroy(wl_data_source);
+}
+
+static void data_source_target(void *data, struct wl_data_source *wl_data_source, const char* mime) {
+}
+
+const static struct wl_data_source_listener data_source_listener = {
+    .send = _glfwSendClipboardText,
+    .cancelled = data_source_canceled,
+    .target = data_source_target,
+};
+
+static void prune_unclaimed_data_offers() {
+    for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
+        if (_glfw.wl.dataOffers[i].id && !_glfw.wl.dataOffers[i].offer_type) {
+            wl_data_offer_destroy(_glfw.wl.dataOffers[i].id);
+            memset(_glfw.wl.dataOffers + i, 0, sizeof(_glfw.wl.dataOffers[0]));
+        }
+    }
+}
+
+static void mark_selection_offer(void *data, struct wl_data_device *data_device, struct wl_data_offer *data_offer)
+{
+    for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
+        if (_glfw.wl.dataOffers[i].id == data_offer) {
+            _glfw.wl.dataOffers[i].offer_type = 1;
+        } else if (_glfw.wl.dataOffers[i].offer_type == 1) {
+            _glfw.wl.dataOffers[i].offer_type = 0;  // previous selection offer
+        }
+    }
+    prune_unclaimed_data_offers();
+}
+
+static void handle_offer_mimetype(void *data, struct wl_data_offer* id, const char *mime) {
+    for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
+        if (_glfw.wl.dataOffers[i].id == id) {
+            if (strcmp(mime, "text/plain;charset=utf-8") == 0)
+                _glfw.wl.dataOffers[i].mime = "text/plain;charset=utf-8";
+            else if (!_glfw.wl.dataOffers[i].mime && strcmp(mime, "text/plain") == 0)
+                _glfw.wl.dataOffers[i].mime = "text/plain";
+            else if (strcmp(mime, clipboard_mime()) == 0)
+                _glfw.wl.dataOffers[i].is_self_offer = 1;
+            else if (strcmp(mime, URI_LIST_MIME) == 0)
+                _glfw.wl.dataOffers[i].has_uri_list = 1;
+            break;
+        }
+    }
+}
+
+static void data_offer_source_actions(void *data, struct wl_data_offer* id, uint32_t actions) {
+    for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
+        if (_glfw.wl.dataOffers[i].id == id) {
+            _glfw.wl.dataOffers[i].source_actions = actions;
+            break;
+        }
+    }
+}
+
+static void data_offer_action(void *data, struct wl_data_offer* id, uint32_t action) {
+    for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
+        if (_glfw.wl.dataOffers[i].id == id) {
+            _glfw.wl.dataOffers[i].dnd_action = action;
+            break;
+        }
+    }
+}
+
+
+static const struct wl_data_offer_listener data_offer_listener = {
+    .offer = handle_offer_mimetype,
+    .source_actions = data_offer_source_actions,
+    .action = data_offer_action,
+};
+
+static void handle_data_offer(void *data, struct wl_data_device *wl_data_device, struct wl_data_offer *id) {
+    size_t smallest_idx = SIZE_MAX, pos = 0;
+    for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
+        if (_glfw.wl.dataOffers[i].idx && _glfw.wl.dataOffers[i].idx < smallest_idx) {
+            smallest_idx = _glfw.wl.dataOffers[i].idx;
+            pos = i;
+        }
+        if (_glfw.wl.dataOffers[i].id == NULL) {
+            _glfw.wl.dataOffers[i].id = id;
+            _glfw.wl.dataOffers[i].idx = ++_glfw.wl.dataOffersCounter;
+            goto end;
+        }
+    }
+    if (_glfw.wl.dataOffers[pos].id) wl_data_offer_destroy(_glfw.wl.dataOffers[pos].id);
+    memset(_glfw.wl.dataOffers + pos, 0, sizeof(_glfw.wl.dataOffers[0]));
+    _glfw.wl.dataOffers[pos].id = id;
+    _glfw.wl.dataOffers[pos].idx = ++_glfw.wl.dataOffersCounter;
+end:
+    wl_data_offer_add_listener(id, &data_offer_listener, NULL);
+}
+
+static void drag_enter(void *data, struct wl_data_device *wl_data_device, uint32_t serial, struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y, struct wl_data_offer *id) {
+    for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
+        if (_glfw.wl.dataOffers[i].id == id) {
+            _glfw.wl.dataOffers[i].offer_type = 2;
+            _glfw.wl.dataOffers[i].surface = surface;
+            const char *mime = _glfw.wl.dataOffers[i].has_uri_list ? URI_LIST_MIME : NULL;
+            wl_data_offer_accept(id, serial, mime);
+        } else if (_glfw.wl.dataOffers[i].offer_type == 2) {
+            _glfw.wl.dataOffers[i].offer_type = 0;  // previous drag offer
+        }
+    }
+    prune_unclaimed_data_offers();
+}
+
+static void drag_leave(void *data, struct wl_data_device *wl_data_device) {
+    for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
+        if (_glfw.wl.dataOffers[i].offer_type == 2) {
+            wl_data_offer_destroy(_glfw.wl.dataOffers[i].id);
+            memset(_glfw.wl.dataOffers + i, 0, sizeof(_glfw.wl.dataOffers[0]));
+        }
+    }
+}
+
+
+
+static void drop(void *data, struct wl_data_device *wl_data_device) {
+    for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
+        if (_glfw.wl.dataOffers[i].offer_type == 2) {
+            char *uri_list = read_data_offer(_glfw.wl.dataOffers[i].id, URI_LIST_MIME);
+            if (uri_list) {
+                wl_data_offer_finish(_glfw.wl.dataOffers[i].id);
+                int count;
+                char** paths = parseUriList(data, &count);
+
+                _GLFWwindow* window = _glfw.windowListHead;
+                while (window)
+                {
+                    if (window->wl.surface == _glfw.wl.dataOffers[i].surface) {
+                        _glfwInputDrop(window, count, (const char**) paths);
+                        break;
+                    }
+                    window = window->next;
+                }
+
+
+                for (int k = 0;  k < count;  k++)
+                    free(paths[k]);
+                free(paths);
+                free(uri_list);
+            }
+            wl_data_offer_destroy(_glfw.wl.dataOffers[i].id);
+            memset(_glfw.wl.dataOffers + i, 0, sizeof(_glfw.wl.dataOffers[0]));
+            break;
+        }
+    }
+}
+
+static void motion(void *data, struct wl_data_device *wl_data_device, uint32_t time, wl_fixed_t x, wl_fixed_t y) {
+}
+
+const static struct wl_data_device_listener data_device_listener = {
+    .data_offer = handle_data_offer,
+    .selection = mark_selection_offer,
+    .enter = drag_enter,
+    .motion = motion,
+    .drop = drop,
+    .leave = drag_leave,
+};
+
+
+static void
+copy_callback_done(void *data, struct wl_callback *callback, uint32_t serial) {
+    if (!_glfw.wl.dataDevice) return;
+    if (data == (void*)_glfw.wl.dataSourceForClipboard) {
+        wl_data_device_set_selection(_glfw.wl.dataDevice, data, serial);
+    }
+}
+
+const static struct wl_callback_listener copy_callback_listener = {
+    .done = copy_callback_done
+};
+
+void _glfwSetupWaylandDataDevice() {
+    _glfw.wl.dataDevice = wl_data_device_manager_get_data_device(_glfw.wl.dataDeviceManager, _glfw.wl.seat);
+    if (_glfw.wl.dataDevice) wl_data_device_add_listener(_glfw.wl.dataDevice, &data_device_listener, NULL);
+}
+
+static inline GLFWbool _glfwEnsureDataDevice() {
+    if (!_glfw.wl.dataDeviceManager)
+    {
+        _glfwInputError(GLFW_PLATFORM_ERROR,
+                        "Wayland: Cannot use clipboard, data device manager is not ready");
+        return GLFW_FALSE;
+    }
+
+    if (!_glfw.wl.dataDevice)
+    {
+        if (!_glfw.wl.seat)
+        {
+            _glfwInputError(GLFW_PLATFORM_ERROR,
+                            "Wayland: Cannot use clipboard, seat is not ready");
+            return GLFW_FALSE;
+        }
+        if (!_glfw.wl.dataDevice)
+        {
+            _glfwInputError(GLFW_PLATFORM_ERROR,
+                    "Wayland: Cannot use clipboard, failed to create data device");
+            return GLFW_FALSE;
+        }
+    }
+    return GLFW_TRUE;
+}
+
 void _glfwPlatformSetClipboardString(const char* string)
 {
-    // TODO
-    _glfwInputError(GLFW_PLATFORM_ERROR,
-                    "Wayland: Clipboard setting not implemented yet");
+    if (!_glfwEnsureDataDevice()) return;
+    free(_glfw.wl.clipboardString);
+    _glfw.wl.clipboardString = _glfw_strdup(string);
+    if (_glfw.wl.dataSourceForClipboard)
+        wl_data_source_destroy(_glfw.wl.dataSourceForClipboard);
+    _glfw.wl.dataSourceForClipboard = wl_data_device_manager_create_data_source(_glfw.wl.dataDeviceManager);
+    if (!_glfw.wl.dataSourceForClipboard)
+    {
+        _glfwInputError(GLFW_PLATFORM_ERROR,
+                        "Wayland: Cannot copy failed to create data source");
+        return;
+    }
+    wl_data_source_add_listener(_glfw.wl.dataSourceForClipboard, &data_source_listener, NULL);
+    wl_data_source_offer(_glfw.wl.dataSourceForClipboard, clipboard_mime());
+    wl_data_source_offer(_glfw.wl.dataSourceForClipboard, "text/plain");
+    wl_data_source_offer(_glfw.wl.dataSourceForClipboard, "text/plain;charset=utf-8");
+    wl_data_source_offer(_glfw.wl.dataSourceForClipboard, "TEXT");
+    wl_data_source_offer(_glfw.wl.dataSourceForClipboard, "STRING");
+    wl_data_source_offer(_glfw.wl.dataSourceForClipboard, "UTF8_STRING");
+    struct wl_callback *callback = wl_display_sync(_glfw.wl.display);
+    wl_callback_add_listener(callback, &copy_callback_listener, _glfw.wl.dataSourceForClipboard);
 }
 
 const char* _glfwPlatformGetClipboardString(void)
 {
-    // TODO
-    _glfwInputError(GLFW_PLATFORM_ERROR,
-                    "Wayland: Clipboard getting not implemented yet");
+    for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
+        if (_glfw.wl.dataOffers[i].id && _glfw.wl.dataOffers[i].mime && _glfw.wl.dataOffers[i].offer_type == 1) {
+            if (_glfw.wl.dataOffers[i].is_self_offer) return _glfw.wl.clipboardString;
+            return _glfwReceiveClipboardText(_glfw.wl.dataOffers[i].id, _glfw.wl.dataOffers[i].mime);
+        }
+    }
     return NULL;
 }
 
@@ -1544,6 +1879,11 @@ VkResult _glfwPlatformCreateWindowSurface(VkInstance instance,
     }
 
     return err;
+}
+
+void
+_glfwPlatformUpdateIMEState(_GLFWwindow *w, int which, int a, int b, int c, int d) {
+    glfw_xkb_update_ime_state(w, &_glfw.wl.xkb, which, a, b, c, d);
 }
 
 

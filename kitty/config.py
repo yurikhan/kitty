@@ -35,14 +35,22 @@ named_keys = {
 
 def parse_shortcut(sc):
     parts = sc.split('+')
-    mods = parse_mods(parts[:-1], sc)
-    if mods is None:
-        return None, None, None
+    mods = 0
+    if len(parts) > 1:
+        mods = parse_mods(parts[:-1], sc)
+        if mods is None:
+            return None, None, None
     key = parts[-1].upper()
     key = getattr(defines, 'GLFW_KEY_' + named_keys.get(key, key), None)
     is_native = False
     if key is None:
-        key = defines.key_for_native_key_name(parts[-1])
+        if parts[-1].startswith('0x'):
+            try:
+                key = int(parts[-1], 16)
+            except Exception:
+                pass
+        else:
+            key = defines.key_for_native_key_name(parts[-1])
         is_native = key is not None
     return mods, is_native, key
 
@@ -119,6 +127,50 @@ def parse_change_font_size(func, rest):
             amt = amt[1:]
         args[2] = float(amt)
     return func, args
+
+
+@func_with_args('clear_terminal')
+def clear_terminal(func, rest):
+    vals = rest.split(' ', 1)
+    if len(vals) != 2:
+        log_error('clear_terminal needs two arguments, using defaults')
+        args = ['reset', 'active']
+    else:
+        args = [vals[0].lower(), vals[1].lower() == 'active']
+    return func, args
+
+
+@func_with_args('neighboring_window')
+def neighboring_window(func, rest):
+    rest = rest.lower()
+    rest = {'up': 'top', 'down': 'bottom'}.get(rest, rest)
+    if rest not in ('left', 'right', 'top', 'bottom'):
+        log_error('Invalid neighbor specification: {}'.format(rest))
+        rest = 'right'
+    return func, [rest]
+
+
+@func_with_args('move_window')
+def move_window(func, rest):
+    rest = rest.lower()
+    rest = {'up': 'top', 'down': 'bottom'}.get(rest, rest)
+    try:
+        rest = int(rest)
+    except Exception:
+        if rest not in ('left', 'right', 'top', 'bottom'):
+            log_error('Invalid move_window specification: {}'.format(rest))
+            rest = 0
+    return func, [rest]
+
+
+@func_with_args('pipe')
+def pipe(func, rest):
+    import shlex
+    rest = shlex.split(rest)
+    if len(rest) < 3:
+        log_error('Too few arguments to pipe function')
+        rest = ['none', 'none', 'true']
+    return func, rest
 
 
 def parse_key_action(action):
@@ -245,28 +297,73 @@ def parse_send_text(val, key_definitions):
     return parse_key(key_str, key_definitions)
 
 
+special_handlers = {}
+
+
+def special_handler(func):
+    special_handlers[func.__name__.partition('_')[2]] = func
+
+
+@special_handler
+def handle_map(key, val, ans):
+    parse_key(val, ans['key_definitions'])
+
+
+@special_handler
+def handle_symbol_map(key, val, ans):
+    ans['symbol_map'].update(parse_symbol_map(val))
+
+
+@special_handler
+def handle_send_text(key, val, ans):
+    # For legacy compatibility
+    parse_send_text(val, ans['key_definitions'])
+
+
+@special_handler
+def handle_clear_all_shortcuts(key, val, ans):
+    if to_bool(val):
+        ans['key_definitions'] = [None]
+
+
+def expandvars(val, env):
+
+    def sub(m):
+        key = m.group(1)
+        result = env.get(key)
+        if result is None:
+            result = os.environ.get(key)
+        if result is None:
+            result = m.group()
+        return result
+
+    return re.sub(r'$\{(\S+)\}', sub, val)
+
+
+@special_handler
+def handle_env(key, val, ans):
+    key, val = val.partition('=')[::2]
+    key, val = key.strip(), val.strip()
+    ans['env'][key] = expandvars(val, ans['env'])
+
+
 def special_handling(key, val, ans):
-    if key == 'map':
-        parse_key(val, ans['key_definitions'])
+    func = special_handlers.get(key)
+    if func is not None:
+        func(key, val, ans)
         return True
-    if key == 'symbol_map':
-        ans['symbol_map'].update(parse_symbol_map(val))
-        return True
-    if key == 'send_text':
-        # For legacy compatibility
-        parse_send_text(val, ans['key_definitions'])
-        return True
-    if key == 'clear_all_shortcuts':
-        if to_bool(val):
-            ans['key_definitions'] = [None]
-        return
 
 
 defaults = None
 
 
+def option_names_for_completion():
+    yield from defaults
+    yield from special_handlers
+
+
 def parse_config(lines, check_keys=True):
-    ans = {'symbol_map': {}, 'keymap': {}, 'sequence_map': {}, 'key_definitions': []}
+    ans = {'symbol_map': {}, 'keymap': {}, 'sequence_map': {}, 'key_definitions': [], 'env': {}}
     parse_config_base(
         lines,
         defaults,

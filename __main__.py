@@ -7,8 +7,9 @@ import os
 
 
 def icat(args):
-    from kittens.icat.main import main
-    main(args)
+    from kittens.runner import run_kitten
+    sys.argv = args
+    run_kitten('icat')
 
 
 def list_fonts(args):
@@ -33,10 +34,21 @@ def hold(args):
     raise SystemExit(ret)
 
 
+def complete(args):
+    from kitty.complete import main
+    main(args[1:], entry_points, namespaced_entry_points)
+
+
 def launch(args):
     import runpy
     sys.argv = args[1:]
-    runpy.run_path(args[1], run_name='__main__')
+    exe = args[1]
+    if exe.startswith(':'):
+        import shutil
+        exe = shutil.which(exe[1:])
+        if not exe:
+            raise SystemExit('{} not found in PATH'.format(args[1][1:]))
+    runpy.run_path(exe, run_name='__main__')
 
 
 def run_kitten(args):
@@ -69,6 +81,7 @@ entry_points = {
 }
 namespaced_entry_points = {k: v for k, v in entry_points.items() if k[0] not in '+@'}
 namespaced_entry_points['hold'] = hold
+namespaced_entry_points['complete'] = complete
 
 
 def setup_openssl_environment():

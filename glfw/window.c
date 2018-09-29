@@ -48,6 +48,7 @@ void _glfwInputWindowFocus(_GLFWwindow* window, GLFWbool focused)
     if (!focused)
     {
         int key, button;
+        _glfw.focusedWindowId = 0;
 
         for (key = 0;  key <= GLFW_KEY_LAST;  key++)
         {
@@ -63,7 +64,28 @@ void _glfwInputWindowFocus(_GLFWwindow* window, GLFWbool focused)
             if (window->mouseButtons[button] == GLFW_PRESS)
                 _glfwInputMouseClick(window, button, GLFW_RELEASE, 0);
         }
+    } else
+        _glfw.focusedWindowId = window->id;
+}
+
+_GLFWwindow* _glfwFocusedWindow() {
+    if (_glfw.focusedWindowId) {
+        _GLFWwindow *w = _glfw.windowListHead;
+        while (w) {
+            if (w->id == _glfw.focusedWindowId) return w;
+            w = w->next;
+        }
     }
+    return NULL;
+}
+
+_GLFWwindow* _glfwWindowForId(GLFWid id) {
+    _GLFWwindow *w = _glfw.windowListHead;
+    while (w) {
+        if (w->id == _glfw.focusedWindowId) return w;
+        w = w->next;
+    }
+    return NULL;
 }
 
 // Notifies shared code that a window has moved
@@ -185,8 +207,10 @@ GLFWAPI GLFWwindow* glfwCreateWindow(int width, int height,
     if (!_glfwIsValidContextConfig(&ctxconfig))
         return NULL;
 
+    static GLFWid windowIdCounter = 0;
     window = calloc(1, sizeof(_GLFWwindow));
     window->next = _glfw.windowListHead;
+    window->id = ++windowIdCounter;
     _glfw.windowListHead = window;
 
     window->videoMode.width       = width;
@@ -369,6 +393,9 @@ GLFWAPI void glfwWindowHint(int hint, int value)
         case GLFW_COCOA_GRAPHICS_SWITCHING:
             _glfw.hints.context.nsgl.offline = value ? GLFW_TRUE : GLFW_FALSE;
             return;
+        case GLFW_SCALE_TO_MONITOR:
+            _glfw.hints.window.scaleToMonitor = value ? GLFW_TRUE : GLFW_FALSE;
+            return;
         case GLFW_CENTER_CURSOR:
             _glfw.hints.window.centerCursor = value ? GLFW_TRUE : GLFW_FALSE;
             return;
@@ -432,6 +459,10 @@ GLFWAPI void glfwWindowHintString(int hint, const char* value)
         case GLFW_X11_INSTANCE_NAME:
             strncpy(_glfw.hints.window.x11.instanceName, value,
                     sizeof(_glfw.hints.window.x11.instanceName) - 1);
+            return;
+        case GLFW_WAYLAND_APP_ID:
+            strncpy(_glfw.hints.window.wl.appId, value,
+                    sizeof(_glfw.hints.window.wl.appId) - 1);
             return;
     }
 

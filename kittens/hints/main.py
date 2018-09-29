@@ -152,7 +152,6 @@ class Hints(Handler):
         self.quit_loop(1)
 
     def on_resize(self, new_size):
-        Handler.on_resize(self, new_size)
         self.draw_screen()
 
     def draw_screen(self):
@@ -171,7 +170,7 @@ def regex_finditer(pat, minimum_match_length, text):
             yield s, e
 
 
-closing_bracket_map = {'(': ')', '[': ']', '{': '}', '<': '>'}
+closing_bracket_map = {'(': ')', '[': ']', '{': '}', '<': '>', '*': '*', '"': '"', "'": "'"}
 opening_brackets = ''.join(closing_bracket_map)
 postprocessor_map = {}
 
@@ -190,15 +189,15 @@ def url(text, s, e):
             e -= len(url) - idx
     while text[e - 1] in '.,?!' and e > 1:  # remove trailing punctuation
         e -= 1
+    # truncate url at closing bracket/quote
+    if s > 0 and e <= len(text) and text[s-1] in opening_brackets:
+        q = closing_bracket_map[text[s-1]]
+        idx = text.find(q, s)
+        if idx > s:
+            e = idx
     # Restructured Text URLs
     if e > 3 and text[e-2:e] == '`_':
         e -= 2
-    # Remove trailing bracket if matched by leading bracket
-    if s > 0 and e < len(text) and text[s-1] in opening_brackets and text[e-1] == closing_bracket_map[text[s-1]]:
-        e -= 1
-    # Remove trailing quote if matched by leading quote
-    if s > 0 and e < len(text) and text[s-1] in '\'"' and text[e-1] == text[s-1]:
-        e -= 1
 
     return s, e
 
@@ -256,7 +255,7 @@ def functions_for(args):
         )
         post_processors.append(url)
     elif args.type == 'path':
-        pattern = r'(?:\S*/\S+)|(?:\S+[.][a-zA-Z0-9]{2,5})'
+        pattern = r'(?:\S*/\S+)|(?:\S+[.][a-zA-Z0-9]{2,7})'
         post_processors.extend((brackets, quotes))
     elif args.type == 'line':
         pattern = '(?m)^\\s*(.+)[\\s\0]*$'
@@ -382,7 +381,7 @@ def main(args):
             return
     else:
         text = sys.stdin.buffer.read().decode('utf-8')
-        sys.stdin = open('/dev/tty')
+        sys.stdin = open(os.ctermid())
     try:
         args, items = parse_hints_args(args[1:])
     except SystemExit as e:

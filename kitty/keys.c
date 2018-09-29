@@ -80,12 +80,12 @@ send_key_to_child(Window *w, int key, int mods, int action) {
     const char *data = key_to_bytes(key, screen->modes.mDECCKM, screen->modes.mEXTENDED_KEYBOARD, mods, action);
     if (data) {
         if (screen->modes.mEXTENDED_KEYBOARD) {
-            if (*data == 1) schedule_write_to_child(w->id, (data + 1), 1);
+            if (*data == 1) schedule_write_to_child(w->id, 1, (data + 1), 1);
             else write_escape_code_to_child(screen, APC, data + 1);
         } else {
             if (*data > 2 && data[1] == 0x1b && data[2] == '[') { // CSI code
                 write_escape_code_to_child(screen, CSI, data + 3);
-            } else schedule_write_to_child(w->id, (data + 1), *data);
+            } else schedule_write_to_child(w->id, 1, (data + 1), *data);
         }
     }
 }
@@ -103,28 +103,58 @@ check_if_special(int key, int mods, int scancode) {
         qkey = SPECIAL_INDEX(qkey);
         special = needs_special_handling[qkey];
     }
-#ifdef __APPLE__
-    (void)scancode;
-#else
-        for (size_t i = 0; !special && i < native_special_keys_count; i++) {
-            if (scancode == native_special_keys[i].scancode && mods == native_special_keys[i].mods) special = true;
-        }
-#endif
+    for (size_t i = 0; !special && i < native_special_keys_count; i++) {
+        if (scancode == native_special_keys[i].scancode && mods == native_special_keys[i].mods) special = true;
+    }
     return special;
 }
 
+static inline void
+update_ime_position(OSWindow *os_window, Window* w, Screen *screen) {
+    unsigned int cell_width = os_window->fonts_data->cell_width, cell_height = os_window->fonts_data->cell_height;
+    unsigned int left = w->geometry.left, top = w->geometry.top;
+    left += screen->cursor->x * cell_width;
+    top += screen->cursor->y * cell_height;
+    glfwUpdateIMEState(global_state.callback_os_window->handle, 2, left, top, cell_width, cell_height);
+}
+
+#define debug(...) if (OPT(debug_keyboard)) printf(__VA_ARGS__);
+
 void
-on_key_input(int key, int scancode, int action, int mods, const char* text, int state UNUSED) {
+on_key_input(int key, int scancode, int action, int mods, const char* text, int state) {
     Window *w = active_window();
-    if (!w) return;
+    debug("on_key_input: glfw key: %d native_code: 0x%x action: %s mods: 0x%x text: '%s' state: %d ",
+            key, scancode,
+            (action == GLFW_RELEASE ? "RELEASE" : (action == GLFW_PRESS ? "PRESS" : "REPEAT")),
+            mods, text, state);
+    if (!w) { debug("no active window, ignoring\n"); return; }
+    Screen *screen = w->render_data.screen;
+    switch(state) {
+        case 1:  // update pre-edit text
+            update_ime_position(global_state.callback_os_window, w, screen);
+            screen_draw_overlay_text(screen, text);
+            debug("updated pre-edit text: '%s'\n", text);
+            return;
+        case 2:  // commit text
+            if (text && *text) {
+                schedule_write_to_child(w->id, 1, text, strlen(text));
+                debug("committed pre-edit text: %s\n", text);
+            } else debug("committed pre-edit text: (null)\n");
+            return;
+        case 0:
+            break;
+        default:
+            debug("invalid state, ignoring\n");
+            return;
+    }
     if (global_state.in_sequence_mode) {
+        debug("in sequence mode, handling as shortcut\n");
         if (
             action != GLFW_RELEASE &&
             key != GLFW_KEY_LEFT_SHIFT && key != GLFW_KEY_RIGHT_SHIFT && key != GLFW_KEY_LEFT_ALT && key != GLFW_KEY_RIGHT_ALT && key != GLFW_KEY_LEFT_CONTROL && key != GLFW_KEY_RIGHT_CONTROL
         ) call_boss(process_sequence, "iiii", key, scancode, action, mods);
         return;
     }
-    Screen *screen = w->render_data.screen;
     bool has_text = text && !is_ascii_control_char(text[0]);
     if (action == GLFW_PRESS || action == GLFW_REPEAT) {
         if (check_if_special(key, mods, scancode)) {
@@ -133,21 +163,31 @@ on_key_input(int key, int scancode, int action, int mods, const char* text, int 
             else {
                 bool consumed = ret == Py_True;
                 Py_DECREF(ret);
-                if (consumed) return;
+                if (consumed) {
+                    debug("handled as shortcut\n");
+                    return;
+                }
             }
         }
     }
-    if (action == GLFW_REPEAT && !screen->modes.mDECARM) return;
+    if (action == GLFW_REPEAT && !screen->modes.mDECARM) {
+        debug("discarding repeat key event as DECARM is off\n");
+        return;
+    }
     if (screen->scrolled_by && action == GLFW_PRESS && !is_modifier_key(key)) {
         screen_history_scroll(screen, SCROLL_FULL, false);  // scroll back to bottom
     }
     bool ok_to_send = action == GLFW_PRESS || action == GLFW_REPEAT || screen->modes.mEXTENDED_KEYBOARD;
     if (ok_to_send) {
         if (has_text) {
-            schedule_write_to_child(w->id, text, strlen(text));
+            schedule_write_to_child(w->id, 1, text, strlen(text));
+            debug("sent text to child\n");
         } else {
             send_key_to_child(w, key, mods, action);
+            debug("sent key to child\n");
         }
+    } else {
+        debug("ignoring as keyboard mode does not allow %s events\n", action == GLFW_RELEASE ? "release" : "repeat");
     }
 }
 
@@ -178,15 +218,13 @@ PYWRAP1(key_for_native_key_name) {
     const char *name;
     int case_sensitive = 0;
     PA("s|p", &name, case_sensitive);
-#ifdef __APPLE__
-    Py_RETURN_NONE;
-#else
+#ifndef __APPLE__
     if (glfwGetXKBScancode) {  // if this function is called before GLFW is initialized glfwGetXKBScancode will be NULL
         int scancode = glfwGetXKBScancode(name, case_sensitive);
         if (scancode) return Py_BuildValue("i", scancode);
     }
-    Py_RETURN_NONE;
 #endif
+    Py_RETURN_NONE;
 }
 
 static PyMethodDef module_methods[] = {

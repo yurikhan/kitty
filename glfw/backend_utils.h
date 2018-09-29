@@ -25,42 +25,50 @@
 //========================================================================
 
 #pragma once
-#include <unistd.h>
 #include <poll.h>
-#include <errno.h>
+#include <unistd.h>
 
-#ifdef __NetBSD__
-#define ppoll pollts
-#endif
+typedef unsigned long long id_type;
+typedef void(*watch_callback_func)(int, int, void*);
+typedef void(*timer_callback_func)(id_type, void*);
 
-static inline void
-drainFd(int fd) {
-    static char drain_buf[64];
-    while(read(fd, drain_buf, sizeof(drain_buf)) < 0 && errno == EINTR);
-}
+typedef struct {
+    int fd, events, enabled, ready;
+    watch_callback_func callback;
+    void *callback_data;
+    id_type id;
+    const char *name;
+} Watch;
+
+typedef struct {
+    id_type id;
+    double interval, trigger_at;
+    timer_callback_func callback;
+    void *callback_data;
+    const char *name;
+} Timer;
 
 
-static inline int
-pollWithTimeout(struct pollfd *fds, nfds_t nfds, double timeout) {
-    const long seconds = (long) timeout;
-    const long nanoseconds = (long) ((timeout - seconds) * 1e9);
-    struct timespec tv = { seconds, nanoseconds };
-    return ppoll(fds, nfds, &tv, NULL);
-}
+typedef struct {
+    struct pollfd fds[32];
+    int wakeupFds[2];
+    nfds_t watches_count, timers_count;
+    Watch watches[32];
+    Timer timers[128];
+} EventLoopData;
 
-static inline void
-initPollData(struct pollfd *fds, int wakeup_fd, int display_fd) {
-    fds[0].fd = wakeup_fd; fds[1].fd = display_fd;
-    fds[0].events = POLLIN; fds[1].events = POLLIN;
-}
 
-static inline void
-closeFds(int *fds, size_t count) {
-    while(count--) {
-        if (*fds > 0) {
-            close(*fds);
-            *fds = -1;
-        }
-        fds++;
-    }
-}
+id_type addWatch(EventLoopData *eld, const char *name, int fd, int events, int enabled, watch_callback_func cb, void *cb_data);
+void removeWatch(EventLoopData *eld, id_type watch_id);
+void toggleWatch(EventLoopData *eld, id_type watch_id, int enabled);
+id_type addTimer(EventLoopData *eld, const char *name, double interval, int enabled, timer_callback_func cb, void *cb_data);
+void removeTimer(EventLoopData *eld, id_type timer_id);
+void toggleTimer(EventLoopData *eld, id_type timer_id, int enabled);
+void changeTimerInterval(EventLoopData *eld, id_type timer_id, double interval);
+double prepareForPoll(EventLoopData *eld, double timeout);
+int pollWithTimeout(struct pollfd *fds, nfds_t nfds, double timeout);
+int pollForEvents(EventLoopData *eld, double timeout);
+unsigned dispatchTimers(EventLoopData *eld);
+void closeFds(int *fds, size_t count);
+void initPollData(EventLoopData *eld, int wakeup_fd, int display_fd);
+char** parseUriList(char* text, int* count);

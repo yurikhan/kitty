@@ -563,6 +563,10 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
     [super dealloc];
 }
 
+- (_GLFWwindow*)glfwWindow {
+    return window;
+}
+
 - (BOOL)isOpaque
 {
     return [window->ns.object isOpaque];
@@ -739,7 +743,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
     }
 
     const NSTrackingAreaOptions options = NSTrackingMouseEnteredAndExited |
-                                          NSTrackingActiveInKeyWindow |
+                                          NSTrackingActiveAlways |
                                           NSTrackingEnabledDuringMouseDrag |
                                           NSTrackingCursorUpdate |
                                           NSTrackingInVisibleRect |
@@ -845,7 +849,7 @@ is_ascii_control_char(char x) {
     debug_key(@"scancode: 0x%x (%s) %stext: %s glfw_key: %s\n",
             scancode, safe_name_for_scancode(scancode), format_mods(mods),
             format_text(_glfw.ns.text), _glfwGetKeyName(key));
-    if (is_ascii_control_char(_glfw.ns.text[0])) _glfw.ns.text[0] = 0;  // dont send text for ascii control codes
+    if (is_ascii_control_char(_glfw.ns.text[0])) _glfw.ns.text[0] = 0;  // don't send text for ascii control codes
     _glfwInputKeyboard(window, key, scancode, GLFW_PRESS, mods, _glfw.ns.text, 0);
 }
 
@@ -884,15 +888,10 @@ is_ascii_control_char(char x) {
 
     deltaX = [event scrollingDeltaX];
     deltaY = [event scrollingDeltaY];
-
-    if ([event hasPreciseScrollingDeltas])
-    {
-        deltaX *= 0.1;
-        deltaY *= 0.1;
-    }
+    int flags = [event hasPreciseScrollingDeltas] ? 1 : 0;
 
     if (fabs(deltaX) > 0.0 || fabs(deltaY) > 0.0)
-        _glfwInputScroll(window, deltaX, deltaY);
+        _glfwInputScroll(window, deltaX, deltaY, flags);
 }
 
 - (NSDragOperation)draggingEntered:(id <NSDraggingInfo>)sender
@@ -1045,6 +1044,18 @@ is_ascii_control_char(char x) {
     return YES;
 }
 
+- (void)toggleFullScreen:(nullable id)sender
+{
+    GLFWContentView *view = [self contentView];
+    if (view)
+    {
+        _GLFWwindow *window = [view glfwWindow];
+        if (window && window->ns.toggleFullscreenCallback && window->ns.toggleFullscreenCallback((GLFWwindow*)window) == 1)
+            return;
+    }
+    [super toggleFullScreen:sender];
+}
+
 @end
 
 
@@ -1061,18 +1072,39 @@ is_ascii_control_char(char x) {
 
 @implementation GLFWApplication
 
-// From http://cocoadev.com/index.pl?GameKeyboardHandlingAlmost
-// This works around an AppKit bug, where key up events while holding
-// down the command key don't get sent to the key window.
 - (void)sendEvent:(NSEvent *)event
 {
-    if ([event type] == NSEventTypeKeyUp &&
-        ([event modifierFlags] & NSEventModifierFlagCommand))
-    {
-        [[self keyWindow] sendEvent:event];
+    NSEventType etype = [event type];
+    NSEventModifierFlags flags;
+    switch(etype) {
+        case NSEventTypeKeyUp:
+            flags = [event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
+            if (flags & NSEventModifierFlagCommand) {
+                // From http://cocoadev.com/index.pl?GameKeyboardHandlingAlmost
+                // This works around an AppKit bug, where key up events while holding
+                // down the command key don't get sent to the key window.
+                [[self keyWindow] sendEvent:event];
+                return;
+            }
+            if (event.keyCode == kVK_Tab && (flags == NSEventModifierFlagControl || flags == (NSEventModifierFlagControl | NSEventModifierFlagShift))) {
+                // Cocoa swallows Ctrl+Tab to cycle between views
+                [[self keyWindow].contentView keyUp:event];
+                return;
+            }
+            break;
+        case NSEventTypeKeyDown:
+            flags = [event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
+            if (event.keyCode == kVK_Tab && (flags == NSEventModifierFlagControl || flags == (NSEventModifierFlagControl | NSEventModifierFlagShift))) {
+                // Cocoa swallows Ctrl+Tab to cycle between views
+                [[self keyWindow].contentView keyDown:event];
+                return;
+            }
+            break;
+        default:
+            break;
     }
-    else
-        [super sendEvent:event];
+
+    [super sendEvent:event];
 }
 
 
@@ -1083,7 +1115,7 @@ is_ascii_control_char(char x) {
 }
 
 - (void)loadMainMenu
-{ // removed by Kovid as it generated compiler warnings 
+{ // removed by Kovid as it generated compiler warnings
 }
 
 @end
@@ -2095,6 +2127,14 @@ GLFWAPI GLFWcocoatextinputfilterfun glfwSetCocoaTextInputFilter(GLFWwindow *hand
     _GLFW_REQUIRE_INIT_OR_RETURN(nil);
     GLFWcocoatextinputfilterfun previous = window->ns.textInputFilterCallback;
     window->ns.textInputFilterCallback = callback;
+    return previous;
+}
+
+GLFWAPI GLFWcocoatogglefullscreenfun glfwSetCocoaToggleFullscreenIntercept(GLFWwindow *handle, GLFWcocoatogglefullscreenfun callback) {
+    _GLFWwindow* window = (_GLFWwindow*) handle;
+    _GLFW_REQUIRE_INIT_OR_RETURN(nil);
+    GLFWcocoatogglefullscreenfun previous = window->ns.toggleFullscreenCallback;
+    window->ns.toggleFullscreenCallback = callback;
     return previous;
 }
 

@@ -55,7 +55,7 @@ def init_env(env, pkg_config, at_least_version, module='x11'):
         at_least_version('xkbcommon', 0, 5)
 
     if module == 'x11':
-        for dep in 'x11 xrandr xinerama xcursor xkbcommon xkbcommon-x11 x11-xcb'.split():
+        for dep in 'x11 xrandr xinerama xcursor xkbcommon xkbcommon-x11 x11-xcb dbus-1'.split():
             ans.cflags.extend(pkg_config(dep, '--cflags-only-I'))
             ans.ldpaths.extend(pkg_config(dep, '--libs'))
 
@@ -73,7 +73,7 @@ def init_env(env, pkg_config, at_least_version, module='x11'):
         for p in ans.wayland_protocols:
             ans.sources.append(wayland_protocol_file_name(p))
             ans.all_headers.append(wayland_protocol_file_name(p, 'h'))
-        for dep in 'wayland-egl wayland-client wayland-cursor xkbcommon'.split():
+        for dep in 'wayland-egl wayland-client wayland-cursor xkbcommon dbus-1'.split():
             ans.cflags.extend(pkg_config(dep, '--cflags-only-I'))
             ans.ldpaths.extend(pkg_config(dep, '--libs'))
 
@@ -126,16 +126,6 @@ def collect_source_information():
             for m in re.finditer(r'WAYLAND_PROTOCOLS_PKGDATADIR\}/(.+?)"?$', raw, flags=re.M):
                 p.append(m.group(1))
     return ans
-
-
-def patch_in_file(path, pfunc):
-    with open(path, 'r+') as f:
-        raw = f.read()
-        nraw = pfunc(raw)
-        if raw == nraw:
-            raise SystemExit('Patching of {} failed'.format(path))
-        f.seek(0), f.truncate()
-        f.write(nraw)
 
 
 class Arg:
@@ -202,8 +192,10 @@ def generate_wrappers(glfw_header, glfw_native_header):
         functions.append(Function(decl))
     for line in '''\
     void* glfwGetCocoaWindow(GLFWwindow* window)
+    void* glfwGetNSGLContext(GLFWwindow *window)
     uint32_t glfwGetCocoaMonitor(GLFWmonitor* monitor)
     GLFWcocoatextinputfilterfun glfwSetCocoaTextInputFilter(GLFWwindow* window, GLFWcocoatextinputfilterfun callback)
+    GLFWcocoatogglefullscreenfun glfwSetCocoaToggleFullscreenIntercept(GLFWwindow *window, GLFWcocoatogglefullscreenfun callback)
     GLFWapplicationshouldhandlereopenfun glfwSetApplicationShouldHandleReopen(GLFWapplicationshouldhandlereopenfun callback)
     void glfwGetCocoaKeyEquivalent(int glfw_key, int glfw_mods, void* cocoa_key, void* cocoa_mods)
     void* glfwGetX11Display(void)
@@ -223,10 +215,12 @@ def generate_wrappers(glfw_header, glfw_native_header):
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
-typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int);
-typedef int (* GLFWapplicationshouldhandlereopenfun)(int);
 
 {}
+
+typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int);
+typedef int (* GLFWapplicationshouldhandlereopenfun)(int);
+typedef int (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
 
 {}
 
@@ -265,8 +259,8 @@ unload_glfw() {
         f.write(code)
 
 
-def main():
-    os.chdir(sys.argv[-1])
+def from_glfw(glfw_dir):
+    os.chdir(glfw_dir)
     sinfo = collect_source_information()
     files_to_copy = set()
     for x in sinfo.values():
@@ -283,9 +277,6 @@ def main():
     for src in files_to_copy:
         shutil.copy2(src, '.')
     shutil.copy2(glfw_header, '.')
-    patch_in_file('internal.h', lambda x: x.replace('../include/GLFW/', ''))
-    patch_in_file('cocoa_window.m', lambda x: re.sub(
-        r'[(]void[)]loadMainMenu.+?}', '(void)loadMainMenu\n{ // removed by Kovid as it generated compiler warnings \n}\n', x, flags=re.DOTALL))
     json.dump(
         sinfo,
         open('source-info.json', 'w'),
@@ -294,6 +285,27 @@ def main():
         sort_keys=True
     )
     generate_wrappers(glfw_header, glfw_native_header)
+
+
+def to_glfw(glfw_dir):
+    src = base
+    for x in os.listdir(src):
+        if x in ('glfw.py', 'glfw3.h', '__pycache__', 'source-info.json') or x.startswith('wayland-'):
+            continue
+        xp = os.path.join(src, x)
+        shutil.copyfile(xp, os.path.join(glfw_dir, 'src', x))
+    shutil.copyfile(os.path.join(src, 'glfw3.h'), os.path.join(glfw_dir, 'include/GLFW/glfw3.h'))
+
+
+def main():
+    glfw_dir = os.path.abspath(os.path.join(base, '../../glfw'))
+    q = sys.argv[1].lower().replace('_', '-')
+    if q == 'from-glfw':
+        from_glfw(glfw_dir)
+    elif q == 'to-glfw':
+        to_glfw(glfw_dir)
+    else:
+        raise SystemExit('First argument must be one of to-glfw or from-glfw')
 
 
 if __name__ == '__main__':

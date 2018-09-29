@@ -28,7 +28,7 @@ Build-time dependencies:
     * gcc or clang
     * pkg-config
     * For building on Linux in addition to the above dependencies you might also need to install the ``-dev`` packages for:
-      ``libxcursor-dev``, ``libxrandr-dev``, ``libxi-dev``, ``libxinerama-dev``, ``libgl1-mesa-dev`` and ``libxkbcommon-x11-dev``,
+      ``libdbus-1-dev``, ``libxcursor-dev``, ``libxrandr-dev``, ``libxi-dev``, ``libxinerama-dev``, ``libgl1-mesa-dev`` and ``libxkbcommon-x11-dev``,
       if they are not already installed by your distro.
 
 Install and run from source
@@ -56,6 +56,25 @@ If that works, you can create a script to launch |kitty|:
 
 And place it in :file:`~/bin` or :file:`/usr/bin` so that you can run |kitty| using
 just ``kitty``.
+
+
+Building kitty.app on macOS from source
+-------------------------------------------
+
+Install `imagemagick`, `optipng` and `librsvg` using `brew` or similar (needed
+for the logo generation step). And run::
+
+    make app
+
+This :file:`kitty.app` unlike the released one does not include its own copy of
+python and the other dependencies. So if you ever un-install/upgrade those dependencies
+you might have to rebuild the app.
+
+Note that the released :file:`kitty.dmg` includes all dependencies, unlike the
+:file:`kitty.app` built above and is built automatically by using the :file:`kitty` branch of
+`build-calibre <https://github.com/kovidgoyal/build-calibre>`_ however, that
+is designed to run on Linux and is not for the faint of heart.
+
 
 Note for Linux/macOS packagers
 ----------------------------------
@@ -85,7 +104,7 @@ without needing to install all of |kitty|.
 .. note::
         You need a couple of extra dependencies to build linux-package.
         :file:`tic` to compile terminfo files, usually found in the
-        development package of :file:`ncurses`. Also, if you are building form
+        development package of :file:`ncurses`. Also, if you are building from
         a git checkout instead of the released source code tarball, you will
         need :file:`sphinx-build` from the `Sphinx documentation generator
         <http://www.sphinx-doc.org/>`_.

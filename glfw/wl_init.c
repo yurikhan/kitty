@@ -139,6 +139,7 @@ static void setCursor(const char* name)
                         "Wayland: Standard cursor not found");
         return;
     }
+    // TODO: handle animated cursors too.
     image = cursor->images[0];
 
     if (!image)
@@ -308,7 +309,7 @@ static void pointerHandleButton(void* data,
                          state == WL_POINTER_BUTTON_STATE_PRESSED
                                 ? GLFW_PRESS
                                 : GLFW_RELEASE,
-                         _glfw.wl.xkb.modifiers);
+                         _glfw.wl.xkb.states.modifiers);
 }
 
 static void pointerHandleAxis(void* data,
@@ -319,11 +320,6 @@ static void pointerHandleAxis(void* data,
 {
     _GLFWwindow* window = _glfw.wl.pointerFocus;
     double x = 0.0, y = 0.0;
-    // Wayland scroll events are in pointer motion coordinate space (think two
-    // finger scroll).  The factor 10 is commonly used to convert to "scroll
-    // step means 1.0.
-    const double scrollFactor = 1.0 / 10.0;
-
     if (!window)
         return;
 
@@ -331,11 +327,11 @@ static void pointerHandleAxis(void* data,
            axis == WL_POINTER_AXIS_VERTICAL_SCROLL);
 
     if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL)
-        x = wl_fixed_to_double(value) * scrollFactor;
+        x = wl_fixed_to_double(value) * -1;
     else if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
-        y = wl_fixed_to_double(value) * scrollFactor;
+        y = wl_fixed_to_double(value) * -1;
 
-    _glfwInputScroll(window, x, y);
+    _glfwInputScroll(window, x, y, 1);
 }
 
 static const struct wl_pointer_listener pointerListener = {
@@ -407,6 +403,15 @@ static void keyboardHandleLeave(void* data,
     _glfwInputWindowFocus(window, GLFW_FALSE);
 }
 
+static void
+dispatchPendingKeyRepeats(id_type timer_id, void *data) {
+    if (_glfw.wl.keyRepeatInfo.keyboardFocus != _glfw.wl.keyboardFocus || _glfw.wl.keyboardRepeatRate == 0) return;
+    glfw_xkb_handle_key_event(_glfw.wl.keyRepeatInfo.keyboardFocus, &_glfw.wl.xkb, _glfw.wl.keyRepeatInfo.key, GLFW_REPEAT);
+    changeTimerInterval(&_glfw.wl.eventLoopData, _glfw.wl.keyRepeatInfo.keyRepeatTimer, ((double)_glfw.wl.keyboardRepeatRate) / 1000.0);
+    toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.keyRepeatInfo.keyRepeatTimer, 1);
+}
+
+
 static void keyboardHandleKey(void* data,
                               struct wl_keyboard* keyboard,
                               uint32_t serial,
@@ -419,14 +424,18 @@ static void keyboardHandleKey(void* data,
         return;
     int action = state == WL_KEYBOARD_KEY_STATE_PRESSED ? GLFW_PRESS : GLFW_RELEASE;
     glfw_xkb_handle_key_event(window, &_glfw.wl.xkb, key, action);
-    _glfw.wl.keyRepeatInfo.nextRepeatAt = 0;
+    GLFWbool repeatable = GLFW_FALSE;
 
     if (action == GLFW_PRESS && _glfw.wl.keyboardRepeatRate > 0 && glfw_xkb_should_repeat(&_glfw.wl.xkb, key))
     {
         _glfw.wl.keyRepeatInfo.key = key;
-        _glfw.wl.keyRepeatInfo.nextRepeatAt = glfwGetTime() + (double)(_glfw.wl.keyboardRepeatDelay) / 1000.0;
+        repeatable = GLFW_TRUE;
         _glfw.wl.keyRepeatInfo.keyboardFocus = window;
     }
+    if (repeatable) {
+        changeTimerInterval(&_glfw.wl.eventLoopData, _glfw.wl.keyRepeatInfo.keyRepeatTimer, (double)(_glfw.wl.keyboardRepeatDelay) / 1000.0);
+    }
+    toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.keyRepeatInfo.keyRepeatTimer, repeatable ? 1 : 0);
 }
 
 static void keyboardHandleModifiers(void* data,
@@ -552,6 +561,9 @@ static void registryHandleGlobal(void* data,
                                  _glfw.wl.seatVersion);
             wl_seat_add_listener(_glfw.wl.seat, &seatListener, NULL);
         }
+        if (_glfw.wl.seat && _glfw.wl.dataDeviceManager && !_glfw.wl.dataDevice) {
+            _glfwSetupWaylandDataDevice();
+        }
     }
     else if (strcmp(interface, "xdg_wm_base") == 0)
     {
@@ -585,6 +597,17 @@ static void registryHandleGlobal(void* data,
                              &zwp_idle_inhibit_manager_v1_interface,
                              1);
     }
+    else if (strcmp(interface, "wl_data_device_manager") == 0)
+    {
+        _glfw.wl.dataDeviceManager =
+            wl_registry_bind(registry, name,
+                             &wl_data_device_manager_interface,
+                             1);
+        if (_glfw.wl.seat && _glfw.wl.dataDeviceManager && !_glfw.wl.dataDevice) {
+            _glfwSetupWaylandDataDevice();
+        }
+    }
+
 }
 
 static void registryHandleGlobalRemove(void *data,
@@ -664,7 +687,10 @@ int _glfwPlatformInit(void)
                         "Wayland: Failed to connect to display");
         return GLFW_FALSE;
     }
-    initPollData(_glfw.wl.eventLoopData.fds, _glfw.wl.eventLoopData.wakeupFds[0], wl_display_get_fd(_glfw.wl.display));
+    initPollData(&_glfw.wl.eventLoopData, _glfw.wl.eventLoopData.wakeupFds[0], wl_display_get_fd(_glfw.wl.display));
+    glfw_dbus_init(&_glfw.wl.dbus, &_glfw.wl.eventLoopData);
+    _glfw.wl.keyRepeatInfo.keyRepeatTimer = addTimer(&_glfw.wl.eventLoopData, "wayland-key-repeat", 0.5, 0, dispatchPendingKeyRepeats, NULL);
+    _glfw.wl.cursorAnimationTimer = addTimer(&_glfw.wl.eventLoopData, "wayland-cursor-animation", 0.5, 0, animateCursorImage, NULL);
 
     _glfw.wl.registry = wl_display_get_registry(_glfw.wl.display);
     wl_registry_add_listener(_glfw.wl.registry, &registryListener, NULL);
@@ -678,8 +704,10 @@ int _glfwPlatformInit(void)
     wl_display_roundtrip(_glfw.wl.display);
 
 #ifdef __linux__
-    if (!_glfwInitJoysticksLinux())
-        return GLFW_FALSE;
+    if (_glfw.hints.init.enableJoysticks) {
+        if (!_glfwInitJoysticksLinux())
+            return GLFW_FALSE;
+    }
 #endif
 
     _glfwInitTimerPOSIX();
@@ -713,6 +741,7 @@ void _glfwPlatformTerminate(void)
     }
 
     glfw_xkb_release(&_glfw.wl.xkb);
+    glfw_dbus_terminate(&_glfw.wl.dbus);
 
     if (_glfw.wl.cursorTheme)
         wl_cursor_theme_destroy(_glfw.wl.cursorTheme);
@@ -748,6 +777,17 @@ void _glfwPlatformTerminate(void)
         zwp_pointer_constraints_v1_destroy(_glfw.wl.pointerConstraints);
     if (_glfw.wl.idleInhibitManager)
         zwp_idle_inhibit_manager_v1_destroy(_glfw.wl.idleInhibitManager);
+    if (_glfw.wl.dataSourceForClipboard)
+        wl_data_source_destroy(_glfw.wl.dataSourceForClipboard);
+    for (size_t doi=0; doi < arraysz(_glfw.wl.dataOffers); doi++) {
+        if (_glfw.wl.dataOffers[doi].id) {
+            wl_data_offer_destroy(_glfw.wl.dataOffers[doi].id);
+        }
+    }
+    if (_glfw.wl.dataDevice)
+        wl_data_device_destroy(_glfw.wl.dataDevice);
+    if (_glfw.wl.dataDeviceManager)
+        wl_data_device_manager_destroy(_glfw.wl.dataDeviceManager);
     if (_glfw.wl.registry)
         wl_registry_destroy(_glfw.wl.registry);
     if (_glfw.wl.display)
@@ -756,6 +796,9 @@ void _glfwPlatformTerminate(void)
         wl_display_disconnect(_glfw.wl.display);
     }
     closeFds(_glfw.wl.eventLoopData.wakeupFds, sizeof(_glfw.wl.eventLoopData.wakeupFds)/sizeof(_glfw.wl.eventLoopData.wakeupFds[0]));
+    free(_glfw.wl.clipboardString); _glfw.wl.clipboardString = NULL;
+    free(_glfw.wl.clipboardSourceString); _glfw.wl.clipboardSourceString = NULL;
+
 }
 
 const char* _glfwPlatformGetVersionString(void)

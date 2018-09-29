@@ -41,6 +41,17 @@ xlimit_for_line(Line *line) {
     return xlimit;
 }
 
+static inline void
+line_save_cells(Line *line, index_type start, index_type num, GPUCell *gpu_cells, CPUCell *cpu_cells) {
+    memcpy(gpu_cells + start, line->gpu_cells + start, sizeof(GPUCell) * num);
+    memcpy(cpu_cells + start, line->cpu_cells + start, sizeof(CPUCell) * num);
+}
+
+static inline void
+line_reset_cells(Line *line, index_type start, index_type num, GPUCell *gpu_cells, CPUCell *cpu_cells) {
+    memcpy(line->gpu_cells + start, gpu_cells + start, sizeof(GPUCell) * num);
+    memcpy(line->cpu_cells + start, cpu_cells + start, sizeof(CPUCell) * num);
+}
 
 void line_clear_text(Line *self, unsigned int at, unsigned int num, char_type ch);
 void line_apply_cursor(Line *self, Cursor *cursor, unsigned int at, unsigned int num, bool clear_char);
@@ -48,7 +59,7 @@ void line_set_char(Line *, unsigned int , uint32_t , unsigned int , Cursor *, bo
 void line_right_shift(Line *, unsigned int , unsigned int );
 void line_add_combining_char(Line *, uint32_t , unsigned int );
 index_type line_url_start_at(Line *self, index_type x);
-index_type line_url_end_at(Line *self, index_type x, bool);
+index_type line_url_end_at(Line *self, index_type x, bool, char_type);
 index_type line_as_ansi(Line *self, Py_UCS4 *buf, index_type buflen);
 unsigned int line_length(Line *self);
 size_t cell_as_unicode(CPUCell *cell, bool include_cc, Py_UCS4 *buf, char_type);

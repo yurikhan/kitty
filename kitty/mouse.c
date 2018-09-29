@@ -179,10 +179,7 @@ update_drag(bool from_button, Window *w, bool is_release, int modifiers) {
 bool
 drag_scroll(Window *w, OSWindow *frame) {
     unsigned int margin = frame->fonts_data->cell_height / 2;
-    double left = window_left(w, frame), top = window_top(w, frame), right = window_right(w, frame), bottom = window_bottom(w, frame);
-    double x = frame->mouse_x, y = frame->mouse_y;
-    if (y < top || y > bottom) return false;
-    if (x < left || x > right) return false;
+    double y = frame->mouse_y;
     bool upwards = y <= (w->geometry.top + margin);
     if (upwards || y >= w->geometry.bottom - margin) {
         Screen *screen = w->render_data.screen;
@@ -209,16 +206,39 @@ extend_selection(Window *w) {
 }
 
 static inline void
-extend_url(Screen *screen, Line *line, index_type *x, index_type *y) {
+extend_url(Screen *screen, Line *line, index_type *x, index_type *y, char_type sentinel) {
     unsigned int count = 0;
     while(count++ < 10) {
         if (*x != line->xnum - 1) break;
         line = screen_visual_line(screen, *y + 1);
         if (!line) break; // we deliberately allow non-continued lines as some programs, like mutt split URLs with newlines at line boundaries
-        index_type new_x = line_url_end_at(line, 0, false);
+        index_type new_x = line_url_end_at(line, 0, false, sentinel);
         if (!new_x) break;
         *y += 1; *x = new_x;
     }
+}
+
+static inline char_type
+get_url_sentinel(Line *line, index_type url_start) {
+    char_type before = 0, sentinel;
+    if (url_start > 0 && url_start < line->xnum) before = line->cpu_cells[url_start - 1].ch;
+    switch(before) {
+        case '"':
+        case '\'':
+        case '*':
+            sentinel = before; break;
+        case '(':
+            sentinel = ')'; break;
+        case '[':
+            sentinel = ']'; break;
+        case '{':
+            sentinel = '}'; break;
+        case '<':
+            sentinel = '>'; break;
+        default:
+            sentinel = 0; break;
+    }
+    return sentinel;
 }
 
 static inline void
@@ -226,15 +246,17 @@ detect_url(Screen *screen, unsigned int x, unsigned int y) {
     bool has_url = false;
     index_type url_start, url_end = 0;
     Line *line = screen_visual_line(screen, y);
+    char_type sentinel;
     if (line) {
         url_start = line_url_start_at(line, x);
-        if (url_start < line->xnum) url_end = line_url_end_at(line, x, true);
+        sentinel = get_url_sentinel(line, url_start);
+        if (url_start < line->xnum) url_end = line_url_end_at(line, x, true, sentinel);
         has_url = url_end > url_start;
     }
     if (has_url) {
         mouse_cursor_shape = HAND;
         index_type y_extended = y;
-        extend_url(screen, line, &url_end, &y_extended);
+        extend_url(screen, line, &url_end, &y_extended, sentinel);
         screen_mark_url(screen, url_start, y, url_end, y_extended);
     } else {
         mouse_cursor_shape = BEAM;
@@ -452,23 +474,43 @@ focus_in_event() {
 }
 
 void
-mouse_event(int button, int modifiers) {
+enter_event() {
+#ifdef __APPLE__
+    // On cocoa there is no way to configure the window manager to
+    // focus windows on mouse enter, so we do it ourselves
+    if (OPT(focus_follows_mouse) && !global_state.callback_os_window->is_focused) {
+        focus_os_window(global_state.callback_os_window, false);
+    }
+#endif
+}
+
+void
+mouse_event(int button, int modifiers, int action) {
     MouseShape old_cursor = mouse_cursor_shape;
     bool in_tab_bar;
     unsigned int window_idx = 0;
     Window *w = NULL;
-    if (button == -1 && global_state.active_drag_in_window) {  // drag move
-        w = window_for_id(global_state.active_drag_in_window);
-        if (w) {
-            button = currently_pressed_button();
-            if (button == GLFW_MOUSE_BUTTON_LEFT) {
-                clamp_to_window = true;
-                handle_move_event(w, button, modifiers, window_idx);
-                clamp_to_window = false;
-                return;
+    if (global_state.active_drag_in_window) {
+        if (button == -1) {  // drag move
+            w = window_for_id(global_state.active_drag_in_window);
+            if (w) {
+                button = currently_pressed_button();
+                if (button == GLFW_MOUSE_BUTTON_LEFT) {
+                    clamp_to_window = true;
+                    Tab *t = global_state.callback_os_window->tabs + global_state.callback_os_window->active_tab;
+                    for (window_idx = 0; window_idx < t->num_windows && t->windows[window_idx].id != w->id; window_idx++);
+                    handle_move_event(w, button, modifiers, window_idx);
+                    clamp_to_window = false;
+                    return;
+                }
             }
         }
-
+        else if (action == GLFW_RELEASE && button == GLFW_MOUSE_BUTTON_LEFT) {
+            w = window_for_id(global_state.active_drag_in_window);
+            if (w) {
+                update_drag(true, w, true, modifiers);
+            }
+        }
     }
     w = window_for_event(&window_idx, &in_tab_bar);
     if (in_tab_bar) {
@@ -491,27 +533,59 @@ mouse_event(int button, int modifiers) {
 }
 
 void
-scroll_event(double UNUSED xoffset, double yoffset) {
-    // glfw inverts the y-axis when reporting scroll events under wayland
-    // Until this is fixed in upstream, invert y ourselves.
-    if (global_state.is_wayland) yoffset *= -1;
-    int s = (int) round(yoffset * OPT(wheel_scroll_multiplier));
-    if (s == 0) return;
-    bool upwards = s > 0;
+scroll_event(double UNUSED xoffset, double yoffset, int flags) {
     bool in_tab_bar;
     unsigned int window_idx = 0;
     Window *w = window_for_event(&window_idx, &in_tab_bar);
-    if (w) {
-        Screen *screen = w->render_data.screen;
-        if (screen->linebuf == screen->main_linebuf) {
-            screen_history_scroll(screen, abs(s), upwards);
-        } else {
-            if (screen->modes.mouse_tracking_mode) {
-                int sz = encode_mouse_event(w, upwards ? GLFW_MOUSE_BUTTON_4 : GLFW_MOUSE_BUTTON_5, PRESS, 0);
-                if (sz > 0) { mouse_event_buf[sz] = 0; write_escape_code_to_child(screen, CSI, mouse_event_buf); }
-            } else {
-                fake_scroll(abs(s), upwards);
+    if (!w && !in_tab_bar) {
+        // allow scroll events even if window is not currently focused (in
+        // which case on some platforms such as macOS the mouse location is zeroed so
+        // window_for_event() does not work).
+        Tab *t = global_state.callback_os_window->tabs + global_state.callback_os_window->active_tab;
+        if (t) w = t->windows + t->active_window;
+    }
+    if (!w) return;
+
+    int s;
+    bool is_high_resolution = flags & 1;
+    if (is_high_resolution) {
+        if (yoffset * global_state.callback_os_window->pending_scroll_pixels < 0) {
+            global_state.callback_os_window->pending_scroll_pixels = 0;  // change of direction
+        }
+        double pixels = global_state.callback_os_window->pending_scroll_pixels + yoffset;
+        if (fabs(pixels) < global_state.callback_os_window->fonts_data->cell_height) {
+            global_state.callback_os_window->pending_scroll_pixels = pixels;
+            return;
+        }
+        s = abs(((int)round(pixels))) / global_state.callback_os_window->fonts_data->cell_height;
+        if (pixels < 0) s *= -1;
+        global_state.callback_os_window->pending_scroll_pixels = pixels - s * (int) global_state.callback_os_window->fonts_data->cell_height;
+    } else {
+        s = (int) round(yoffset * OPT(wheel_scroll_multiplier));
+        global_state.callback_os_window->pending_scroll_pixels = 0;
+    }
+    if (s == 0) return;
+    bool upwards = s > 0;
+    Screen *screen = w->render_data.screen;
+    if (screen->linebuf == screen->main_linebuf) {
+        screen_history_scroll(screen, abs(s), upwards);
+    } else {
+        if (screen->modes.mouse_tracking_mode) {
+            int sz = encode_mouse_event(w, upwards ? GLFW_MOUSE_BUTTON_4 : GLFW_MOUSE_BUTTON_5, PRESS, 0);
+            if (sz > 0) {
+                mouse_event_buf[sz] = 0;
+                if (is_high_resolution) {
+                    for (s = abs(s); s > 0; s--) {
+                        write_escape_code_to_child(screen, CSI, mouse_event_buf);
+                    }
+                } else {
+                    // Since we are sending a mouse button 4/5 event, we ignore 's'
+                    // and simply send one event per received scroll event
+                    write_escape_code_to_child(screen, CSI, mouse_event_buf);
+                }
             }
+        } else {
+            fake_scroll(abs(s), upwards);
         }
     }
 }

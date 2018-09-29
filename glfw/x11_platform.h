@@ -53,6 +53,7 @@
 
 // The libxkb library is used for improved keyboard support
 #include "xkb_glfw.h"
+#include "backend_utils.h"
 
 typedef XRRCrtcGamma* (* PFN_XRRAllocGamma)(int);
 typedef void (* PFN_XRRFreeCrtcInfo)(XRRCrtcInfo*);
@@ -102,8 +103,6 @@ typedef XineramaScreenInfo* (* PFN_XineramaQueryScreens)(Display*,int*);
 #define XineramaIsActive _glfw.x11.xinerama.IsActive
 #define XineramaQueryExtension _glfw.x11.xinerama.QueryExtension
 #define XineramaQueryScreens _glfw.x11.xinerama.QueryScreens
-
-typedef struct xcb_connection_t xcb_connection_t;
 
 typedef Bool (* PFN_XF86VidModeQueryExtension)(Display*,int*,int*);
 typedef Bool (* PFN_XF86VidModeGetGammaRamp)(Display*,int,int,unsigned short*,unsigned short*,unsigned short*);
@@ -315,6 +314,7 @@ typedef struct _GLFWlibraryX11
     } randr;
 
     _GLFWXKBData xkb;
+    _GLFWDBUSData dbus;
 
     struct {
         int         count;
@@ -382,10 +382,7 @@ typedef struct _GLFWlibraryX11
         PFN_XRenderFindVisualFormat FindVisualFormat;
     } xrender;
 
-    struct {
-        struct pollfd fds[3];
-        int wakeupFds[2];
-    } eventLoopData;
+    EventLoopData eventLoopData;
 
 } _GLFWlibraryX11;
 

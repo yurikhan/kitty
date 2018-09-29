@@ -21,7 +21,7 @@ from ..tui.line_edit import LineEdit
 from ..tui.handler import Handler
 from ..tui.loop import Loop
 from ..tui.operations import (
-    clear_screen, color_code, colored, cursor, faint, set_line_wrapping,
+    clear_screen, colored, cursor, faint, set_line_wrapping,
     set_window_title, sgr, styled
 )
 
@@ -159,30 +159,32 @@ class Table:
         self.last_cols, self.last_rows = cols, rows
         self.layout_dirty = False
 
+        def safe_chr(codepoint):
+            return chr(codepoint).encode('utf-8', 'replace').decode('utf-8')
+
         if self.mode is NAME:
             def as_parts(i, codepoint):
-                return encode_hint(i).ljust(idx_size), chr(codepoint), name(codepoint)
+                return encode_hint(i).ljust(idx_size), safe_chr(codepoint), name(codepoint)
 
             def cell(i, idx, c, desc):
                 is_current = i == self.current_idx
-                if is_current:
-                    yield sgr(color_code('gray', base=40))
-                yield colored(idx, 'green') + ' '
-                yield colored(c, 'black' if is_current else 'gray', True) + ' '
+                text = colored(idx, 'green') + ' ' + sgr('49') + c + ' '
                 w = wcswidth(c)
                 if w < 2:
-                    yield ' ' * (2 - w)
+                    text += ' ' * (2 - w)
                 if len(desc) > space_for_desc:
-                    desc = desc[:space_for_desc - 1] + '…'
-                yield faint(desc)
+                    text += desc[:space_for_desc - 1] + '…'
+                else:
+                    text += desc
                 extra = space_for_desc - len(desc)
                 if extra > 0:
-                    yield ' ' * extra
-                if is_current:
-                    yield sgr('49')
+                    text += ' ' * extra
+
+                yield styled(text, reverse=True if is_current else None)
+
         else:
             def as_parts(i, codepoint):
-                return encode_hint(i).ljust(idx_size), chr(codepoint), ''
+                return encode_hint(i).ljust(idx_size), safe_chr(codepoint), ''
 
             def cell(i, idx, c, desc):
                 yield colored(idx, 'green') + ' '
@@ -455,7 +457,6 @@ class UnicodeInput(Handler):
         self.quit_loop(1)
 
     def on_resize(self, new_size):
-        Handler.on_resize(self, new_size)
         self.refresh()
 
 

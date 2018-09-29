@@ -43,7 +43,7 @@ class Resize(Handler):
         cmdline = [resize_window.name, '--self', '--increment={}'.format(increment), '--axis=' + axis]
         opts, items = parse_subcommand_cli(resize_window, cmdline)
         payload = resize_window(global_opts, opts, items)
-        send = {'cmd': resize_window.name, 'version': version, 'payload': payload}
+        send = {'cmd': resize_window.name, 'version': version, 'payload': payload, 'no_response': False}
         self.write(encode_send(send))
 
     def on_kitty_cmd_response(self, response):
@@ -74,7 +74,6 @@ class Resize(Handler):
             self.do_window_resize(is_decrease=key_event.key in (N, S), is_horizontal=key_event.key in (W, N), multiplier=2)
 
     def on_resize(self, new_size):
-        Handler.on_resize(self, new_size)
         self.draw_screen()
 
     def draw_screen(self):

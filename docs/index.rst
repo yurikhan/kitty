@@ -51,7 +51,8 @@ Quickstart
 --------------
 
 Pre-built binaries of |kitty| are available for both macOS and Linux.
-See the :doc:`binary install instructions </binary>`.
+See the :doc:`binary install instructions </binary>`. You can also
+:doc:`build from source </build>`.
 
 If you are on Linux, you can also use your distribution's |kitty| package.
 |kitty| packages are available for:
@@ -60,7 +61,8 @@ If you are on Linux, you can also use your distribution's |kitty| package.
 `Arch Linux <https://www.archlinux.org/packages/community/x86_64/kitty/>`_,
 `NixOS <https://github.com/NixOS/nixpkgs/blob/master/pkgs/applications/misc/kitty/default.nix>`_,
 `Gentoo <https://packages.gentoo.org/packages/x11-terms/kitty>`_,
-`Fedora <https://copr.fedorainfracloud.org/coprs/oleastre/kitty-terminal/>`_.
+`Fedora <https://copr.fedorainfracloud.org/coprs/gagbo/kitty-latest/>`_,
+`Void Linux <https://github.com/void-linux/void-packages/blob/master/srcpkgs/kitty/template>`_.
 
 See :doc:`Configuring kitty <conf>` for help on configuring |kitty| and
 :doc:`Invocation <invocation>` for the command line arguments |kitty| supports.
@@ -122,8 +124,8 @@ Action                      Shortcut
 ========================    =======================
 New tab                     :sc:`new_tab`
 Close tab                   :sc:`close_tab`
-Next tab                    :sc:`next_tab`
-Previous tab                :sc:`previous_tab`
+Next tab                    :sc:`next_tab` (also :kbd:`control+tab` on macOS)
+Previous tab                :sc:`previous_tab` (also :kbd:`control+shift+tab` on macOS)
 Next layout                 :sc:`next_layout`
 Move tab forward            :sc:`move_tab_forward`
 Move tab backward           :sc:`move_tab_backward`
@@ -149,6 +151,15 @@ Focus specific window       :sc:`first_window`, :sc:`second_window` ... :sc:`ten
                             (clockwise from the top-left)
 ========================    =======================
 
+Additionally, you can define shortcuts in :file:`kitty.conf` to focus neighboring
+windows and move windows around (similar to window movement in vim)::
+
+   map ctrl+left neighboring_window left
+   map shift+left move_window right
+   map ctrl+down neighboring_window down
+   map shift+down move_window up
+   ...
+
 
 Other keyboard shortcuts
 ----------------------------------
@@ -162,9 +173,11 @@ Paste from selection                :sc:`paste_from_selection`
 Increase font size                  :sc:`increase_font_size`
 Decrease font size                  :sc:`decrease_font_size`
 Restore font size                   :sc:`reset_font_size`
-Toggle fullscreen                   :sc:`toggle_fullscreen`
+Toggle fullscreen                   :sc:`toggle_fullscreen` (also :kbd:`^⌘+f` on macOS)
+on
 Input unicode character             :sc:`input_unicode_character`
 Click URL using the keyboard        :sc:`open_url`
+Reset the terminal                  :sc:`reset_terminal`
 Pass current selection to program   :sc:`pass_selection_to_program`
 Edit |kitty| config file            :sc:`edit_config_file`
 Open a |kitty| shell                :sc:`kitty_shell`
@@ -179,6 +192,9 @@ Reset background opacity            :sc:`reset_background_opacity`
 
 Layouts
 ----------
+
+A layout is an arrangement of multiple *windows*. You can create a new window
+using the :sc:`new_window` key combination.
 
 Currently, there are five layouts available,
 
@@ -249,6 +265,8 @@ Some prominent kittens:
 :doc:`Clipboard <kittens/clipboard>`
     Copy/paste to the clipboard from shell scripts, even over SSH.
 
+You can also :doc:`Learn to create your own kittens <kittens/custom>`.
+
 
 Configuring kitty
 -------------------
@@ -256,6 +274,16 @@ Configuring kitty
 |kitty| is highly configurable, everything from keyboard shortcuts to
 painting frames-per-second. For details and a sample :file:`kitty.conf`,
 see the :doc:`configuration docs <conf>`.
+
+
+Remote control
+------------------
+
+|kitty| has a very powerful system that allows you to control it from the
+:doc:`shell prompt, even over SSH <remote-control>`. You can change colors,
+fonts, open new windows, tabs, set their titles, change window layout, get text
+from one window and send text to another, etc, etc. The possibilities are
+endless. See the :doc:`tutorial <remote-control>` to get started.
 
 .. _sessions:
 
@@ -303,6 +331,8 @@ Mouse features
 * You can also hold down :kbd:`ctrl+shift` and click on a URL to open it in a browser.
 * You can double click to select a word and triple click to select a line.
 * You can right click to extend a previous selection
+* You can hold down :kbd:`ctrl+alt` and drag with the mouse to select in
+  columns
 
 
 Font control
@@ -332,11 +362,62 @@ scrollback buffer in your favorite pager program (which is ``less`` by default).
 Colors and text formatting are preserved. You can explore the scrollback buffer
 comfortably within the pager.
 
+Additionally, you can pipe the contents of the scrollback buffer to an
+arbitrary, command running in a new window, tab or overlay, for example::
+
+   map f1 pipe @ansi window less +G -R
+
+Would open the scrollback buffer in a new window when you press the :kbd:`F1`
+key. See :sc:`show_scrollback` for details.
+
 
 Frequently Asked Questions
 ---------------------------------
 
 The list of Frequently Asked Questions (*FAQ*) is :doc:`available here <faq>`.
+
+.. _completion:
+
+Completion for kitty
+---------------------------------
+
+|kitty| comes with completion for the ``kitty`` command for popular shells.
+
+
+bash
+~~~~~~~~
+
+Add the following to your :file:`~/.bashrc`
+
+.. code-block:: sh
+
+   source <(kitty + complete setup bash)
+
+
+zsh
+~~~~~~~~~
+
+Add the following to your :file:`~/.zshrc`
+
+.. code-block:: sh
+
+    autoload -Uz compinit
+    compinit
+    # Completion for kitty
+    kitty + complete setup zsh | source /dev/stdin
+
+The important thing above is to make sure the call to |kitty| to load the zsh
+completions happens after the call to :file:`compinit`.
+
+
+fish
+~~~~~~~~
+
+Add the following to your :file:`~/.config/fish/config.fish`
+
+.. code-block:: sh
+
+   kitty + complete setup fish | source
 
 
 Changelog

@@ -19,7 +19,7 @@ For some discussion regarding the design choices, see `#33
 
 To see a quick demo, inside a |kitty| terminal run::
 
-    kitty icat path/to/some/image.png
+    kitty +kitten icat path/to/some/image.png
 
 You can also see a screenshot with more sophisticated features such as
 alpha-blending and text over graphics.
@@ -372,9 +372,9 @@ Key      Value                 Default    Description
 **Keys for deleting images**
 -----------------------------------------------------------
 ``d``    Single character.     ``a``      What to delete.
-         ``(a, A, c, C, p,
-         P, q, Q, x, X, y,
-         Y, z, Z)``.
+         ``(a, A, c, C, i,
+         I, p, P, q, Q, x, X,
+         y, Y, z, Z)``.
 =======  ====================  =========  =================
 
 

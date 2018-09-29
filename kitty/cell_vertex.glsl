@@ -5,6 +5,7 @@
 #define REVERSE_SHIFT {REVERSE_SHIFT}
 #define STRIKE_SHIFT {STRIKE_SHIFT}
 #define DIM_SHIFT {DIM_SHIFT}
+#define CURSOR_TEXT_COLOR {CURSOR_TEXT_COLOR}
 
 // Inputs {{{
 layout(std140) uniform CellRenderData {
@@ -12,7 +13,8 @@ layout(std140) uniform CellRenderData {
 
     uint default_fg, default_bg, highlight_fg, highlight_bg, cursor_color, url_color, url_style, inverted;
 
-    uint xnum, ynum, cursor_x, cursor_y, cursor_w;
+    uint xnum, ynum, cursor_fg_sprite_idx;
+    float cursor_x, cursor_y, cursor_w;
 
     uint color_table[256];
 };
@@ -53,6 +55,8 @@ uniform float inactive_text_alpha;
 uniform float dim_opacity;
 out vec3 sprite_pos;
 out vec3 underline_pos;
+out vec3 cursor_pos;
+out vec4 cursor_color_vec;
 out vec3 strike_pos;
 out vec3 foreground;
 out vec3 decoration_fg;
@@ -110,9 +114,18 @@ vec3 choose_color(float q, vec3 a, vec3 b) {
     return mix(b, a, q);
 }
 
-float is_cursor(uint x, uint y) {
-    if (y == cursor_y && (x == cursor_x || x == cursor_w)) return 1.0;
-    return 0.0;
+float are_integers_equal(float a, float b) { // return 1 iff equal otherwise 0
+    float delta = abs(a - b);  // delta can be 0, 1 or larger
+    return step(delta, 0.5); // 0 if 0.5 < delta else 1
+}
+
+float is_cursor(uint xi, uint y) {
+    float x = float(xi);
+    float y_equal = are_integers_equal(float(y), cursor_y);
+    float x1_equal = are_integers_equal(x, cursor_x);
+    float x2_equal = are_integers_equal(x, cursor_w);
+    float x_equal = step(0.5, x1_equal + x2_equal);
+    return step(2.0, x_equal + y_equal);
 }
 // }}}
 
@@ -141,7 +154,9 @@ void main() {
     uint is_inverted = ((text_attrs >> REVERSE_SHIFT) & ONE) + inverted;
     int fg_index = fg_index_map[is_inverted];
     int bg_index = 1 - fg_index;
-    float cursor = is_cursor(c, r);
+    float cell_has_cursor = is_cursor(c, r);
+    float is_block_cursor = step(float(cursor_fg_sprite_idx), 0.5);
+    float cell_has_block_cursor = cell_has_cursor * is_block_cursor;
     vec3 bg = to_color(colors[bg_index], default_colors[bg_index]);
     // }}}
 
@@ -166,8 +181,10 @@ void main() {
     strike_pos = to_sprite_pos(pos, ((text_attrs >> STRIKE_SHIFT) & ONE) * FOUR, ZERO, ZERO);
 
     // Cursor
-    foreground = choose_color(cursor, bg, foreground);
-    decoration_fg = choose_color(cursor, bg, decoration_fg);
+    cursor_color_vec = vec4(color_to_vec(cursor_color), 1.0);
+    foreground = choose_color(cell_has_block_cursor, CURSOR_TEXT_COLOR, foreground);
+    decoration_fg = choose_color(cell_has_block_cursor, CURSOR_TEXT_COLOR, decoration_fg);
+    cursor_pos = to_sprite_pos(pos, cursor_fg_sprite_idx * uint(cell_has_cursor), ZERO, ZERO);
 #endif
     // }}}
 
@@ -182,17 +199,17 @@ void main() {
     // If the background color is default, set its opacity to background_opacity, otherwise it should be opaque
     bg_alpha = step(0.5, float(colors[bg_index] & BYTE_MASK));
     // Cursor must not be affected by background_opacity
-    bg_alpha = mix(bg_alpha, 1.0, cursor);
+    bg_alpha = mix(bg_alpha, 1.0, cell_has_block_cursor);
     bg_alpha = bg_alpha + (1.0f - bg_alpha) * background_opacity;
 #endif
 
 #if defined(SPECIAL) || defined(SIMPLE)
     // Selection and cursor
     bg = choose_color(float(is_selected & ONE), color_to_vec(highlight_bg), bg);
-    background = choose_color(cursor, color_to_vec(cursor_color), bg);
+    background = choose_color(cell_has_block_cursor, color_to_vec(cursor_color), bg);
 #ifdef SPECIAL
     // bg_alpha should be 1 if cursor/selection otherwise 0
-    bg_alpha = mix(0.0, 1.0, step(0.5, float(is_selected & ONE) + cursor));
+    bg_alpha = mix(0.0, 1.0, step(0.5, float(is_selected & ONE) + cell_has_block_cursor));
 #endif
 #endif
 

@@ -3,6 +3,7 @@
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
+import signal
 import sys
 import warnings
 from collections import defaultdict
@@ -24,14 +25,14 @@ from .collect import (
     set_highlight_data
 )
 from .config import init_config
-from .patch import Differ, set_diff_command
+from .patch import Differ, set_diff_command, worker_processes
 from .render import ImageSupportWarning, LineRef, render_diff
 from .search import BadRegex, Search
 
 try:
     from .highlight import initialize_highlighter, highlight_collection
 except ImportError:
-    initialize_highlighter = None
+    initialize_highlighter = highlight_collection = None
 
 
 INITIALIZING, COLLECTED, DIFFED, COMMAND, MESSAGE = range(5)
@@ -42,7 +43,7 @@ def generate_diff(collection, context):
 
     for path, item_type, changed_path in collection:
         if item_type == 'diff':
-            is_binary = isinstance(data_for_path(path), bytes)
+            is_binary = isinstance(data_for_path(path), bytes) or isinstance(data_for_path(changed_path), bytes)
             if not is_binary:
                 d.add_diff(path, changed_path)
 
@@ -106,10 +107,67 @@ class DiffHandler(Handler):
                 return
 
     def create_collection(self):
-        self.start_job('collect', create_collection, self.left, self.right)
+
+        def collect_done(collection):
+            self.collection = collection
+            self.state = COLLECTED
+            self.generate_diff()
+
+        def collect(left, right):
+            collection = create_collection(left, right)
+            self.asyncio_loop.call_soon_threadsafe(collect_done, collection)
+
+        self.asyncio_loop.run_in_executor(None, collect, self.left, self.right)
 
     def generate_diff(self):
-        self.start_job('diff', generate_diff, self.collection, self.current_context_count)
+
+        def diff_done(diff_map):
+            if isinstance(diff_map, str):
+                self.report_traceback_on_exit = diff_map
+                self.quit_loop(1)
+                return
+            self.state = DIFFED
+            self.diff_map = diff_map
+            self.calculate_statistics()
+            self.render_diff()
+            self.scroll_pos = 0
+            if self.restore_position is not None:
+                self.current_position = self.restore_position
+                self.restore_position = None
+            self.draw_screen()
+            if initialize_highlighter is not None and not self.highlighting_done:
+                from .highlight import StyleNotFound
+                self.highlighting_done = True
+                try:
+                    initialize_highlighter(self.opts.pygments_style)
+                except StyleNotFound as e:
+                    self.report_traceback_on_exit = str(e)
+                    self.quit_loop(1)
+                    return
+                self.syntax_highlight()
+
+        def diff(collection, current_context_count):
+            diff_map = generate_diff(collection, current_context_count)
+            self.asyncio_loop.call_soon_threadsafe(diff_done, diff_map)
+
+        self.asyncio_loop.run_in_executor(None, diff, self.collection, self.current_context_count)
+
+    def syntax_highlight(self):
+
+        def highlighting_done(hdata):
+            if isinstance(hdata, str):
+                self.report_traceback_on_exit = hdata
+                self.quit_loop(1)
+                return
+            set_highlight_data(hdata)
+            self.render_diff()
+            self.draw_screen()
+
+        def highlight(*a):
+            result = highlight_collection(*a)
+            self.asyncio_loop.call_soon_threadsafe(highlighting_done, result)
+
+        self.asyncio_loop.run_in_executor(None, highlight, self.collection, self.opts.syntax_aliases)
 
     def calculate_statistics(self):
         self.added_count = self.collection.added_count
@@ -413,50 +471,6 @@ class DiffHandler(Handler):
             self.render_diff()
         self.draw_screen()
 
-    def on_job_done(self, job_id, job_result):
-        if 'tb' in job_result:
-            self.report_traceback_on_exit = job_result['tb']
-            self.quit_loop(1)
-            return
-        if job_id == 'collect':
-            self.collection = job_result['result']
-            self.state = COLLECTED
-            self.generate_diff()
-        elif job_id == 'diff':
-            diff_map = job_result['result']
-            if isinstance(diff_map, str):
-                self.report_traceback_on_exit = diff_map
-                self.quit_loop(1)
-                return
-            self.state = DIFFED
-            self.diff_map = diff_map
-            self.calculate_statistics()
-            self.render_diff()
-            self.scroll_pos = 0
-            if self.restore_position is not None:
-                self.current_position = self.restore_position
-                self.restore_position = None
-            self.draw_screen()
-            if initialize_highlighter is not None and not self.highlighting_done:
-                from .highlight import StyleNotFound
-                self.highlighting_done = True
-                try:
-                    initialize_highlighter(self.opts.pygments_style)
-                except StyleNotFound as e:
-                    self.report_traceback_on_exit = str(e)
-                    self.quit_loop(1)
-                    return
-                self.start_job('highlight', highlight_collection, self.collection, self.opts.syntax_aliases)
-        elif job_id == 'highlight':
-            hdata = job_result['result']
-            if isinstance(hdata, str):
-                self.report_traceback_on_exit = diff_map
-                self.quit_loop(1)
-                return
-            set_highlight_data(hdata)
-            self.render_diff()
-            self.draw_screen()
-
     def on_interrupt(self):
         self.quit_loop(1)
 
@@ -495,6 +509,14 @@ help_text = 'Show a side-by-side diff of the specified files/directories'
 usage = 'file_or_directory_left file_or_directory_right'
 
 
+def terminate_processes(processes):
+    for pid in processes:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+
+
 def main(args):
     warnings.showwarning = showwarning
     args, items = parse_args(args[1:], OPTIONS, usage, help_text, 'kitty +kitten diff')
@@ -517,6 +539,9 @@ def main(args):
     for message in showwarning.warnings:
         from kitty.utils import safe_print
         safe_print(message, file=sys.stderr)
+    highlight_processes = getattr(highlight_collection, 'processes', ())
+    terminate_processes(tuple(highlight_processes))
+    terminate_processes(tuple(worker_processes))
     if loop.return_code != 0:
         if handler.report_traceback_on_exit:
             print(handler.report_traceback_on_exit, file=sys.stderr)

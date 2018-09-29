@@ -49,6 +49,7 @@ typedef VkBool32 (APIENTRY *PFN_vkGetPhysicalDeviceWaylandPresentationSupportKHR
 #else
 #include "null_joystick.h"
 #endif
+#include "backend_utils.h"
 #include "xkb_glfw.h"
 #include "egl_context.h"
 #include "osmesa_context.h"
@@ -148,6 +149,7 @@ typedef struct _GLFWwindowWayland
     double                      cursorPosX, cursorPosY;
 
     char*                       title;
+    char                        appId[256];
 
     // We need to track the monitors the window spans on to calculate the
     // optimal scaling factor.
@@ -174,6 +176,19 @@ typedef struct _GLFWwindowWayland
 
 } _GLFWwindowWayland;
 
+typedef struct _GLFWWaylandDataOffer
+{
+    struct wl_data_offer *id;
+    const char *mime;
+    int offer_type;
+    size_t idx;
+    int is_self_offer;
+    int has_uri_list;
+    uint32_t source_actions;
+    uint32_t dnd_action;
+    struct wl_surface *surface;
+} _GLFWWaylandDataOffer;
+
 // Wayland-specific global data
 //
 typedef struct _GLFWlibraryWayland
@@ -192,6 +207,9 @@ typedef struct _GLFWlibraryWayland
     struct zwp_relative_pointer_manager_v1* relativePointerManager;
     struct zwp_pointer_constraints_v1*      pointerConstraints;
     struct zwp_idle_inhibit_manager_v1*     idleInhibitManager;
+    struct wl_data_device_manager*          dataDeviceManager;
+    struct wl_data_device*                  dataDevice;
+    struct wl_data_source*                  dataSourceForClipboard;
 
     int                         compositorVersion;
     int                         seatVersion;
@@ -204,10 +222,12 @@ typedef struct _GLFWlibraryWayland
     int32_t                     keyboardRepeatDelay;
     struct {
         uint32_t                key;
-        double                  nextRepeatAt;
+        id_type                 keyRepeatTimer;
         _GLFWwindow*            keyboardFocus;
     } keyRepeatInfo;
+    id_type                     cursorAnimationTimer;
     _GLFWXKBData                xkb;
+    _GLFWDBUSData               dbus;
 
     _GLFWwindow*                pointerFocus;
     _GLFWwindow*                keyboardFocus;
@@ -229,11 +249,12 @@ typedef struct _GLFWlibraryWayland
         PFN_wl_egl_window_resize window_resize;
     } egl;
 
-    struct {
-        struct pollfd fds[2];
-        int wakeupFds[2];
-    } eventLoopData;
-
+    EventLoopData eventLoopData;
+    char* clipboardString;
+    char* clipboardSourceString;
+    struct wl_data_offer* clipboardSourceOffer;
+    size_t dataOffersCounter;
+    _GLFWWaylandDataOffer dataOffers[8];
 } _GLFWlibraryWayland;
 
 // Wayland-specific per-monitor data
@@ -254,11 +275,14 @@ typedef struct _GLFWmonitorWayland
 //
 typedef struct _GLFWcursorWayland
 {
-    struct wl_cursor_image*     image;
+    struct wl_cursor*           cursor;
     struct wl_buffer*           buffer;
     int                         width, height;
     int                         xhot, yhot;
+    int                         currentImage;
 } _GLFWcursorWayland;
 
 
 void _glfwAddOutputWayland(uint32_t name, uint32_t version);
+void _glfwSetupWaylandDataDevice();
+void animateCursorImage(id_type timer_id, void *data);

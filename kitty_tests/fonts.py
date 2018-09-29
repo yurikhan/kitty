@@ -2,10 +2,13 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
+import sys
+import unittest
+
 from kitty.constants import is_macos
 from kitty.fast_data_types import (
-    DECAWM, sprite_map_set_layout, sprite_map_set_limits, test_render_line,
-    test_sprite_position_for, wcwidth
+    DECAWM, get_fallback_font, sprite_map_set_layout, sprite_map_set_limits,
+    test_render_line, test_sprite_position_for, wcwidth
 )
 from kitty.fonts.box_drawing import box_chars
 from kitty.fonts.render import render_string, setup_for_testing, shape_string
@@ -20,7 +23,7 @@ class Rendering(BaseTest):
         self.test_ctx.__enter__()
         self.sprites, self.cell_width, self.cell_height = self.test_ctx.__enter__()
         try:
-            self.assertEqual([k[0] for k in self.sprites], [0, 1, 2, 3, 4, 5])
+            self.assertEqual([k[0] for k in self.sprites], [0, 1, 2, 3, 4, 5, 6, 7, 8])
         except Exception:
             self.test_ctx.__exit__()
             del self.test_ctx
@@ -106,3 +109,16 @@ class Rendering(BaseTest):
         s.draw('\ufe0f')
         self.ae((s.cursor.x, s.cursor.y), (2, 4))
         self.ae(str(s.line(s.cursor.y)), '\u2716\ufe0f')
+
+    @unittest.skipUnless(is_macos, 'Only macOS has a Last Resort font')
+    def test_fallback_font_not_last_resort(self):
+        # Ensure that the LastResort font is not reported as a fallback font on
+        # macOS. See https://github.com/kovidgoyal/kitty/issues/799
+        from io import StringIO
+        orig, buf = sys.stderr, StringIO()
+        sys.stderr = buf
+        try:
+            self.assertRaises(ValueError, get_fallback_font, '\U0010FFFF', False, False)
+        finally:
+            sys.stderr = orig
+        self.assertIn('LastResort', buf.getvalue())

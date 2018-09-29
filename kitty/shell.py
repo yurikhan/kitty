@@ -44,6 +44,8 @@ def options_for_cmd(cmd):
         func = cmap[cmd]
     except KeyError:
         return (), alias_map
+    if not func.options_spec:
+        return (), alias_map
     seq, disabled = parse_option_spec(func.options_spec)
     ans = []
     for opt in seq:
@@ -134,6 +136,7 @@ def run_cmd(global_opts, cmd, func, opts, items):
     send = {
         'cmd': cmd,
         'version': version,
+        'no_response': False,
     }
     if payload is not None:
         send['payload'] = payload
@@ -155,7 +158,10 @@ def real_main(global_opts):
 
     while True:
         try:
-            cmdline = input('🐱 ')
+            try:
+                cmdline = input('🐱 ')
+            except UnicodeEncodeError:
+                cmdline = input('kitty> ')
         except EOFError:
             break
         except KeyboardInterrupt:

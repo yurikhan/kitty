@@ -25,7 +25,7 @@ extern PyTypeObject Screen_Type;
 #define MSG_NOSIGNAL 0
 #endif
 
-static void (*parse_func)(Screen*, PyObject*);
+static void (*parse_func)(Screen*, PyObject*, double);
 
 typedef struct {
     char *data;
@@ -246,9 +246,18 @@ add_child(ChildMonitor *self, PyObject *args) {
 }
 
 bool
-schedule_write_to_child(unsigned long id, const char *data, size_t sz) {
+schedule_write_to_child(unsigned long id, unsigned int num, ...) {
     ChildMonitor *self = the_monitor;
     bool found = false;
+    const char *data;
+    size_t sz = 0;
+    va_list ap;
+    va_start(ap, num);
+    for (unsigned int i = 0; i < num; i++) {
+        data = va_arg(ap, const char*);
+        sz += va_arg(ap, size_t);
+    }
+    va_end(ap);
     children_mutex(lock);
     for (size_t i = 0; i < self->count; i++) {
         if (children[i].id == id) {
@@ -266,8 +275,14 @@ schedule_write_to_child(unsigned long id, const char *data, size_t sz) {
                 screen->write_buf = PyMem_RawRealloc(screen->write_buf, screen->write_buf_sz);
                 if (screen->write_buf == NULL) { fatal("Out of memory."); }
             }
-            memcpy(screen->write_buf + screen->write_buf_used, data, sz);
-            screen->write_buf_used += sz;
+            va_start(ap, num);
+            for (unsigned int i = 0; i < num; i++) {
+                data = va_arg(ap, const char*);
+                size_t dsz = va_arg(ap, size_t);
+                memcpy(screen->write_buf + screen->write_buf_used, data, dsz);
+                screen->write_buf_used += dsz;
+            }
+            va_end(ap);
             if (screen->write_buf_sz > BUFSIZ && screen->write_buf_used < BUFSIZ) {
                 screen->write_buf_sz = BUFSIZ;
                 screen->write_buf = PyMem_RawRealloc(screen->write_buf, screen->write_buf_sz);
@@ -288,7 +303,7 @@ needs_write(ChildMonitor UNUSED *self, PyObject *args) {
     unsigned long id, sz;
     const char *data;
     if (!PyArg_ParseTuple(args, "ks#", &id, &data, &sz)) return NULL;
-    if (schedule_write_to_child(id, data, sz)) { Py_RETURN_TRUE; }
+    if (schedule_write_to_child(id, 1, data, (size_t)sz)) { Py_RETURN_TRUE; }
     Py_RETURN_FALSE;
 }
 
@@ -314,13 +329,17 @@ shutdown_monitor(ChildMonitor *self, PyObject *a UNUSED) {
 static inline void
 do_parse(ChildMonitor *self, Screen *screen, double now) {
     screen_mutex(lock, read);
-    if (screen->read_buf_sz) {
+    if (screen->read_buf_sz || screen->pending_mode.used) {
         double time_since_new_input = now - screen->new_input_at;
         if (time_since_new_input >= OPT(input_delay)) {
-            parse_func(screen, self->dump_callback);
-            if (screen->read_buf_sz >= READ_BUF_SZ) wakeup_io_loop(false);  // Ensure the read fd has POLLIN set
-            screen->read_buf_sz = 0;
+            bool read_buf_full = screen->read_buf_sz >= READ_BUF_SZ;
+            parse_func(screen, self->dump_callback, now);
+            if (read_buf_full) wakeup_io_loop(false);  // Ensure the read fd has POLLIN set
             screen->new_input_at = 0;
+            if (screen->pending_mode.activated_at) {
+                double time_since_pending = MAX(0, now - screen->pending_mode.activated_at);
+                set_maximum_wait(screen->pending_mode.wait_time - time_since_pending);
+            }
         } else set_maximum_wait(OPT(input_delay) - time_since_new_input);
     }
     screen_mutex(unlock, read);
@@ -491,14 +510,6 @@ pyset_iutf8(ChildMonitor *self, PyObject *args) {
 
 static double last_render_at = -DBL_MAX;
 
-static inline double
-cursor_width(double w, bool vert, OSWindow *os_window) {
-    double dpi = vert ? os_window->fonts_data->logical_dpi_x : os_window->fonts_data->logical_dpi_y;
-    double ans = w * dpi / 72.0;  // as pixels
-    double factor = 2.0 / (vert ? os_window->viewport_width : os_window->viewport_height);
-    return ans * factor;
-}
-
 extern void cocoa_update_title(PyObject*);
 
 static inline void
@@ -526,23 +537,6 @@ collect_cursor_info(CursorRenderInfo *ans, Window *w, double now, OSWindow *os_w
     ans->shape = cursor->shape ? cursor->shape : OPT(cursor_shape);
     ans->color = colorprofile_to_color(cp, cp->overridden.cursor_color, cp->configured.cursor_color);
     ans->is_focused = os_window->is_focused;
-    if (ans->shape == CURSOR_BLOCK && ans->is_focused) return;
-    double left = rd->xstart + cursor->x * rd->dx;
-    double top = rd->ystart - cursor->y * rd->dy;
-    unsigned long mult = MAX(1, screen_current_char_width(rd->screen));
-    double right = left + (ans->shape == CURSOR_BEAM ? cursor_width(1.5, true, os_window) : rd->dx * mult);
-    double bottom = top - rd->dy;
-	switch (ans->shape) {
-        case CURSOR_UNDERLINE:
-            top = bottom + cursor_width(2.0, false, os_window);
-            break;
-        case CURSOR_BLOCK:
-            top -= 2.0 / os_window->viewport_height;  // 1px adjustment for width of line
-            break;
-        default:
-            break;
-	}
-    ans->left = left; ans->right = right; ans->top = top; ans->bottom = bottom;
 }
 
 static inline bool
@@ -614,9 +608,6 @@ render_os_window(OSWindow *os_window, double now, unsigned int active_window_id,
         if (w->visible && WD.screen) {
             bool is_active_window = i == tab->active_window;
             draw_cells(WD.vao_idx, WD.gvao_idx, WD.xstart, WD.ystart, WD.dx, WD.dy, WD.screen, os_window, is_active_window, true);
-            if (is_active_window && WD.screen->cursor_render_info.is_visible && (!WD.screen->cursor_render_info.is_focused || WD.screen->cursor_render_info.shape != CURSOR_BLOCK)) {
-                draw_cursor(&WD.screen->cursor_render_info, os_window->is_focused);
-            }
             if (WD.screen->start_visual_bell_at != 0) {
                 double bell_left = global_state.opts.visual_bell_duration - (now - WD.screen->start_visual_bell_at);
                 set_maximum_wait(bell_left);
@@ -1065,9 +1056,6 @@ io_loop(void *data) {
 
 // {{{ Talk thread functions
 
-#define MAX_PEERS 256
-#define MAX_LISTENERS 2
-
 typedef struct {
     char *data;
     size_t capacity, used;
@@ -1086,15 +1074,18 @@ static PeerWriteData empty_pwd = {.fd = -1, 0};
 
 typedef struct {
     size_t num_listen_fds, num_talk_fds, num_reads, num_writes, num_queued_writes;
-    struct pollfd fds[MAX_PEERS + MAX_LISTENERS + 1];
-    PeerReadData reads[MAX_LISTENERS];
-    PeerWriteData writes[MAX_LISTENERS];
-    PeerWriteData queued_writes[MAX_LISTENERS];
+    size_t fds_capacity, reads_capacity, writes_capacity, queued_writes_capacity;
+    struct pollfd *fds;
+    PeerReadData *reads;
+    PeerWriteData *writes;
+    PeerWriteData *queued_writes;
     int wakeup_fds[2];
     pthread_mutex_t peer_lock;
 } TalkData;
 
 static TalkData talk_data = {0};
+typedef struct pollfd PollFD;
+#define PEER_LIMIT 256
 #define nuke_socket(s) { shutdown(s, SHUT_RDWR); close(s); }
 
 static inline bool
@@ -1106,11 +1097,16 @@ accept_peer(int listen_fd, bool shutting_down) {
         return false;
     }
     size_t fd_idx = talk_data.num_listen_fds + talk_data.num_talk_fds;
-    if (fd_idx < arraysz(talk_data.fds) && talk_data.num_reads < arraysz(talk_data.reads)) {
+    if (fd_idx < PEER_LIMIT && talk_data.reads_capacity < PEER_LIMIT) {
+        ensure_space_for(&talk_data, fds, PollFD, fd_idx + 1, fds_capacity, 8, false);
         talk_data.fds[fd_idx].fd = peer; talk_data.fds[fd_idx].events = POLLIN;
+        ensure_space_for(&talk_data, reads, PeerReadData, talk_data.num_reads + 1, reads_capacity, 8, false);
         talk_data.reads[talk_data.num_reads] = empty_prd; talk_data.reads[talk_data.num_reads++].fd = peer;
         talk_data.num_talk_fds++;
-    } else nuke_socket(peer);
+    } else {
+        log_error("Too many peers want to talk, ignoring one.");
+        nuke_socket(peer);
+    }
     return true;
 }
 
@@ -1239,8 +1235,10 @@ move_queued_writes() {
     while (talk_data.num_queued_writes) {
         PeerWriteData *src = talk_data.queued_writes + --talk_data.num_queued_writes;
         size_t fd_idx = talk_data.num_listen_fds + talk_data.num_talk_fds;
-        if (fd_idx < arraysz(talk_data.fds) && talk_data.num_writes < arraysz(talk_data.writes)) {
+        if (fd_idx < PEER_LIMIT && talk_data.num_writes < PEER_LIMIT) {
+            ensure_space_for(&talk_data, fds, PollFD, fd_idx + 1, fds_capacity, 8, false);
             talk_data.fds[fd_idx].fd = src->fd; talk_data.fds[fd_idx].events = POLLOUT;
+            ensure_space_for(&talk_data, writes, PeerWriteData, talk_data.num_writes + 1, writes_capacity, 8, false);
             talk_data.writes[talk_data.num_writes++] = *src;
             talk_data.num_talk_fds++;
         } else {
@@ -1259,6 +1257,7 @@ talk_loop(void *data) {
     set_thread_name("KittyPeerMon");
     if ((pthread_mutex_init(&talk_data.peer_lock, NULL)) != 0) { perror("Failed to create peer mutex"); return 0; }
     if (!self_pipe(talk_data.wakeup_fds)) { perror("Failed to create wakeup fds for talk thread"); return 0; }
+    ensure_space_for(&talk_data, fds, PollFD, 8, fds_capacity, 8, false);
 #define add_listener(which) \
     if (self->which > -1) { \
         talk_data.fds[talk_data.num_listen_fds].fd = self->which; talk_data.fds[talk_data.num_listen_fds++].events = POLLIN; \
@@ -1289,6 +1288,7 @@ talk_loop(void *data) {
     }
 end:
     close(talk_data.wakeup_fds[0]); close(talk_data.wakeup_fds[1]);
+    free(talk_data.fds); free(talk_data.reads); free(talk_data.writes); free(talk_data.queued_writes);
     return 0;
 }
 
@@ -1296,7 +1296,8 @@ static inline bool
 add_peer_writer(int fd, const char* msg, size_t msg_sz) {
     bool ok = false;
     peer_mutex(lock);
-    if (talk_data.num_queued_writes < arraysz(talk_data.queued_writes)) {
+    if (talk_data.num_queued_writes < PEER_LIMIT) {
+        ensure_space_for(&talk_data, queued_writes, PeerWriteData, talk_data.num_queued_writes + 1, queued_writes_capacity, 8, false);
         talk_data.queued_writes[talk_data.num_queued_writes] = empty_pwd;
         talk_data.queued_writes[talk_data.num_queued_writes].data = malloc(msg_sz);
         if (talk_data.queued_writes[talk_data.num_queued_writes].data) {

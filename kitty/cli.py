@@ -8,9 +8,7 @@ import sys
 from collections import deque
 
 from .conf.utils import resolve_config
-from .config import defaults, load_config
 from .constants import appname, defconf, is_macos, is_wayland, str_version
-from .fast_data_types import GLFW_KEY_UNKNOWN, glfw_get_key_name
 
 CONFIG_HELP = '''\
 Specify a path to the configuration file(s) to use. All configuration files are
@@ -30,140 +28,10 @@ directory is always used and the above searching does not happen.
 If :file:`/etc/xdg/{appname}/{conf_name}.conf` exists it is merged before (i.e. with lower
 priority) than any user config files. It can be used to specify system-wide
 defaults for all users.
-'''.replace('{macos_confpath}', ':file:`~/Library/Preferences/{appname}/{conf_name}.conf`,' if is_macos else '')
-
-OPTIONS = '''
---class
-dest=cls
-default={appname}
-condition=not is_macos
-Set the class part of the :italic:`WM_CLASS` window property
-
-
---name
-condition=not is_macos
-Set the name part of the :italic:`WM_CLASS` property (defaults to using the value from :option:`{appname} --class`)
-
-
---title -T
-Set the window title. This will override any title set by the program running inside kitty. So
-only use this if you are running a program that does not set titles.
-
-
---config -c
-type=list
-{config_help}
-
-
---override -o
-type=list
-Override individual configuration options, can be specified multiple times.
-Syntax: :italic:`name=value`. For example: :option:`kitty -o` font_size=20
-
-
---directory -d
-default=.
-Change to the specified directory when launching
-
-
---detach
-type=bool-set
-condition=not is_macos
-Detach from the controlling terminal, if any
-
-
---session
-Path to a file containing the startup :italic:`session` (tabs, windows, layout, programs).
-See the README file for details and an example.
-
-
---hold
-type=bool-set
-Remain open after child process exits. Note that this only affects the first
-window. You can quit by either using the close window shortcut or :kbd:`Ctrl+d`.
-
-
---single-instance -1
-type=bool-set
-If specified only a single instance of :italic:`{appname}` will run. New invocations will
-instead create a new top-level window in the existing :italic:`{appname}` instance. This
-allows :italic:`{appname}` to share a single sprite cache on the GPU and also reduces
-startup time. You can also have separate groups of :italic:`{appname}` instances by using the
-:option:`kitty --instance-group` option
-
-
---instance-group
-Used in combination with the :option:`kitty --single-instance` option. All :italic:`{appname}` invocations
-with the same :option:`kitty --instance-group` will result in new windows being created
-in the first :italic:`{appname}` instance within that group
-
-
---wait-for-single-instance-window-close
-type=bool-set
-Normally, when using :option:`--single-instance`, :italic:`{appname}` will open a new window in an existing
-instance and quit immediately. With this option, it will not quit till the newly opened
-window is closed. Note that if no previous instance is found, then :italic:`{appname}` will wait anyway,
-regardless of this option.
-
-
---listen-on
-Tell kitty to listen on the specified address for control
-messages. For example, :option:`{appname} --listen-on`=unix:/tmp/mykitty or
-:option:`{appname} --listen-on`=tcp:localhost:12345. On Linux systems, you can also use abstract
-UNIX sockets, not associated with a file, like this: :option:`{appname} --listen-on`=unix:@mykitty.
-To control kitty, you can send it commands with :italic:`kitty @` using the :option:`kitty @ --to` option
-to specify this address. Note that this option will be ignored, unless you set
-:opt:`allow_remote_control` to yes in :file:`kitty.conf`.
-
-
-# Debugging options
-
---version -v
-type=bool-set
-The current {appname} version
-
-
---dump-commands
-type=bool-set
-Output commands received from child process to stdout
-
-
---replay-commands
-Replay previously dumped commands. Specify the path to a dump file previously created by --dump-commands. You
-can open a new kitty window to replay the commands with::
-
-    kitty sh -c "kitty --replay-commands /path/to/dump/file; read"
-
-
---dump-bytes
-Path to file in which to store the raw bytes received from the child process
-
-
---debug-gl
-type=bool-set
-Debug OpenGL commands. This will cause all OpenGL calls to check for errors
-instead of ignoring them. Useful when debugging rendering problems
-
-
---debug-keyboard
-type=bool-set
-This option will cause kitty to print out key events as they are received
-
-
---debug-font-fallback
-type=bool-set
-Print out information about the selection of fallback fonts for characters not present in the main font.
-
-
---debug-config
-type=bool-set
-Print out information about the system and kitty configuration.
-
-
---execute -e
-type=bool-set
-!
-'''
+'''.replace(
+    '{macos_confpath}',
+    (':file:`~/Library/Preferences/{appname}/{conf_name}.conf`,' if is_macos else ''), 1
+)
 
 
 def surround(x, start, end):
@@ -232,7 +100,9 @@ def file(x):
     return italic(x)
 
 
-def parse_option_spec(spec=OPTIONS):
+def parse_option_spec(spec=None):
+    if spec is None:
+        spec = options_spec()
     NORMAL, METADATA, HELP = 'NORMAL', 'METADATA', 'HELP'
     state = NORMAL
     lines = spec.splitlines()
@@ -589,11 +459,159 @@ def parse_cmdline(oc, disabled, args=None):
 
 def options_spec():
     if not hasattr(options_spec, 'ans'):
+        OPTIONS = '''
+--class
+dest=cls
+default={appname}
+condition=not is_macos
+Set the class part of the :italic:`WM_CLASS` window property. On Wayland, it sets the app id.
+
+
+--name
+condition=not is_macos
+Set the name part of the :italic:`WM_CLASS` property (defaults to using the value from :option:`{appname} --class`)
+
+
+--title -T
+Set the window title. This will override any title set by the program running inside kitty. So
+only use this if you are running a program that does not set titles. If combined
+with :option:`{appname} --session` the title will be used for all windows created by the
+session, that do not set their own titles.
+
+
+--config -c
+type=list
+{config_help}
+
+
+--override -o
+type=list
+Override individual configuration options, can be specified multiple times.
+Syntax: :italic:`name=value`. For example: :option:`kitty -o` font_size=20
+
+
+--directory -d
+default=.
+Change to the specified directory when launching
+
+
+--detach
+type=bool-set
+condition=not is_macos
+Detach from the controlling terminal, if any
+
+
+--session
+Path to a file containing the startup :italic:`session` (tabs, windows, layout, programs).
+See the README file for details and an example.
+
+
+--hold
+type=bool-set
+Remain open after child process exits. Note that this only affects the first
+window. You can quit by either using the close window shortcut or :kbd:`Ctrl+d`.
+
+
+--single-instance -1
+type=bool-set
+If specified only a single instance of :italic:`{appname}` will run. New invocations will
+instead create a new top-level window in the existing :italic:`{appname}` instance. This
+allows :italic:`{appname}` to share a single sprite cache on the GPU and also reduces
+startup time. You can also have separate groups of :italic:`{appname}` instances by using the
+:option:`kitty --instance-group` option
+
+
+--instance-group
+Used in combination with the :option:`kitty --single-instance` option. All :italic:`{appname}` invocations
+with the same :option:`kitty --instance-group` will result in new windows being created
+in the first :italic:`{appname}` instance within that group
+
+
+--wait-for-single-instance-window-close
+type=bool-set
+Normally, when using :option:`--single-instance`, :italic:`{appname}` will open a new window in an existing
+instance and quit immediately. With this option, it will not quit till the newly opened
+window is closed. Note that if no previous instance is found, then :italic:`{appname}` will wait anyway,
+regardless of this option.
+
+
+--listen-on
+Tell kitty to listen on the specified address for control
+messages. For example, :option:`{appname} --listen-on`=unix:/tmp/mykitty or
+:option:`{appname} --listen-on`=tcp:localhost:12345. On Linux systems, you can
+also use abstract UNIX sockets, not associated with a file, like this:
+:option:`{appname} --listen-on`=unix:@mykitty.  To control kitty, you can send
+it commands with :italic:`kitty @` using the :option:`kitty @ --to` option to
+specify this address. This option will be ignored, unless you set
+:opt:`allow_remote_control` to yes in :file:`kitty.conf`. Note that if you run
+:italic:`kitty @` within a kitty window, there is no need to specify the :italic:`--to`
+option as it is read automatically from the environment.
+
+
+--start-as
+type=choices
+default=normal
+choices=normal,fullscreen,maximized,minimized
+Control how the initial kitty window is created.
+
+
+# Debugging options
+
+--version -v
+type=bool-set
+The current {appname} version
+
+
+--dump-commands
+type=bool-set
+Output commands received from child process to stdout
+
+
+--replay-commands
+Replay previously dumped commands. Specify the path to a dump file previously created by --dump-commands. You
+can open a new kitty window to replay the commands with::
+
+    kitty sh -c "kitty --replay-commands /path/to/dump/file; read"
+
+
+--dump-bytes
+Path to file in which to store the raw bytes received from the child process
+
+
+--debug-gl
+type=bool-set
+Debug OpenGL commands. This will cause all OpenGL calls to check for errors
+instead of ignoring them. Useful when debugging rendering problems
+
+
+--debug-keyboard
+type=bool-set
+This option will cause kitty to print out key events as they are received
+
+
+--debug-font-fallback
+type=bool-set
+Print out information about the selection of fallback fonts for characters not present in the main font.
+
+
+--debug-config
+type=bool-set
+Print out information about the system and kitty configuration.
+
+
+--execute -e
+type=bool-set
+!
+'''
         options_spec.ans = OPTIONS.format(
             appname=appname, config_help=CONFIG_HELP.format(appname=appname, conf_name=appname)
 
         )
     return options_spec.ans
+
+
+def options_for_completion():
+    return parse_option_spec(options_spec())[0]
 
 
 def option_spec_as_rst(ospec=options_spec, usage=None, message=None, appname=None, heading_char='-'):
@@ -631,6 +649,7 @@ def print_shortcut(key_sequence, action):
                 names.append(name)
         if key:
             if is_native:
+                from .fast_data_types import GLFW_KEY_UNKNOWN, glfw_get_key_name
                 names.append(glfw_get_key_name(GLFW_KEY_UNKNOWN, key))
             else:
                 names.append(krmap[key])
@@ -665,6 +684,7 @@ def flatten_sequence_map(m):
 
 
 def compare_opts(opts):
+    from .config import defaults, load_config
     print('\nConfig options different from defaults:')
     default_opts = load_config()
     changed_opts = [
@@ -686,6 +706,7 @@ def compare_opts(opts):
 
 
 def create_opts(args, debug_config=False):
+    from .config import load_config
     config = tuple(resolve_config(SYSTEM_CONF, defconf, args.config))
     if debug_config:
         print(version(add_rev=True))

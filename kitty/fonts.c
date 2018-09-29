@@ -1076,10 +1076,11 @@ send_prerendered_sprites(FontGroup *fg) {
     current_send_sprite_to_gpu((FONTS_DATA_HANDLE)fg, x, y, z, fg->canvas);
     do_increment(fg, &error);
     if (error != 0) { sprite_map_set_error(error); PyErr_Print(); fatal("failed"); }
-    PyObject *args = PyObject_CallFunction(prerender_function, "IIIII", fg->cell_width, fg->cell_height, fg->baseline, fg->underline_position, fg->underline_thickness);
-    if (args == NULL) { PyErr_Print(); fatal("Failed to prerender cells"); }
+    PyObject *args = PyObject_CallFunction(prerender_function, "IIIIIdd", fg->cell_width, fg->cell_height, fg->baseline, fg->underline_position, fg->underline_thickness, fg->logical_dpi_x, fg->logical_dpi_y);
+    if (args == NULL) { PyErr_Print(); fatal("Failed to pre-render cells"); }
     for (ssize_t i = 0; i < PyTuple_GET_SIZE(args) - 1; i++) {
         x = fg->sprite_tracker.x; y = fg->sprite_tracker.y; z = fg->sprite_tracker.z;
+        if (y > 0) { fatal("too many pre-rendered sprites for your GPU or the font size is too large"); }
         do_increment(fg, &error);
         if (error != 0) { sprite_map_set_error(error); PyErr_Print(); fatal("failed"); }
         uint8_t *alpha_mask = PyLong_AsVoidPtr(PyTuple_GET_ITEM(args, i));
@@ -1105,7 +1106,7 @@ initialize_font(FontGroup *fg, unsigned int desc_idx, const char *ftype) {
     Py_CLEAR(face);
     if (!ok) {
         if (PyErr_Occurred()) { PyErr_Print(); }
-        fatal("Failed to initialize %s font: %d", ftype, idx);
+        fatal("Failed to initialize %s font: %zu", ftype, idx);
     }
     return idx;
 }
@@ -1279,6 +1280,7 @@ get_fallback_font(PyObject UNUSED *self, PyObject *args) {
     if (italic) gpu_cell.attrs |= 1 << ITALIC_SHIFT;
     FontGroup *fg = font_groups;
     ssize_t ans = fallback_font(fg, &cpu_cell, &gpu_cell);
+    if (ans == MISSING_FONT) { PyErr_SetString(PyExc_ValueError, "No fallback font found"); return NULL; }
     if (ans < 0) { PyErr_SetString(PyExc_ValueError, "Too many fallback fonts"); return NULL; }
     return fg->fonts[ans].face;
 }

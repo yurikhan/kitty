@@ -11,10 +11,12 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#include <signal.h>
 
 static inline char**
 serialize_string_tuple(PyObject *src) {
     Py_ssize_t sz = PyTuple_GET_SIZE(src);
+
     char **ans = calloc(sz + 1, sizeof(char*));
     if (!ans) fatal("Out of memory");
     for (Py_ssize_t i = 0; i < sz; i++) {
@@ -25,6 +27,13 @@ serialize_string_tuple(PyObject *src) {
         memcpy(ans[i], pysrc, len);
     }
     return ans;
+}
+
+static inline void
+free_string_tuple(char** data) {
+    size_t i = 0;
+	while(data[i]) free(data[i++]);
+	free(data);
 }
 
 extern char **environ;
@@ -44,18 +53,29 @@ write_to_stderr(const char *text) {
     }
 }
 
+#define exit_on_err(m) { write_to_stderr(m); write_to_stderr(": "); write_to_stderr(strerror(errno)); exit(EXIT_FAILURE); }
+
+static inline void
+wait_for_terminal_ready(int fd) {
+    char data;
+    while(1) {
+        int ret = read(fd, &data, 1);
+        if (ret == -1 && (errno == EINTR || errno == EAGAIN)) continue;
+        break;
+    }
+}
+
 static PyObject*
 spawn(PyObject *self UNUSED, PyObject *args) {
     PyObject *argv_p, *env_p;
-    int master, slave, stdin_read_fd, stdin_write_fd;
+    int master, slave, stdin_read_fd, stdin_write_fd, ready_read_fd, ready_write_fd;
     char *cwd, *exe;
-    if (!PyArg_ParseTuple(args, "ssO!O!iiii", &exe, &cwd, &PyTuple_Type, &argv_p, &PyTuple_Type, &env_p, &master, &slave, &stdin_read_fd, &stdin_write_fd)) return NULL;
+    if (!PyArg_ParseTuple(args, "ssO!O!iiiiii", &exe, &cwd, &PyTuple_Type, &argv_p, &PyTuple_Type, &env_p, &master, &slave, &stdin_read_fd, &stdin_write_fd, &ready_read_fd, &ready_write_fd)) return NULL;
     char name[2048] = {0};
     if (ttyname_r(slave, name, sizeof(name) - 1) != 0) { PyErr_SetFromErrno(PyExc_OSError); return NULL; }
     char **argv = serialize_string_tuple(argv_p);
     char **env = serialize_string_tuple(env_p);
 
-#define exit_on_err(m) { write_to_stderr(m); write_to_stderr(": "); write_to_stderr(strerror(errno)); exit(EXIT_FAILURE); }
     pid_t pid = fork();
     switch(pid) {
         case 0:
@@ -63,6 +83,17 @@ spawn(PyObject *self UNUSED, PyObject *args) {
             // Use only signal-safe functions (man 7 signal-safety)
             if (chdir(cwd) != 0) { if (chdir("/") != 0) {} };  // ignore failure to chdir to /
             if (setsid() == -1) exit_on_err("setsid() in child process failed");
+
+            // Establish the controlling terminal (see man 7 credentials)
+            int tfd = open(name, O_RDWR);
+            if (tfd == -1) exit_on_err("Failed to open controlling terminal");
+#ifdef TIOCSTTY
+            // On BSD open() does not establish the controlling terminal
+            if (ioctl(tfd, TIOCSCTTY, 0) == -1) exit_on_err("Failed to set controlling terminal with TIOCSCTTY");
+#endif
+            close(tfd);
+
+            // Redirect stdin/stdout/stderr to the pty
             if (dup2(slave, 1) == -1) exit_on_err("dup2() failed for fd number 1");
             if (dup2(slave, 2) == -1) exit_on_err("dup2() failed for fd number 2");
             if (stdin_read_fd > -1) {
@@ -74,12 +105,14 @@ spawn(PyObject *self UNUSED, PyObject *args) {
             }
             close(slave);
             close(master);
-            for (int c = 3; c < 201; c++) close(c);
 
-            // Establish the controlling terminal (see man 7 credentials)
-            int tfd = open(name, O_RDWR);
-            if (tfd == -1) exit_on_err("Failed to open controlling terminal");
-            close(tfd);
+            // Wait for READY_SIGNAL which indicates kitty has setup the screen object
+            close(ready_write_fd);
+            wait_for_terminal_ready(ready_read_fd);
+            close(ready_read_fd);
+
+            // Close any extra fds inherited from parent
+            for (int c = 3; c < 201; c++) close(c);
 
             environ = env;
             execvp(exe, argv);
@@ -100,8 +133,8 @@ spawn(PyObject *self UNUSED, PyObject *args) {
             break;
     }
 #undef exit_on_err
-    free(argv);
-    free(env);
+    free_string_tuple(argv);
+    free_string_tuple(env);
     if (PyErr_Occurred()) return NULL;
     return PyLong_FromLong(pid);
 }

@@ -7,10 +7,9 @@ import pwd
 import sys
 from collections import namedtuple
 
-from .fast_data_types import set_boss as set_c_boss
 
 appname = 'kitty'
-version = (0, 11, 3)
+version = (0, 12, 3)
 str_version = '.'.join(map(str, version))
 _plat = sys.platform.lower()
 is_macos = 'darwin' in _plat
@@ -94,6 +93,7 @@ def get_boss():
 
 
 def set_boss(m):
+    from .fast_data_types import set_boss as set_c_boss
     get_boss.boss = m
     set_c_boss(m)
 

@@ -23,7 +23,8 @@ typedef struct {
     color_type url_color, background, active_border_color, inactive_border_color, bell_border_color;
     double repaint_delay, input_delay;
     bool focus_follows_mouse;
-    bool macos_option_as_alt, macos_hide_titlebar, macos_hide_from_tasks, x11_hide_window_decorations, macos_quit_when_last_window_closed, macos_window_resizable;
+    bool macos_option_as_alt, macos_hide_titlebar, macos_hide_from_tasks, x11_hide_window_decorations, macos_quit_when_last_window_closed, macos_window_resizable, macos_traditional_fullscreen;
+    float macos_thicken_font;
     int adjust_line_height_px, adjust_column_width_px;
     float adjust_line_height_frac, adjust_column_width_frac;
     float background_opacity, dim_opacity;
@@ -34,6 +35,7 @@ typedef struct {
     bool sync_to_monitor;
     bool close_on_child_death;
     bool window_alert_on_bell;
+    bool debug_keyboard;
 } Options;
 
 typedef struct {
@@ -123,6 +125,8 @@ typedef struct {
     float background_opacity;
     FONTS_DATA_HANDLE fonts_data;
     id_type temp_font_group_id;
+    double pending_scroll_pixels;
+    unsigned int nsgl_ctx_updated;
 } OSWindow;
 
 
@@ -169,6 +173,7 @@ void swap_window_buffers(OSWindow *w);
 void make_window_context_current(OSWindow *w);
 void hide_mouse(OSWindow *w);
 void destroy_os_window(OSWindow *w);
+void focus_os_window(OSWindow *w, bool also_raise);
 void set_os_window_title(OSWindow *w, const char *title);
 OSWindow* os_window_for_kitty_window(id_type);
 OSWindow* add_os_window();
@@ -181,11 +186,11 @@ ssize_t create_graphics_vao();
 ssize_t create_border_vao();
 bool send_cell_data_to_gpu(ssize_t, ssize_t, float, float, float, float, Screen *, OSWindow *);
 void draw_cells(ssize_t, ssize_t, float, float, float, float, Screen *, OSWindow *, bool, bool);
-void draw_cursor(CursorRenderInfo *, bool);
 void update_surface_size(int, int, uint32_t);
 void free_texture(uint32_t*);
 void send_image_to_gpu(uint32_t*, const void*, int32_t, int32_t, bool, bool);
 void send_sprite_to_gpu(FONTS_DATA_HANDLE fg, unsigned int, unsigned int, unsigned int, pixel*);
+void blank_os_window(OSWindow *);
 void set_titlebar_color(OSWindow *w, color_type color);
 FONTS_DATA_HANDLE load_fonts_data(double, double, double);
 void send_prerendered_sprites_for_window(OSWindow *w);

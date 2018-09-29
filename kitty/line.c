@@ -132,10 +132,11 @@ line_url_start_at(Line *self, index_type x) {
 }
 
 index_type
-line_url_end_at(Line *self, index_type x, bool check_short) {
+line_url_end_at(Line *self, index_type x, bool check_short, char_type sentinel) {
     index_type ans = x;
     if (x >= self->xnum || (check_short && self->xnum <= MIN_URL_LEN + 3)) return 0;
-    while (ans < self->xnum && is_url_char(self->cpu_cells[ans].ch)) ans++;
+    if (sentinel) { while (ans < self->xnum && self->cpu_cells[ans].ch != sentinel && is_url_char(self->cpu_cells[ans].ch)) ans++; }
+    else { while (ans < self->xnum && is_url_char(self->cpu_cells[ans].ch)) ans++; }
     if (ans) ans--;
     while (ans > x && can_strip_from_end_of_url(self->cpu_cells[ans].ch)) ans--;
     return ans;
@@ -148,9 +149,11 @@ url_start_at(Line *self, PyObject *x) {
 }
 
 static PyObject*
-url_end_at(Line *self, PyObject *x) {
+url_end_at(Line *self, PyObject *args) {
 #define url_end_at_doc "url_end_at(x) -> Return the end cell number for a URL containing x or 0 if not found"
-    return PyLong_FromUnsignedLong((unsigned long)line_url_end_at(self, PyLong_AsUnsignedLong(x), true));
+    unsigned int x, sentinel = 0;
+    if (!PyArg_ParseTuple(args, "I|I", &x, &sentinel)) return NULL;
+    return PyLong_FromUnsignedLong((unsigned long)line_url_end_at(self, x, true, sentinel));
 }
 
 // }}}
@@ -301,7 +304,10 @@ width(Line *self, PyObject *val) {
 void
 line_add_combining_char(Line *self, uint32_t ch, unsigned int x) {
     CPUCell *cell = self->cpu_cells + x;
-    if (!cell->ch) return;  // dont allow adding combining chars to a null cell
+    if (!cell->ch) {
+        if (x > 0 && (self->gpu_cells[x-1].attrs & WIDTH_MASK) == 2 && self->cpu_cells[x-1].ch) cell = self->cpu_cells + x - 1;
+        else return; // don't allow adding combining chars to a null cell
+    }
     for (unsigned i = 0; i < arraysz(cell->cc_idx); i++) {
         if (!cell->cc_idx[i]) { cell->cc_idx[i] = mark_for_codepoint(ch); return; }
     }
@@ -560,7 +566,7 @@ static PyMethodDef methods[] = {
     METHOD(is_continued, METH_NOARGS)
     METHOD(width, METH_O)
     METHOD(url_start_at, METH_O)
-    METHOD(url_end_at, METH_O)
+    METHOD(url_end_at, METH_VARARGS)
     METHOD(sprite_at, METH_O)
 
     {NULL}  /* Sentinel */

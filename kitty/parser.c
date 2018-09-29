@@ -703,20 +703,32 @@ dispatch_csi(Screen *screen, PyObject DUMP_UNUSED *dump_callback) {
             REPORT_ERROR("Unknown CSI s sequence with start and end modifiers: '%c' '%c' and %u parameters", start_modifier, end_modifier, num_params);
             break;
         case 't':
-            if (!start_modifier && !end_modifier && num_params == 1) {
-                switch(params[0]) {
-                    case 14:
-                    case 16:
-                    case 18:
-                        CALL_CSI_HANDLER1(screen_report_size, 0);
-                        break;
-                    default:
-                        REPORT_ERROR("Unknown CSI t sequences with parameter: '%u'", params[0]);
-                        break;
-                }
+            if (!num_params) {
+                REPORT_ERROR("Unknown CSI t sequence with start and end modifiers: '%c' '%c' and no parameters", start_modifier, end_modifier);
                 break;
             }
-            REPORT_ERROR("Unknown CSI t sequence with start and end modifiers: '%c' '%c' and %u parameters", start_modifier, end_modifier, num_params);
+            if (start_modifier || end_modifier) {
+                REPORT_ERROR("Unknown CSI t sequence with start and end modifiers: '%c' '%c', %u parameters and first parameter: %u", start_modifier, end_modifier, num_params, params[0]);
+                break;
+            }
+            switch(params[0]) {
+                case 4:
+                case 8:
+                    log_error("Escape codes to resize text area are not supported");
+                    break;
+                case 14:
+                case 16:
+                case 18:
+                    CALL_CSI_HANDLER1(screen_report_size, 0);
+                    break;
+                case 22:
+                case 23:
+                    CALL_CSI_HANDLER2(screen_manipulate_title_stack, 22, 0);
+                    break;
+                default:
+                    REPORT_ERROR("Unknown CSI t window manipulation sequence with %u parameters and first parameter: %u", num_params, params[0]);
+                    break;
+            }
             break;
         case 'u':
             if (!start_modifier && !end_modifier && !num_params) {
@@ -775,6 +787,8 @@ startswith(const uint32_t *string, size_t sz, const char *prefix) {
     return true;
 }
 
+#define PENDING_MODE_CHAR '='
+
 static inline void
 dispatch_dcs(Screen *screen, PyObject DUMP_UNUSED *dump_callback) {
     if (screen->parser_buf_pos < 2) return;
@@ -788,6 +802,19 @@ dispatch_dcs(Screen *screen, PyObject DUMP_UNUSED *dump_callback) {
                     screen_request_capabilities(screen, (char)screen->parser_buf[0], string);
                     Py_DECREF(string);
                 } else PyErr_Clear();
+            } else {
+                REPORT_ERROR("Unrecognized DCS %c code: 0x%x", (char)screen->parser_buf[0], screen->parser_buf[1]);
+            }
+            break;
+        case PENDING_MODE_CHAR:
+            if (screen->parser_buf_pos > 2 && (screen->parser_buf[1] == '1' || screen->parser_buf[2] == '2') && screen->parser_buf[2] == 's') {
+                if (screen->parser_buf[1] == '1') {
+                    screen->pending_mode.activated_at = monotonic();
+                    REPORT_COMMAND(screen_start_pending_mode);
+                } else {
+                    // ignore stop without matching start
+                    REPORT_COMMAND(screen_stop_pending_mode);
+                }
             } else {
                 REPORT_ERROR("Unrecognized DCS %c code: 0x%x", (char)screen->parser_buf[0], screen->parser_buf[1]);
             }
@@ -824,161 +851,7 @@ dispatch_dcs(Screen *screen, PyObject DUMP_UNUSED *dump_callback) {
 
 // APC mode {{{
 
-static inline void
-parse_graphics_code(Screen *screen, PyObject UNUSED *dump_callback) {
-    unsigned int pos = 1;
-    enum GR_STATES { KEY, EQUAL, UINT, INT, FLAG, AFTER_VALUE, PAYLOAD };
-    enum GR_STATES state = KEY, value_state = FLAG;
-    enum KEYS {
-        action='a',
-        delete_action='d',
-        transmission_type='t',
-        compressed='o',
-        format = 'f',
-        more = 'm',
-        id = 'i',
-        width = 'w',
-        height = 'h',
-        x_offset = 'x',
-        y_offset = 'y',
-        data_height = 'v',
-        data_width = 's',
-        data_sz = 'S',
-        data_offset = 'O',
-        num_cells = 'c',
-        num_lines = 'r',
-        cell_x_offset = 'X',
-        cell_y_offset = 'Y',
-        z_index = 'z'
-    };
-    enum KEYS key = 'a';
-    static GraphicsCommand g;
-    unsigned int i, code;
-    uint64_t lcode;
-    bool is_negative;
-    memset(&g, 0, sizeof(g));
-    static uint8_t payload[4096];
-    size_t sz;
-    const char *err;
-
-    while (pos < screen->parser_buf_pos) {
-        switch(state) {
-
-            case KEY:
-                key = screen->parser_buf[pos++];
-                switch(key) {
-#define KS(n, vs) case n: state = EQUAL; value_state = vs; break
-#define U(x) KS(x, UINT)
-                    KS(action, FLAG); KS(delete_action, FLAG); KS(transmission_type, FLAG); KS(compressed, FLAG); KS(z_index, INT);
-                    U(format); U(more); U(id); U(data_sz); U(data_offset); U(width); U(height); U(x_offset); U(y_offset); U(data_height); U(data_width); U(num_cells); U(num_lines); U(cell_x_offset); U(cell_y_offset);
-#undef U
-#undef KS
-                    default:
-                        REPORT_ERROR("Malformed graphics control block, invalid key character: 0x%x", key);
-                        return;
-                }
-                break;
-
-            case EQUAL:
-                if (screen->parser_buf[pos++] != '=') {
-                    REPORT_ERROR("Malformed graphics control block, no = after key, found: 0x%x instead", screen->parser_buf[pos-1]);
-                    return;
-                }
-                state = value_state;
-                break;
-
-            case FLAG:
-                switch(key) {
-#define F(a) case a: g.a = screen->parser_buf[pos++] & 0xff; break
-                    F(action); F(delete_action); F(transmission_type); F(compressed);
-                    default:
-                        break;
-                }
-                state = AFTER_VALUE;
-                break;
-#undef F
-
-            case INT:
-#define READ_UINT \
-                for (i = pos; i < MIN(screen->parser_buf_pos, pos + 10); i++) { \
-                    if (screen->parser_buf[i] < '0' || screen->parser_buf[i] > '9') break; \
-                } \
-                if (i == pos) { REPORT_ERROR("Malformed graphics control block, expecting an integer value for key: %c", key & 0xFF); return; } \
-                lcode = utoi(screen->parser_buf + pos, i - pos); pos = i; \
-                if (lcode > UINT32_MAX) { REPORT_ERROR("id is too large"); return; } \
-                code = lcode;
-
-                is_negative = false;
-                if(screen->parser_buf[pos] == '-') { is_negative = true; pos++; }
-#define U(x) case x: g.x = is_negative ? 0 - (int32_t)code : (int32_t)code; break
-                READ_UINT;
-                switch(key) {
-                    U(z_index);
-                    default: break;
-                }
-                state = AFTER_VALUE;
-                break;
-#undef U
-            case UINT:
-                READ_UINT;
-#define U(x) case x: g.x = code; break
-                switch(key) {
-                    U(format); U(more); U(id); U(data_sz); U(data_offset); U(width); U(height); U(x_offset); U(y_offset); U(data_height); U(data_width); U(num_cells); U(num_lines); U(cell_x_offset); U(cell_y_offset);
-                    default: break;
-                }
-                state = AFTER_VALUE;
-                break;
-#undef U
-#undef SET_ATTR
-#undef READ_UINT
-            case AFTER_VALUE:
-                switch (screen->parser_buf[pos++]) {
-                    case ',':
-                        state = KEY;
-                        break;
-                    case ';':
-                        state = PAYLOAD;
-                        break;
-                    default:
-                        REPORT_ERROR("Malformed graphics control block, expecting a comma or semi-colon after a value, found: 0x%x", screen->parser_buf[pos - 1]);
-                        return;
-                }
-                break;
-
-            case PAYLOAD:
-                sz = screen->parser_buf_pos - pos;
-                err = base64_decode(screen->parser_buf + pos, sz, payload, sizeof(payload), &g.payload_sz);
-                if (err != NULL) { REPORT_ERROR("Failed to parse graphics command payload with error: %s", err); return; }
-                pos = screen->parser_buf_pos;
-                break;
-        }
-    }
-    switch(state) {
-        case EQUAL:
-            REPORT_ERROR("Malformed graphics control block, no = after key"); return;
-        case INT:
-        case UINT:
-            REPORT_ERROR("Malformed graphics control block, expecting an integer value"); return;
-        case FLAG:
-            REPORT_ERROR("Malformed graphics control block, expecting a flag value"); return;
-        default:
-            break;
-    }
-#define A(x) #x, g.x
-#define U(x) #x, (unsigned int)(g.x)
-#define I(x) #x, (int)(g.x)
-    REPORT_VA_COMMAND("s {sc sc sc sc sI sI sI sI sI  sI sI sI sI sI sI sI sI sI sI  sI si} y#", "graphics_command",
-            A(action), A(delete_action), A(transmission_type), A(compressed),
-            U(format), U(more), U(id), U(data_sz), U(data_offset),
-            U(width), U(height), U(x_offset), U(y_offset), U(data_height), U(data_width), U(num_cells), U(num_lines), U(cell_x_offset), U(cell_y_offset),
-            U(payload_sz), I(z_index),
-            payload, g.payload_sz
-    );
-#undef U
-#undef A
-#undef I
-    screen_handle_graphics_command(screen, &g, payload);
-}
+#include "parse-graphics-command.h"
 
 static inline void
 dispatch_apc(Screen *screen, PyObject DUMP_UNUSED *dump_callback) {
@@ -1157,45 +1030,45 @@ END_ALLOW_CASE_RANGE
 #undef ENSURE_SPACE
 }
 
-static inline void
-dispatch_unicode_char(Screen *screen, uint32_t codepoint, PyObject DUMP_UNUSED *dump_callback) {
-#define HANDLE(name) handle_##name(screen, codepoint, dump_callback); break
-    switch(screen->parser_state) {
-        case ESC:
-            HANDLE(esc_mode_char);
-        case CSI:
-            if (accumulate_csi(screen, codepoint, dump_callback)) { dispatch_csi(screen, dump_callback); SET_STATE(0); }
-            break;
-        case OSC:
-            if (accumulate_osc(screen, codepoint, dump_callback)) { dispatch_osc(screen, dump_callback); SET_STATE(0); }
-            break;
-        case APC:
-            if (accumulate_oth(screen, codepoint, dump_callback)) { dispatch_apc(screen, dump_callback); SET_STATE(0); }
-            break;
-        case PM:
-            if (accumulate_oth(screen, codepoint, dump_callback)) { dispatch_pm(screen, dump_callback); SET_STATE(0); }
-            break;
-        case DCS:
-            if (accumulate_dcs(screen, codepoint, dump_callback)) { dispatch_dcs(screen, dump_callback); SET_STATE(0); }
-            if (screen->parser_state == ESC) { HANDLE(esc_mode_char); }
-            break;
-        default:
-            HANDLE(normal_mode_char);
-    }
-#undef HANDLE
-}
+#define dispatch_unicode_char(codepoint, watch_for_pending) { \
+    switch(screen->parser_state) { \
+        case ESC: \
+            handle_esc_mode_char(screen, codepoint, dump_callback); \
+            break; \
+        case CSI: \
+            if (accumulate_csi(screen, codepoint, dump_callback)) { dispatch_csi(screen, dump_callback); SET_STATE(0); } \
+            break; \
+        case OSC: \
+            if (accumulate_osc(screen, codepoint, dump_callback)) { dispatch_osc(screen, dump_callback); SET_STATE(0); } \
+            break; \
+        case APC: \
+            if (accumulate_oth(screen, codepoint, dump_callback)) { dispatch_apc(screen, dump_callback); SET_STATE(0); } \
+            break; \
+        case PM: \
+            if (accumulate_oth(screen, codepoint, dump_callback)) { dispatch_pm(screen, dump_callback); SET_STATE(0); } \
+            break; \
+        case DCS: \
+            if (accumulate_dcs(screen, codepoint, dump_callback)) { dispatch_dcs(screen, dump_callback); SET_STATE(0); watch_for_pending; } \
+            if (screen->parser_state == ESC) { handle_esc_mode_char(screen, codepoint, dump_callback); break; } \
+            break; \
+        default: \
+            handle_normal_mode_char(screen, codepoint, dump_callback); \
+            break; \
+    } \
+} \
 
 extern uint32_t *latin1_charset;
 
 static inline void
-_parse_bytes(Screen *screen, uint8_t *buf, Py_ssize_t len, PyObject DUMP_UNUSED *dump_callback) {
+_parse_bytes(Screen *screen, const uint8_t *buf, Py_ssize_t len, PyObject DUMP_UNUSED *dump_callback) {
     uint32_t prev = screen->utf8_state;
     for (unsigned int i = 0; i < (unsigned int)len; i++) {
-        if (screen->use_latin1) dispatch_unicode_char(screen, latin1_charset[buf[i]], dump_callback);
-        else {
+        if (screen->use_latin1) {
+            dispatch_unicode_char(latin1_charset[buf[i]], ;);
+        } else {
             switch (decode_utf8(&screen->utf8_state, &screen->utf8_codepoint, buf[i])) {
                 case UTF8_ACCEPT:
-                    dispatch_unicode_char(screen, screen->utf8_codepoint, dump_callback);
+                    dispatch_unicode_char(screen->utf8_codepoint, ;);
                     break;
                 case UTF8_REJECT:
                     screen->utf8_state = UTF8_ACCEPT;
@@ -1207,6 +1080,160 @@ _parse_bytes(Screen *screen, uint8_t *buf, Py_ssize_t len, PyObject DUMP_UNUSED 
     }
 FLUSH_DRAW;
 }
+
+static inline size_t
+_parse_bytes_watching_for_pending(Screen *screen, const uint8_t *buf, Py_ssize_t len, PyObject DUMP_UNUSED *dump_callback) {
+    uint32_t prev = screen->utf8_state;
+    size_t i = 0;
+    while(i < (size_t)len) {
+        uint8_t ch = buf[i++];
+        if (screen->use_latin1) {
+            dispatch_unicode_char(latin1_charset[ch], if (screen->pending_mode.activated_at) goto end);
+        } else {
+            switch (decode_utf8(&screen->utf8_state, &screen->utf8_codepoint, ch)) {
+                case UTF8_ACCEPT:
+                    dispatch_unicode_char(screen->utf8_codepoint, if (screen->pending_mode.activated_at) goto end);
+                    break;
+                case UTF8_REJECT:
+                    screen->utf8_state = UTF8_ACCEPT;
+                    if (prev != UTF8_ACCEPT && i > 0) i--;
+                    break;
+            }
+            prev = screen->utf8_state;
+        }
+    }
+end:
+FLUSH_DRAW;
+    return i;
+}
+
+
+static inline size_t
+_queue_pending_bytes(Screen *screen, const uint8_t *buf, size_t len, PyObject *dump_callback DUMP_UNUSED) {
+    size_t pos = 0;
+    enum STATE { NORMAL, MAYBE_DCS, IN_DCS, EXPECTING_DATA, EXPECTING_SLASH };
+    enum STATE state = screen->pending_mode.state;
+#define COPY(what) screen->pending_mode.buf[screen->pending_mode.used++] = what
+#define COPY_STOP_BUF { \
+    COPY(0x1b); COPY('P'); COPY(PENDING_MODE_CHAR); \
+    for (size_t i = 0; i < screen->pending_mode.stop_buf_pos; i++) { \
+        COPY(screen->pending_mode.stop_buf[i]); \
+    } \
+    screen->pending_mode.stop_buf_pos = 0;}
+
+    while (pos < len) {
+        uint8_t ch = buf[pos++];
+        switch(state) {
+            case NORMAL:
+                if (ch == ESC) state = MAYBE_DCS;
+                else COPY(ch);
+                break;
+            case MAYBE_DCS:
+                if (ch == 'P') state = IN_DCS;
+                else {
+                    state = NORMAL;
+                    COPY(0x1b); COPY(ch);
+                }
+                break;
+            case IN_DCS:
+                if (ch == PENDING_MODE_CHAR) { state = EXPECTING_DATA; screen->pending_mode.stop_buf_pos = 0; }
+                else {
+                    state = NORMAL;
+                    COPY(0x1b); COPY('P'); COPY(ch);
+                }
+                break;
+            case EXPECTING_DATA:
+                if (ch == 0x1b) state = EXPECTING_SLASH;
+                else {
+                    screen->pending_mode.stop_buf[screen->pending_mode.stop_buf_pos++] = ch;
+                    if (screen->pending_mode.stop_buf_pos >= sizeof(screen->pending_mode.stop_buf)) {
+                        state = NORMAL;
+                        COPY_STOP_BUF;
+                    }
+                }
+                break;
+            case EXPECTING_SLASH:
+                if (
+                        ch == '\\' &&
+                        screen->pending_mode.stop_buf_pos >= 2 &&
+                        (screen->pending_mode.stop_buf[0] == '1' || screen->pending_mode.stop_buf[0] == '2') &&
+                        screen->pending_mode.stop_buf[1] == 's'
+                   ) {
+                    // We found a pending mode sequence
+                    if (screen->pending_mode.stop_buf[0] == '2') {
+                        REPORT_COMMAND(screen_stop_pending_mode);
+                        screen->pending_mode.activated_at = 0;
+                        goto end;
+                    } else {
+                        REPORT_COMMAND(screen_start_pending_mode);
+                        screen->pending_mode.activated_at = monotonic();
+                    }
+                } else {
+                    state = NORMAL;
+                    COPY_STOP_BUF; COPY(ch);
+                }
+                break;
+        }
+    }
+end:
+    screen->pending_mode.state = state;
+    return pos;
+#undef COPY
+#undef COPY_STOP_BUF
+}
+
+static inline void
+do_parse_bytes(Screen *screen, const uint8_t *read_buf, const size_t read_buf_sz, double now, PyObject *dump_callback DUMP_UNUSED) {
+    enum STATE {START, PARSE_PENDING, PARSE_READ_BUF, QUEUE_PENDING};
+    enum STATE state = START;
+    size_t read_buf_pos = 0;
+
+    do {
+        switch(state) {
+            case START:
+                if (screen->pending_mode.activated_at) {
+                    if (screen->pending_mode.activated_at + screen->pending_mode.wait_time < now) {
+                        screen->pending_mode.activated_at = 0;
+                        state = screen->pending_mode.used ? PARSE_PENDING : PARSE_READ_BUF;
+                    } else state = QUEUE_PENDING;
+                } else {
+                    state = screen->pending_mode.used ? PARSE_PENDING : PARSE_READ_BUF;
+                }
+                break;
+
+            case PARSE_PENDING:
+                _parse_bytes(screen, screen->pending_mode.buf, screen->pending_mode.used, dump_callback);
+                screen->pending_mode.used = 0; screen->pending_mode.state = 0;
+                screen->pending_mode.activated_at = 0;  // ignore any pending starts in the pending bytes
+                state = START;
+                break;
+
+            case PARSE_READ_BUF:
+                screen->pending_mode.activated_at = 0; screen->pending_mode.state = 0;
+                read_buf_pos += _parse_bytes_watching_for_pending(screen, read_buf + read_buf_pos, read_buf_sz - read_buf_pos, dump_callback);
+                state = START;
+                break;
+
+            case QUEUE_PENDING: {
+                if (screen->pending_mode.capacity - screen->pending_mode.used < read_buf_sz + sizeof(screen->pending_mode.stop_buf)) {
+                    if (screen->pending_mode.capacity >= READ_BUF_SZ) {
+                        // Too much pending data, drain it
+                        screen->pending_mode.activated_at = 0;
+                        state = START;
+                        break;
+                    }
+                    screen->pending_mode.capacity = MAX(screen->pending_mode.capacity * 2, screen->pending_mode.used + read_buf_sz);
+                    screen->pending_mode.buf = realloc(screen->pending_mode.buf, screen->pending_mode.capacity);
+                    if (!screen->pending_mode.buf) fatal("Out of memory");
+                }
+                read_buf_pos += _queue_pending_bytes(screen, read_buf + read_buf_pos, read_buf_sz - read_buf_pos, dump_callback);
+                state = START;
+            }   break;
+        }
+    } while(read_buf_pos < read_buf_sz || (!screen->pending_mode.activated_at && screen->pending_mode.used));
+
+}
+
 // }}}
 
 // Entry points {{{
@@ -1226,17 +1253,20 @@ FNAME(parse_bytes)(PyObject UNUSED *self, PyObject *args) {
 #else
     if (!PyArg_ParseTuple(args, "O!y*", &Screen_Type, &screen, &pybuf)) return NULL;
 #endif
-    _parse_bytes(screen, pybuf.buf, pybuf.len, dump_callback);
+    do_parse_bytes(screen, pybuf.buf, pybuf.len, monotonic(), dump_callback);
     Py_RETURN_NONE;
 }
 
 
 void
-FNAME(parse_worker)(Screen *screen, PyObject *dump_callback) {
+FNAME(parse_worker)(Screen *screen, PyObject *dump_callback, double now) {
 #ifdef DUMP_COMMANDS
-    Py_XDECREF(PyObject_CallFunction(dump_callback, "sy#", "bytes", screen->read_buf, screen->read_buf_sz)); PyErr_Clear();
+    if (screen->read_buf_sz) {
+        Py_XDECREF(PyObject_CallFunction(dump_callback, "sy#", "bytes", screen->read_buf, screen->read_buf_sz)); PyErr_Clear();
+    }
 #endif
-    _parse_bytes(screen, screen->read_buf, screen->read_buf_sz, dump_callback);
-#undef FNAME
+    do_parse_bytes(screen, screen->read_buf, screen->read_buf_sz, now, dump_callback);
+    screen->read_buf_sz = 0;
 }
+#undef FNAME
 // }}}

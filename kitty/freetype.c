@@ -17,6 +17,7 @@
 #endif
 
 #include FT_FREETYPE_H
+#include FT_BITMAP_H
 typedef struct {
     PyObject_HEAD
 
@@ -231,6 +232,27 @@ load_glyph(Face *self, int glyph_index, int load_type) {
     int flags = get_load_flags(self->hinting, self->hintstyle, load_type);
     int error = FT_Load_Glyph(self->face, glyph_index, flags);
     if (error) { set_freetype_error("Failed to load glyph, with error:", error); return false; }
+
+    // Embedded bitmap glyph?
+    if (self->face->glyph->bitmap.pixel_mode == FT_PIXEL_MODE_MONO && load_type != FT_LOAD_DEFAULT) {
+        FT_Bitmap bitmap;
+        FT_Bitmap_New(&bitmap);
+
+        // This also sets pixel_mode to FT_PIXEL_MODE_GRAY so we don't have to
+        error = FT_Bitmap_Convert(library, &self->face->glyph->bitmap, &bitmap, 1);
+        if (error) { set_freetype_error("Failed to convert bitmap, with error:", error); return false; }
+
+        // Normalize gray levels to the range [0..255]
+        bitmap.num_grays = 256;
+        unsigned int stride = bitmap.pitch < 0 ? -bitmap.pitch : bitmap.pitch;
+        for (unsigned int i = 0; i < bitmap.rows; ++i) {
+            // We only have 2 levels
+            for (unsigned int j = 0; j < bitmap.width; ++j) bitmap.buffer[i * stride + j] *= 255;
+        }
+        error = FT_Bitmap_Copy(library, &bitmap, &self->face->glyph->bitmap);
+        if (error) { set_freetype_error("Failed to copy bitmap, with error:", error); return false; }
+        FT_Bitmap_Done(library, &bitmap);
+    }
     return true;
 }
 
@@ -336,7 +358,7 @@ render_bitmap(Face *self, int glyph_id, ProcessedBitmap *ans, unsigned int cell_
 static void
 downsample_bitmap(ProcessedBitmap *bm, unsigned int width, unsigned int cell_height) {
     // Downsample using a simple area averaging algorithm. Could probably do
-    // better with bi-cubic or lanczos, but at these small sizes I dont think
+    // better with bi-cubic or lanczos, but at these small sizes I don't think
     // it matters
     float ratio = MAX((float)bm->width / width, (float)bm->rows / cell_height);
     int factor = ceilf(ratio);

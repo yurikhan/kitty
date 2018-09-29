@@ -53,12 +53,20 @@ typedef struct {
     index_type start_of_data, count;
 } SavemodesBuffer;
 
+typedef struct {
+    CPUCell *cpu_cells;
+    GPUCell *gpu_cells;
+    bool is_active;
+    index_type xstart, ynum, xnum;
+} OverlayLine;
+
 
 typedef struct {
     PyObject_HEAD
 
     unsigned int columns, lines, margin_top, margin_bottom, charset, scrolled_by, last_selection_scrolled_by;
     CellPixelSize cell_size;
+    OverlayLine overlay_line;
     id_type window_id;
     uint32_t utf8_state, utf8_codepoint, *g0_charset, *g1_charset, *g_charset;
     unsigned int current_charset;
@@ -89,11 +97,19 @@ typedef struct {
 
     CursorRenderInfo cursor_render_info;
 
+    struct {
+        size_t capacity, used, stop_buf_pos;
+        uint8_t *buf;
+        double activated_at, wait_time;
+        int state;
+        uint8_t stop_buf[32];
+    } pending_mode;
+
 } Screen;
 
 
-void parse_worker(Screen *screen, PyObject *dump_callback);
-void parse_worker_dump(Screen *screen, PyObject *dump_callback);
+void parse_worker(Screen *screen, PyObject *dump_callback, double now);
+void parse_worker_dump(Screen *screen, PyObject *dump_callback, double now);
 void screen_align(Screen*);
 void screen_restore_cursor(Screen *);
 void screen_save_cursor(Screen *);
@@ -160,7 +176,7 @@ void screen_apply_selection(Screen *self, void *address, size_t size);
 bool screen_is_selection_dirty(Screen *self);
 bool screen_has_selection(Screen*);
 bool screen_invert_colors(Screen *self);
-void screen_update_cell_data(Screen *self, void *address, size_t sz, FONTS_DATA_HANDLE);
+void screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE);
 bool screen_is_cursor_visible(Screen *self);
 bool screen_selection_range_for_line(Screen *self, index_type y, index_type *start, index_type *end);
 bool screen_selection_range_for_word(Screen *self, index_type x, index_type *, index_type *, index_type *start, index_type *end);
@@ -175,6 +191,8 @@ bool screen_open_url(Screen*);
 void screen_dirty_sprite_positions(Screen *self);
 void screen_rescale_images(Screen *self);
 void screen_report_size(Screen *, unsigned int which);
+void screen_manipulate_title_stack(Screen *, unsigned int op, unsigned int which);
+void screen_draw_overlay_text(Screen *self, const char *utf8_text);
 #define DECLARE_CH_SCREEN_HANDLER(name) void screen_##name(Screen *screen);
 DECLARE_CH_SCREEN_HANDLER(bell)
 DECLARE_CH_SCREEN_HANDLER(backspace)

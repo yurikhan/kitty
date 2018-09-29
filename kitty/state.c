@@ -90,6 +90,7 @@ add_os_window() {
 static inline id_type
 add_tab(id_type os_window_id) {
     WITH_OS_WINDOW(os_window_id)
+        make_os_window_context_current(os_window);
         ensure_space_for(os_window, tabs, Tab, os_window->num_tabs + 1, capacity, 1, true);
         memset(os_window->tabs + os_window->num_tabs, 0, sizeof(Tab));
         os_window->tabs[os_window->num_tabs].id = ++global_state.tab_id_counter;
@@ -385,11 +386,13 @@ PYWRAP1(set_options) {
     S(close_on_child_death, PyObject_IsTrue);
     S(window_alert_on_bell, PyObject_IsTrue);
     S(macos_option_as_alt, PyObject_IsTrue);
+    S(macos_traditional_fullscreen, PyObject_IsTrue);
     S(macos_hide_titlebar, PyObject_IsTrue);
     S(macos_quit_when_last_window_closed, PyObject_IsTrue);
     S(macos_window_resizable, PyObject_IsTrue);
     S(x11_hide_window_decorations, PyObject_IsTrue);
     S(macos_hide_from_tasks, PyObject_IsTrue);
+    S(macos_thicken_font, PyFloat_AsDouble);
 
     PyObject *chars = PyObject_GetAttrString(opts, "select_by_word_characters");
     if (chars == NULL) return NULL;
@@ -492,6 +495,17 @@ PYWRAP1(mark_os_window_for_close) {
     PA("K|p", &os_window_id, &yes);
     WITH_OS_WINDOW(os_window_id)
         mark_os_window_for_close(os_window, yes ? true : false);
+        Py_RETURN_TRUE;
+    END_WITH_OS_WINDOW
+    Py_RETURN_FALSE;
+}
+
+PYWRAP1(focus_os_window) {
+    id_type os_window_id;
+    int also_raise = 1;
+    PA("K|p", &os_window_id, &also_raise);
+    WITH_OS_WINDOW(os_window_id)
+        if (!os_window->is_focused) focus_os_window(os_window, also_raise);
         Py_RETURN_TRUE;
     END_WITH_OS_WINDOW
     Py_RETURN_FALSE;
@@ -718,6 +732,7 @@ static PyMethodDef module_methods[] = {
     MW(cell_size_for_window, METH_VARARGS),
     MW(mark_os_window_for_close, METH_VARARGS),
     MW(set_titlebar_color, METH_VARARGS),
+    MW(focus_os_window, METH_VARARGS),
     MW(mark_tab_bar_dirty, METH_O),
     MW(change_background_opacity, METH_VARARGS),
     MW(background_opacity_of, METH_O),

@@ -8,7 +8,7 @@
 #include "fonts.h"
 #include "gl.h"
 
-enum { CELL_PROGRAM, CELL_BG_PROGRAM, CELL_SPECIAL_PROGRAM, CELL_FG_PROGRAM, CURSOR_PROGRAM, BORDERS_PROGRAM, GRAPHICS_PROGRAM, GRAPHICS_PREMULT_PROGRAM, BLIT_PROGRAM, NUM_PROGRAMS };
+enum { CELL_PROGRAM, CELL_BG_PROGRAM, CELL_SPECIAL_PROGRAM, CELL_FG_PROGRAM, BORDERS_PROGRAM, GRAPHICS_PROGRAM, GRAPHICS_PREMULT_PROGRAM, BLIT_PROGRAM, NUM_PROGRAMS };
 enum { SPRITE_MAP_UNIT, GRAPHICS_UNIT, BLIT_UNIT };
 
 // Sprites {{{
@@ -113,7 +113,7 @@ static inline void
 ensure_sprite_map(FONTS_DATA_HANDLE fg) {
     SpriteMap *sprite_map = (SpriteMap*)fg->sprite_map;
     if (!sprite_map->texture_id) realloc_sprite_texture(fg);
-    // We have to rebind since we dont know if the texture was ever bound
+    // We have to rebind since we don't know if the texture was ever bound
     // in the context of the current OSWindow
     glActiveTexture(GL_TEXTURE0 + SPRITE_MAP_UNIT);
     glBindTexture(GL_TEXTURE_2D_ARRAY, sprite_map->texture_id);
@@ -158,7 +158,7 @@ static ssize_t blit_vertex_array;
 
 static void
 init_cell_program() {
-    for (int i = CELL_PROGRAM; i < CURSOR_PROGRAM; i++) {
+    for (int i = CELL_PROGRAM; i < BORDERS_PROGRAM; i++) {
         cell_program_layouts[i].render_data.index = block_index(i, "CellRenderData");
         cell_program_layouts[i].render_data.size = block_size(i, cell_program_layouts[i].render_data.index);
         cell_program_layouts[i].color_table.size = get_uniform_information(i, "color_table[0]", GL_UNIFORM_SIZE);
@@ -167,7 +167,7 @@ init_cell_program() {
     }
     // Sanity check to ensure the attribute location binding worked
 #define C(p, name, expected) { int aloc = attrib_location(p, #name); if (aloc != expected && aloc != -1) fatal("The attribute location for %s is %d != %d in program: %d", #name, aloc, expected, p); }
-    for (int p = CELL_PROGRAM; p < CURSOR_PROGRAM; p++) {
+    for (int p = CELL_PROGRAM; p < BORDERS_PROGRAM; p++) {
         C(p, colors, 0); C(p, sprite_coords, 1); C(p, is_selected, 2);
     }
 #undef C
@@ -223,7 +223,8 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, G
 
         GLuint default_fg, default_bg, highlight_fg, highlight_bg, cursor_color, url_color, url_style, inverted;
 
-        GLuint xnum, ynum, cursor_x, cursor_y, cursor_w;
+        GLuint xnum, ynum, cursor_fg_sprite_idx;
+        GLfloat cursor_x, cursor_y, cursor_w;
     };
     static struct CellRenderData *rd;
 
@@ -233,11 +234,19 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, G
         copy_color_table_to_buffer(screen->color_profile, (GLuint*)rd, cell_program_layouts[CELL_PROGRAM].color_table.offset / sizeof(GLuint), cell_program_layouts[CELL_PROGRAM].color_table.stride / sizeof(GLuint));
     }
     // Cursor position
-    if (cursor->is_visible && cursor->shape == CURSOR_BLOCK && cursor->is_focused) {
+    if (cursor->is_visible) {
         rd->cursor_x = screen->cursor->x, rd->cursor_y = screen->cursor->y;
-    } else {
-        rd->cursor_x = screen->columns, rd->cursor_y = screen->lines;
-    }
+        if (cursor->is_focused) {
+            switch(cursor->shape) {
+                default:
+                    rd->cursor_fg_sprite_idx = 0; break;
+                case CURSOR_BEAM:
+                    rd->cursor_fg_sprite_idx = 6; break;
+                case CURSOR_UNDERLINE:
+                    rd->cursor_fg_sprite_idx = 7; break;
+            }
+        } else rd->cursor_fg_sprite_idx = 8;
+    } else rd->cursor_x = screen->columns, rd->cursor_y = screen->lines;
     rd->cursor_w = rd->cursor_x + MAX(1, screen_current_char_width(screen)) - 1;
 
     rd->xnum = screen->columns; rd->ynum = screen->lines;
@@ -269,7 +278,7 @@ cell_prepare_to_render(ssize_t vao_idx, ssize_t gvao_idx, Screen *screen, GLfloa
     if (screen->scroll_changed || screen->is_dirty) {
         sz = sizeof(GPUCell) * screen->lines * screen->columns;
         address = alloc_and_map_vao_buffer(vao_idx, sz, cell_data_buffer, GL_STREAM_DRAW, GL_WRITE_ONLY);
-        screen_update_cell_data(screen, address, sz, fonts_data);
+        screen_update_cell_data(screen, address, fonts_data);
         unmap_vao_buffer(vao_idx, cell_data_buffer); address = NULL;
         changed = true;
     }
@@ -417,15 +426,20 @@ set_cell_uniforms(float current_inactive_text_alpha) {
     }
 }
 
+void
+blank_os_window(OSWindow *os_window) {
+#define C(shift) (((GLfloat)((OPT(background) >> shift) & 0xFF)) / 255.0f)
+        glClearColor(C(16), C(8), C(0), os_window->is_semi_transparent ? os_window->background_opacity : 1.0f);
+#undef C
+        glClear(GL_COLOR_BUFFER_BIT);
+}
+
 bool
 send_cell_data_to_gpu(ssize_t vao_idx, ssize_t gvao_idx, GLfloat xstart, GLfloat ystart, GLfloat dx, GLfloat dy, Screen *screen, OSWindow *os_window) {
     bool changed = false;
     if (os_window->clear_count < 2) {
         os_window->clear_count++;
-#define C(shift) (((GLfloat)((OPT(background) >> shift) & 0xFF)) / 255.0f)
-        glClearColor(C(16), C(8), C(0), os_window->is_semi_transparent ? os_window->background_opacity : 1.0f);
-#undef C
-        glClear(GL_COLOR_BUFFER_BIT);
+        blank_os_window(os_window);
         changed = true;
     }
     if (os_window->fonts_data) {
@@ -447,12 +461,15 @@ draw_cells(ssize_t vao_idx, ssize_t gvao_idx, GLfloat xstart, GLfloat ystart, GL
     float current_inactive_text_alpha = (!can_be_focused || screen->cursor_render_info.is_focused) && is_active_window ? 1.0 : OPT(inactive_text_alpha);
     set_cell_uniforms(current_inactive_text_alpha);
     GLfloat w = (GLfloat)screen->columns * dx, h = (GLfloat)screen->lines * dy;
+    // The scissor limits below are calculated to ensure that they do not
+    // overlap with the pixels outside the draw area, see https://github.com/kovidgoyal/kitty/issues/741
+    // for a test case (the scissor is also used by draw_cells_interleaved_premult to blit the framebuffer)
 #define SCALE(w, x) ((GLfloat)(os_window->viewport_##w) * (GLfloat)(x))
     glScissor(
-            (GLint)(SCALE(width, (xstart + 1.0f) / 2.0f)),
-            (GLint)(SCALE(height, ((ystart - h) + 1.0f) / 2.0f)),
-            (GLsizei)(ceilf(SCALE(width, w / 2.0f))),
-            (GLsizei)(ceilf(SCALE(height, h / 2.0f)))
+            (GLint)(ceilf(SCALE(width, (xstart + 1.0f) / 2.0f))),
+            (GLint)(ceilf(SCALE(height, ((ystart - h) + 1.0f) / 2.0f))),
+            (GLsizei)(floorf(SCALE(width, w / 2.0f))-1),
+            (GLsizei)(floorf(SCALE(height, h / 2.0f))-1)
     );
 #undef SCALE
     if (os_window->is_semi_transparent) {
@@ -462,36 +479,6 @@ draw_cells(ssize_t vao_idx, ssize_t gvao_idx, GLfloat xstart, GLfloat ystart, GL
         if (screen->grman->num_of_negative_refs) draw_cells_interleaved(vao_idx, gvao_idx, screen);
         else draw_cells_simple(vao_idx, gvao_idx, screen);
     }
-}
-// }}}
-
-// Cursor {{{
-enum CursorUniforms { CURSOR_color, CURSOR_pos, NUM_CURSOR_UNIFORMS };
-static GLint cursor_uniform_locations[NUM_CURSOR_UNIFORMS] = {0};
-static ssize_t cursor_vertex_array;
-
-static void
-init_cursor_program() {
-    Program *p = programs + CURSOR_PROGRAM;
-    int left = NUM_CURSOR_UNIFORMS;
-    cursor_vertex_array = create_vao();
-    for (int i = 0; i < p->num_of_uniforms; i++, left--) {
-#define SET_LOC(which) if (strcmp(p->uniforms[i].name, #which) == 0) cursor_uniform_locations[CURSOR_##which] = p->uniforms[i].location
-        SET_LOC(color);
-        else SET_LOC(pos);
-        else { fatal("Unknown uniform in cursor program: %s", p->uniforms[i].name); }
-    }
-    if (left) { fatal("Left over uniforms in cursor program"); }
-#undef SET_LOC
-}
-
-void
-draw_cursor(CursorRenderInfo *cursor, bool is_focused) {
-    bind_program(CURSOR_PROGRAM); bind_vertex_array(cursor_vertex_array);
-    glUniform3f(cursor_uniform_locations[CURSOR_color], ((cursor->color >> 16) & 0xff) / 255.0, ((cursor->color >> 8) & 0xff) / 255.0, (cursor->color & 0xff) / 255.0);
-    glUniform4f(cursor_uniform_locations[CURSOR_pos], cursor->left, cursor->top, cursor->right, cursor->bottom);
-    glDrawArrays(is_focused ? GL_TRIANGLE_FAN : GL_LINE_LOOP, 0, 4);
-    unbind_vertex_array(); unbind_program();
 }
 // }}}
 
@@ -620,8 +607,6 @@ ONE_INT(bind_vertex_array)
 NO_ARG(unbind_vertex_array)
 TWO_INT(unmap_vao_buffer)
 
-NO_ARG(init_cursor_program)
-
 NO_ARG(init_borders_program)
 
 NO_ARG(init_cell_program)
@@ -648,7 +633,6 @@ static PyMethodDef module_methods[] = {
     MW(unmap_vao_buffer, METH_VARARGS),
     MW(bind_program, METH_O),
     MW(unbind_program, METH_NOARGS),
-    MW(init_cursor_program, METH_NOARGS),
     MW(init_borders_program, METH_NOARGS),
     MW(init_cell_program, METH_NOARGS),
 
@@ -658,7 +642,7 @@ static PyMethodDef module_methods[] = {
 bool
 init_shaders(PyObject *module) {
 #define C(x) if (PyModule_AddIntConstant(module, #x, x) != 0) { PyErr_NoMemory(); return false; }
-    C(CELL_PROGRAM); C(CELL_BG_PROGRAM); C(CELL_SPECIAL_PROGRAM); C(CELL_FG_PROGRAM); C(CURSOR_PROGRAM); C(BORDERS_PROGRAM); C(GRAPHICS_PROGRAM); C(GRAPHICS_PREMULT_PROGRAM); C(BLIT_PROGRAM);
+    C(CELL_PROGRAM); C(CELL_BG_PROGRAM); C(CELL_SPECIAL_PROGRAM); C(CELL_FG_PROGRAM); C(BORDERS_PROGRAM); C(GRAPHICS_PROGRAM); C(GRAPHICS_PREMULT_PROGRAM); C(BLIT_PROGRAM);
     C(GLSL_VERSION);
     C(GL_VERSION);
     C(GL_VENDOR);

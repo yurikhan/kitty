@@ -9,6 +9,7 @@ from contextlib import contextmanager
 
 from .borders import load_borders_program
 from .boss import Boss
+from .child import set_default_env
 from .cli import create_opts, parse_args
 from .config import cached_values_for, initial_window_size_func
 from .constants import (
@@ -82,8 +83,11 @@ def talk_to_instance(args):
 
 
 def load_all_shaders(semi_transparent=0):
-    load_shader_programs(semi_transparent)
+    load_shader_programs(semi_transparent, load_all_shaders.cursor_text_color)
     load_borders_program()
+
+
+load_all_shaders.cursor_text_color = None
 
 
 def init_glfw(debug_keyboard=False):
@@ -116,8 +120,12 @@ def get_new_os_window_trigger(opts):
 
 def _run_app(opts, args):
     new_os_window_trigger = get_new_os_window_trigger(opts)
-    if is_macos:
+    if is_macos and opts.macos_custom_beam_cursor:
         set_custom_ibeam_cursor()
+    load_all_shaders.cursor_text_color = opts.cursor_text_color
+    if not is_wayland and not is_macos:  # no window icons on wayland
+        with open(logo_data_file, 'rb') as f:
+            set_default_window_icon(f.read(), 256, 256)
     with cached_values_for(run_app.cached_values_name) as cached_values:
         with startup_notification_handler(extra_callback=run_app.first_window_callback) as pre_show_callback:
             window_id = create_os_window(
@@ -125,9 +133,6 @@ def _run_app(opts, args):
                     pre_show_callback,
                     appname, args.name or args.cls or appname,
                     args.cls or appname, load_all_shaders)
-        if not is_wayland and not is_macos:  # no window icons on wayland
-            with open(logo_data_file, 'rb') as f:
-                set_default_window_icon(f.read(), 256, 256)
         boss = Boss(window_id, opts, args, cached_values, new_os_window_trigger)
         boss.start()
         try:
@@ -184,18 +189,27 @@ def setup_profiling(args):
             print('To view the graphical call data, use: kcachegrind', cg)
 
 
-def macos_cmdline():
+def macos_cmdline(argv_args):
     try:
         with open(os.path.join(config_dir, 'macos-launch-services-cmdline')) as f:
             raw = f.read()
     except FileNotFoundError:
-        return []
+        return argv_args
     import shlex
     raw = raw.strip()
     ans = shlex.split(raw)
     if ans and ans[0] == 'kitty':
         del ans[0]
     return ans
+
+
+def setup_environment(opts, args):
+    extra_env = opts.env.copy()
+    if opts.editor != '.':
+        os.environ['EDITOR'] = opts.editor
+    if args.listen_on:
+        os.environ['KITTY_LISTEN_ON'] = args.listen_on
+    set_default_env(extra_env)
 
 
 def _main():
@@ -210,12 +224,12 @@ def _main():
     except Exception:
         if not is_macos:
             raise
-        print('Failed to set locale with LANG:', os.environ.get('LANG'), file=sys.stderr)
-        os.environ.pop('LANG')
+        log_error('Failed to set locale with LANG:', os.environ.get('LANG'))
+        os.environ.pop('LANG', None)
         try:
             locale.setlocale(locale.LC_ALL, '')
         except Exception:
-            print('Failed to set locale with no LANG, ignoring', file=sys.stderr)
+            log_error('Failed to set locale with no LANG, ignoring')
 
     # Ensure kitty is in PATH
     rpath = os.path.dirname(kitty_exe())
@@ -226,7 +240,7 @@ def _main():
     args = sys.argv[1:]
     if is_macos and os.environ.pop('KITTY_LAUNCHED_BY_LAUNCH_SERVICES', None) == '1':
         os.chdir(os.path.expanduser('~'))
-        args = macos_cmdline()
+        args = macos_cmdline(args)
     try:
         cwd_ok = os.path.isdir(os.getcwd())
     except Exception:
@@ -252,8 +266,7 @@ def _main():
             return
     init_glfw(args.debug_keyboard)  # needed for parsing native keysyms
     opts = create_opts(args)
-    if opts.editor != '.':
-        os.environ['EDITOR'] = opts.editor
+    setup_environment(opts, args)
     try:
         with setup_profiling(args):
             # Avoid needing to launch threads to reap zombies

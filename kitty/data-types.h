@@ -27,7 +27,7 @@
 #define xstr(s) str(s)
 #define str(s) #s
 #define arraysz(x) (sizeof(x)/sizeof(x[0]))
-void log_error(const char *fmt, ...);
+void log_error(const char *fmt, ...) __attribute__ ((format (printf, 1, 2)));
 #define fatal(...) { log_error(__VA_ARGS__); exit(EXIT_FAILURE); }
 
 typedef unsigned long long id_type;
@@ -197,7 +197,6 @@ typedef struct {
     bool is_visible, is_focused;
     CursorShape shape;
     unsigned int x, y;
-    double left, right, top, bottom;
     color_type color;
 } CursorRenderInfo;
 
@@ -272,7 +271,7 @@ const char* cursor_as_sgr(Cursor*, Cursor*);
 
 double monotonic();
 PyObject* cm_thread_write(PyObject *self, PyObject *args);
-bool schedule_write_to_child(unsigned long id, const char *data, size_t sz);
+bool schedule_write_to_child(unsigned long id, unsigned int num, ...);
 bool set_iutf8(int, bool);
 
 color_type colorprofile_to_color(ColorProfile *self, color_type entry, color_type defval);
@@ -281,10 +280,11 @@ void colorprofile_push_dynamic_colors(ColorProfile*);
 void colorprofile_pop_dynamic_colors(ColorProfile*);
 
 void set_mouse_cursor(MouseShape);
-void mouse_event(int, int);
+void enter_event();
+void mouse_event(int, int, int);
 void focus_in_event();
 void wakeup_io_loop(bool);
-void scroll_event(double, double);
+void scroll_event(double, double, int);
 void fake_scroll(int, bool);
 void set_special_key_combo(int glfw_key, int mods, bool is_native);
 void on_key_input(int key, int scancode, int action, int mods, const char*, int);
