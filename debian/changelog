@@ -1,11 +1,14 @@
-kitty (0.12.3-1) UNRELEASED; urgency=medium
+kitty (0.12.3-1) unstable; urgency=medium
 
   * New upstream release
     + Add support for IME via IBus, enabled by setting GLFW_IM_MODULE=ibus
     + New command, kitty + complete, to export shell completion for bash, zsh,
       and fish
+  * control: Add libdbus-1-dev to Build-Depends for IBus support
+  * rules: Disable verbose builds for DEB_BUILD_OPTIONS=terse
+  * Declare compliance with Policy 4.2.1
 
- -- James McCoy <jamessan@debian.org>  Sat, 29 Sep 2018 19:38:35 -0400
+ -- James McCoy <jamessan@debian.org>  Sun, 30 Sep 2018 09:36:30 -0400
 
 kitty (0.11.3-1) unstable; urgency=medium
 
