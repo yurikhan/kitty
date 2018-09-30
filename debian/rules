@@ -11,22 +11,27 @@ OVERRIDE_CPPFLAGS = $(CPPFLAGS)
 OVERRIDE_LDFLAGS = $(LDFLAGS)
 export OVERRIDE_CFLAGS OVERRIDE_CPPFLAGS OVERRIDE_LDFLAGS
 
+V=
+ifeq (,$(filter terse,$(DEB_BUILD_OPTIONS)))
+	V=--verbose
+endif
+
 %:
 	dh $@ --with python3 --with sphinxdoc
 
 override_dh_auto_clean:
-	python3 setup.py --verbose clean
+	python3 setup.py $(V) clean
 
 override_dh_auto_build: export HOME=$(CURDIR)/debian/fakehome
 override_dh_auto_build: MAKEFLAGS=SPHINXOPTS=-Dhtml_theme_options.github_banner=false
 override_dh_auto_build:
-	python3 setup.py --verbose linux-package
+	python3 setup.py $(V) linux-package
 
 override_dh_auto_test: export HOME=$(CURDIR)/debian/fakehome
 override_dh_auto_test:
 ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
 	mkdir -p "$(HOME)"
-	env HOME="$(HOME)" python3 setup.py --verbose test
+	env HOME="$(HOME)" python3 setup.py $(V) test
 endif
 
 override_dh_auto_install:
