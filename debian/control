@@ -24,6 +24,7 @@ Build-Depends:
  libxrandr-dev,
  pkg-config,
  python3-dev (>= 3.5),
+ python3-pil <!nocheck>,
  python3-sphinx,
  zlib1g-dev,
 
