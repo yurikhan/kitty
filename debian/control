@@ -4,7 +4,7 @@ Maintainer: James McCoy <jamessan@debian.org>
 Section: x11
 Standards-Version: 4.2.1
 Rules-Requires-Root: no
-Homepage: https://github.com/kovidgoyal/kitty
+Homepage: https://sw.kovidgoyal.net/kitty/
 Vcs-Git: https://salsa.debian.org/jamessan/kitty.git
 Vcs-Browser: https://salsa.debian.org/jamessan/kitty
 Build-Depends:
