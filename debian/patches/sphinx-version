@@ -1,0 +1,39 @@
+Index: kitty-0.11.3/docs/conf.py
+===================================================================
+--- kitty-0.11.3.orig/docs/conf.py	2018-11-18 23:27:04.007961196 +0700
++++ kitty-0.11.3/docs/conf.py	2018-11-18 23:45:38.747681948 +0700
+@@ -42,7 +42,7 @@
+ 
+ # If your documentation needs a minimal Sphinx version, state it here.
+ #
+-needs_sphinx = '1.7'
++needs_sphinx = '1.6.7'
+ 
+ # Add any Sphinx extension module names here, as strings. They can be
+ # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
+@@ -112,7 +112,6 @@
+     'logo': 'kitty.png',
+     'show_powered_by': False,
+     'fixed_sidebar': True,
+-    'sidebar_collapse': True,
+     'github_button': False,
+     'github_banner': True,
+     'github_user': 'kovidgoyal',
+@@ -489,7 +488,7 @@
+         parse_node=parse_opt_node,
+     )
+     # Warn about opt references that could not be resolved
+-    opt_role = app.registry.domain_roles['std']['opt']
++    opt_role = app.registry.domains['std'].roles['opt']
+     opt_role.warn_dangling = True
+     opt_role.process_link = process_opt_link
+ 
+@@ -498,7 +497,7 @@
+         indextemplate="pair: %s; Keyboard Shortcut",
+         parse_node=parse_shortcut_node,
+     )
+-    sc_role = app.registry.domain_roles['std']['sc']
++    sc_role = app.registry.domains['std'].roles['sc']
+     sc_role.warn_dangling = True
+     sc_role.process_link = process_shortcut_link
+ 
