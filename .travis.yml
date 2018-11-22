@@ -87,7 +87,7 @@ matrix:
                 - clang
         - os: osx
           language: generic
-          env: SWBASE=/Users/Shared/buildbot/sw SW=$SWBASE/sw PATH=$SW/bin:$PATH
+          env: SWBASE=/Users/Shared/buildbot/sw SW=$SWBASE/sw PATH=$SW/bin:$PATH SANITIZE_ARG=--sanitize
 
         - os: osx
           language: generic
