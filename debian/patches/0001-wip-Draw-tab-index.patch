@@ -1,0 +1,58 @@
+From a3cc2b4a60cf1c4c259bf1df0f596ee4fd4b6f2d Mon Sep 17 00:00:00 2001
+From: Yuri Khan <yurivkhan@gmail.com>
+Date: Wed, 5 Dec 2018 00:47:11 +0700
+Subject: [PATCH] wip: Draw tab index
+
+---
+ kitty/tab_bar.py | 6 ++++--
+ kitty/tabs.py    | 4 ++--
+ 2 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/kitty/tab_bar.py b/kitty/tab_bar.py
+index fef66b5f..69b79f10 100644
+--- a/kitty/tab_bar.py
++++ b/kitty/tab_bar.py
+@@ -15,7 +15,7 @@ from .utils import color_as_int
+ from .window import calculate_gl_geometry
+ from .rgb import alpha_blend, color_from_int
+ 
+-TabBarData = namedtuple('TabBarData', 'title is_active needs_attention')
++TabBarData = namedtuple('TabBarData', 'title is_active needs_attention index')
+ DrawData = namedtuple('DrawData', 'leading_spaces sep trailing_spaces bell_on_tab bell_fg alpha active_bg inactive_bg default_bg')
+ 
+ 
+@@ -29,7 +29,9 @@ def draw_title(draw_data, screen, tab):
+         screen.cursor.fg = draw_data.bell_fg
+         screen.draw('🔔 ')
+         screen.cursor.fg = fg
+-    screen.draw(tab.title)
++    screen.draw('{index} {title}'.format(
++        index=tab.index,
++        title=tab.title))
+ 
+ 
+ def draw_tab_with_separator(draw_data, screen, tab, before, max_title_length):
+diff --git a/kitty/tabs.py b/kitty/tabs.py
+index 24a280ac..dbeaad24 100644
+--- a/kitty/tabs.py
++++ b/kitty/tabs.py
+@@ -500,14 +500,14 @@ class TabManager:  # {{{
+     def tab_bar_data(self):
+         at = self.active_tab
+         ans = []
+-        for t in self.tabs:
++        for i, t in enumerate(self.tabs, start=1):
+             title = (t.name or t.title or appname).strip()
+             needs_attention = False
+             for w in t:
+                 if w.needs_attention:
+                     needs_attention = True
+                     break
+-            ans.append(TabBarData(title, t is at, needs_attention))
++            ans.append(TabBarData(title, t is at, needs_attention, i))
+         return ans
+ 
+     def activate_tab_at(self, x):
+-- 
+2.19.1
+
