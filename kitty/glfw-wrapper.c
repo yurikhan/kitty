@@ -131,6 +131,9 @@ load_glfw(const char* path) {
     *(void **) (&glfwGetWindowContentScale_impl) = dlsym(handle, "glfwGetWindowContentScale");
     if (glfwGetWindowContentScale_impl == NULL) fail("Failed to load glfw function glfwGetWindowContentScale with error: %s", dlerror());
 
+    *(void **) (&glfwGetDoubleClickInterval_impl) = dlsym(handle, "glfwGetDoubleClickInterval");
+    if (glfwGetDoubleClickInterval_impl == NULL) fail("Failed to load glfw function glfwGetDoubleClickInterval with error: %s", dlerror());
+
     *(void **) (&glfwGetWindowOpacity_impl) = dlsym(handle, "glfwGetWindowOpacity");
     if (glfwGetWindowOpacity_impl == NULL) fail("Failed to load glfw function glfwGetWindowOpacity with error: %s", dlerror());
 
@@ -374,11 +377,13 @@ load_glfw(const char* path) {
 
     *(void **) (&glfwGetX11Window_impl) = dlsym(handle, "glfwGetX11Window");
 
-    *(void **) (&glfwSetX11SelectionString_impl) = dlsym(handle, "glfwSetX11SelectionString");
+    *(void **) (&glfwSetPrimarySelectionString_impl) = dlsym(handle, "glfwSetPrimarySelectionString");
 
-    *(void **) (&glfwGetX11SelectionString_impl) = dlsym(handle, "glfwGetX11SelectionString");
+    *(void **) (&glfwGetPrimarySelectionString_impl) = dlsym(handle, "glfwGetPrimarySelectionString");
 
     *(void **) (&glfwGetXKBScancode_impl) = dlsym(handle, "glfwGetXKBScancode");
+
+    *(void **) (&glfwRequestWaylandFrameEvent_impl) = dlsym(handle, "glfwRequestWaylandFrameEvent");
 
     return NULL;
 }

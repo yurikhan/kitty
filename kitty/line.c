@@ -50,18 +50,25 @@ cell_text(CPUCell *cell) {
 
 static const char* url_prefixes[4] = {"https", "http", "file", "ftp"};
 static size_t url_prefix_lengths[sizeof(url_prefixes)/sizeof(url_prefixes[0])] = {0};
-typedef enum URL_PARSER_STATES {ANY, FIRST_SLASH, SECOND_SLASH} URL_PARSER_STATE;
 
 static inline index_type
 find_colon_slash(Line *self, index_type x, index_type limit) {
     // Find :// at or before x
     index_type pos = x;
-    URL_PARSER_STATE state = ANY;
+    enum URL_PARSER_STATES {ANY, FIRST_SLASH, SECOND_SLASH};
+    enum URL_PARSER_STATES state = ANY;
     limit = MAX(2, limit);
     if (pos < limit) return 0;
     do {
         char_type ch = self->cpu_cells[pos].ch;
         if (!is_url_char(ch)) return false;
+        if (pos == x) {
+            if (ch == ':') {
+                if (pos + 2 < self->xnum && self->cpu_cells[pos+1].ch == '/' && self->cpu_cells[pos + 2].ch == '/') state = SECOND_SLASH;
+            } else if (ch == '/') {
+                if (pos + 1 < self->xnum && self->cpu_cells[pos+1].ch == '/') state = FIRST_SLASH;
+            }
+        }
         switch(state) {
             case ANY:
                 if (ch == '/') state = FIRST_SLASH;
@@ -227,50 +234,53 @@ write_sgr(const char *val, Py_UCS4 *buf, index_type buflen, index_type *i) {
 }
 
 index_type
-line_as_ansi(Line *self, Py_UCS4 *buf, index_type buflen) {
-#define WRITE_SGR(val) { if (!write_sgr(val, buf, buflen, &i)) return i; }
-#define WRITE_CH(val) if (i > buflen - 1) return i; buf[i++] = val;
+line_as_ansi(Line *self, Py_UCS4 *buf, index_type buflen, bool *truncated) {
+#define WRITE_SGR(val) { if (!write_sgr(val, buf, buflen, &i)) { *truncated = true; return i; } }
+#define WRITE_CH(val) if (i > buflen - 1) { *truncated = true; return i; } buf[i++] = val;
 
     index_type limit = xlimit_for_line(self), i=0;
+    *truncated = false;
     if (limit == 0) return 0;
     char_type previous_width = 0;
 
-    WRITE_SGR("0");
-    Cursor c1 = {{0}}, c2 = {{0}};
-    Cursor *cursor = &c1, *prev_cursor = &c2, *t;
+    GPUCell blank_cell = { 0 };
+    GPUCell *cell, *prev_cell = &blank_cell;
 
     for (index_type pos=0; pos < limit; pos++) {
-        char_type attrs = self->gpu_cells[pos].attrs, ch = self->cpu_cells[pos].ch;
+        char_type ch = self->cpu_cells[pos].ch;
         if (ch == 0) {
             if (previous_width == 2) { previous_width = 0; continue; }
             ch = ' ';
         }
-        ATTRS_TO_CURSOR(attrs, cursor);
-        cursor->fg = self->gpu_cells[pos].fg; cursor->bg = self->gpu_cells[pos].bg;
-        cursor->decoration_fg = self->gpu_cells[pos].decoration_fg & COL_MASK;
 
-        const char *sgr = cursor_as_sgr(cursor, prev_cursor);
-        t = prev_cursor; prev_cursor = cursor; cursor = t;
-        if (*sgr) WRITE_SGR(sgr);
+        cell = &self->gpu_cells[pos];
+
+#define CMP_ATTRS (cell->attrs & ATTRS_MASK_WITHOUT_WIDTH) != (prev_cell->attrs & ATTRS_MASK_WITHOUT_WIDTH)
+#define CMP(x) cell->x != prev_cell->x
+        if (CMP_ATTRS || CMP(fg) || CMP(bg) || CMP(decoration_fg)) {
+            const char *sgr = cell_as_sgr(cell, prev_cell);
+            if (*sgr) WRITE_SGR(sgr);
+        }
+        prev_cell = cell;
         WRITE_CH(ch);
         for(unsigned c = 0; c < arraysz(self->cpu_cells[pos].cc_idx) && self->cpu_cells[pos].cc_idx[c]; c++) {
             WRITE_CH(codepoint_for_mark(self->cpu_cells[pos].cc_idx[c]));
         }
-        previous_width = attrs & WIDTH_MASK;
+        previous_width = cell->attrs & WIDTH_MASK;
     }
     return i;
-#undef CHECK_BOOL
-#undef CHECK_COLOR
+#undef CMP_ATTRS
+#undef CMP
 #undef WRITE_SGR
 #undef WRITE_CH
-#undef WRITE_COLOR
 }
 
 static PyObject*
 as_ansi(Line* self, PyObject *a UNUSED) {
 #define as_ansi_doc "Return the line's contents with ANSI (SGR) escape codes for formatting"
     static Py_UCS4 t[5120] = {0};
-    index_type num = line_as_ansi(self, t, 5120);
+    bool truncated;
+    index_type num = line_as_ansi(self, t, 5120, &truncated);
     PyObject *ans = PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, t, num);
     return ans;
 }
@@ -526,6 +536,73 @@ set_attribute(Line *self, PyObject *args) {
     set_attribute_on_line(self->gpu_cells, shift, val, self->xnum);
     Py_RETURN_NONE;
 }
+
+static inline int
+color_as_sgr(char *buf, size_t sz, unsigned long val, unsigned simple_code, unsigned aix_code, unsigned complex_code) {
+    switch(val & 0xff) {
+        case 1:
+            val >>= 8;
+            if (val < 16 && simple_code) {
+                return snprintf(buf, sz, "%lu;", (val < 8) ? simple_code + val : aix_code + (val - 8));
+            }
+            return snprintf(buf, sz, "%u:5:%lu;", complex_code, val);
+        case 2:
+            return snprintf(buf, sz, "%u:2:%lu:%lu:%lu;", complex_code, (val >> 24) & 0xff, (val >> 16) & 0xff, (val >> 8) & 0xff);
+        default:
+            return snprintf(buf, sz, "%u;", complex_code + 1);  // reset
+    }
+}
+
+static inline const char*
+decoration_as_sgr(uint8_t decoration) {
+    switch(decoration) {
+        case 1: return "4;";
+        case 2: return "4:2;";
+        case 3: return "4:3;";
+        default: return "24;";
+    }
+}
+
+
+const char*
+cell_as_sgr(GPUCell *cell, GPUCell *prev) {
+    static char buf[128];
+#define SZ sizeof(buf) - (p - buf) - 2
+#define P(s) { size_t len = strlen(s); if (SZ > len) { memcpy(p, s, len); p += len; } }
+    char *p = buf;
+#define CMP(attr) (attr(cell) != attr(prev))
+#define BOLD(cell) (cell->attrs & (1 << BOLD_SHIFT))
+#define DIM(cell) (cell->attrs & (1 << DIM_SHIFT))
+#define ITALIC(cell) (cell->attrs & (1 << ITALIC_SHIFT))
+#define REVERSE(cell) (cell->attrs & (1 << REVERSE_SHIFT))
+#define STRIKETHROUGH(cell) (cell->attrs & (1 << STRIKE_SHIFT))
+#define DECORATION(cell) (cell->attrs & (DECORATION_MASK << DECORATION_SHIFT))
+    bool intensity_differs = CMP(BOLD) || CMP(DIM);
+    if (intensity_differs) {
+        if (!BOLD(cell) && !DIM(cell)) { P("22;"); }
+        else { if (BOLD(cell)) P("1;"); if (DIM(cell)) P("2;"); }
+    }
+    if (CMP(ITALIC)) P(ITALIC(cell) ? "3;" : "23;");
+    if (CMP(REVERSE)) P(REVERSE(cell) ? "7;" : "27;");
+    if (CMP(STRIKETHROUGH)) P(STRIKETHROUGH(cell) ? "9;" : "29;");
+    if (cell->fg != prev->fg) p += color_as_sgr(p, SZ, cell->fg, 30, 90, 38);
+    if (cell->bg != prev->bg) p += color_as_sgr(p, SZ, cell->bg, 40, 100, 48);
+    if (cell->decoration_fg != prev->decoration_fg) p += color_as_sgr(p, SZ, cell->decoration_fg, 0, 0, DECORATION_FG_CODE);
+    if (CMP(DECORATION)) P(decoration_as_sgr((cell->attrs >> DECORATION_SHIFT) & DECORATION_MASK));
+#undef CMP
+#undef BOLD
+#undef DIM
+#undef ITALIC
+#undef REVERSE
+#undef STRIKETHROUGH
+#undef DECORATION
+#undef P
+#undef SZ
+    if (p > buf) *(p - 1) = 0;  // remove trailing semi-colon
+    *p = 0;  // ensure string is null-terminated
+    return buf;
+}
+
 
 static Py_ssize_t
 __len__(PyObject *self) {

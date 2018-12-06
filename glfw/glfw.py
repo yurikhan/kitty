@@ -5,7 +5,6 @@
 import json
 import os
 import re
-import shutil
 import sys
 
 _plat = sys.platform.lower()
@@ -22,7 +21,7 @@ def wayland_protocol_file_name(base, ext='c'):
     return 'wayland-{}-client-protocol.{}'.format(base, ext)
 
 
-def init_env(env, pkg_config, at_least_version, module='x11'):
+def init_env(env, pkg_config, at_least_version, test_compile, module='x11'):
     ans = env.copy()
     ans.cflags = [
         x for x in ans.cflags
@@ -32,10 +31,11 @@ def init_env(env, pkg_config, at_least_version, module='x11'):
         ans.cflags.append('-pthread')
         ans.ldpaths.append('-pthread')
     ans.cflags.append('-fpic')
-    ans.cflags.append('-D_GLFW_' + module.upper())
-    ans.cflags.append('-D_GLFW_BUILD_DLL')
+    ans.cppflags.append('-D_GLFW_' + module.upper())
+    ans.cppflags.append('-D_GLFW_BUILD_DLL')
 
     if is_macos:
+        ans.cppflags.append('-DGL_SILENCE_DEPRECATION')
         ans.ldpaths.extend(
             "-framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreVideo".
             split()
@@ -76,6 +76,14 @@ def init_env(env, pkg_config, at_least_version, module='x11'):
         for dep in 'wayland-egl wayland-client wayland-cursor xkbcommon dbus-1'.split():
             ans.cflags.extend(pkg_config(dep, '--cflags-only-I'))
             ans.ldpaths.extend(pkg_config(dep, '--libs'))
+        has_memfd_create = test_compile(env.cc, '-Werror', src='''#define _GNU_SOURCE
+    #include <unistd.h>
+    #include <sys/syscall.h>
+    int main(void) {
+        return syscall(__NR_memfd_create, "test", 0);
+    }''')
+        if has_memfd_create:
+            ans.cppflags.append('-DHAS_MEMFD_CREATE')
 
     return ans
 
@@ -179,7 +187,7 @@ class Function:
         return ans
 
 
-def generate_wrappers(glfw_header, glfw_native_header):
+def generate_wrappers(glfw_header):
     src = open(glfw_header).read()
     functions = []
     first = None
@@ -200,9 +208,10 @@ def generate_wrappers(glfw_header, glfw_native_header):
     void glfwGetCocoaKeyEquivalent(int glfw_key, int glfw_mods, void* cocoa_key, void* cocoa_mods)
     void* glfwGetX11Display(void)
     int32_t glfwGetX11Window(GLFWwindow* window)
-    void glfwSetX11SelectionString(const char* string)
-    const char* glfwGetX11SelectionString(void)
+    void glfwSetPrimarySelectionString(GLFWwindow* window, const char* string)
+    const char* glfwGetPrimarySelectionString(GLFWwindow* window, void)
     int glfwGetXKBScancode(const char* key_name, int case_sensitive)
+    void glfwRequestWaylandFrameEvent(GLFWwindow *handle, unsigned long long id, GLFWwaylandframecallbackfunc callback)
 '''.splitlines():
         if line:
             functions.append(Function(line.strip(), check_fail=False))
@@ -221,7 +230,7 @@ def generate_wrappers(glfw_header, glfw_native_header):
 typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int);
 typedef int (* GLFWapplicationshouldhandlereopenfun)(int);
 typedef int (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
-
+typedef void (*GLFWwaylandframecallbackfunc)(unsigned long long id);
 {}
 
 const char* load_glfw(const char* path);
@@ -259,53 +268,9 @@ unload_glfw() {
         f.write(code)
 
 
-def from_glfw(glfw_dir):
-    os.chdir(glfw_dir)
-    sinfo = collect_source_information()
-    files_to_copy = set()
-    for x in sinfo.values():
-        if isinstance(x, dict):
-            headers, sources = x['headers'], x['sources']
-            for name in headers + sources:
-                files_to_copy.add(os.path.abspath(os.path.join('src', name)))
-    glfw_header = os.path.abspath('include/GLFW/glfw3.h')
-    glfw_native_header = os.path.abspath('include/GLFW/glfw3native.h')
-    os.chdir(base)
-    for x in os.listdir('.'):
-        if x.rpartition('.') in ('c', 'h'):
-            os.unlink(x)
-    for src in files_to_copy:
-        shutil.copy2(src, '.')
-    shutil.copy2(glfw_header, '.')
-    json.dump(
-        sinfo,
-        open('source-info.json', 'w'),
-        indent=2,
-        ensure_ascii=False,
-        sort_keys=True
-    )
-    generate_wrappers(glfw_header, glfw_native_header)
-
-
-def to_glfw(glfw_dir):
-    src = base
-    for x in os.listdir(src):
-        if x in ('glfw.py', 'glfw3.h', '__pycache__', 'source-info.json') or x.startswith('wayland-'):
-            continue
-        xp = os.path.join(src, x)
-        shutil.copyfile(xp, os.path.join(glfw_dir, 'src', x))
-    shutil.copyfile(os.path.join(src, 'glfw3.h'), os.path.join(glfw_dir, 'include/GLFW/glfw3.h'))
-
-
 def main():
-    glfw_dir = os.path.abspath(os.path.join(base, '../../glfw'))
-    q = sys.argv[1].lower().replace('_', '-')
-    if q == 'from-glfw':
-        from_glfw(glfw_dir)
-    elif q == 'to-glfw':
-        to_glfw(glfw_dir)
-    else:
-        raise SystemExit('First argument must be one of to-glfw or from-glfw')
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    generate_wrappers('glfw3.h')
 
 
 if __name__ == '__main__':

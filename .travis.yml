@@ -89,9 +89,10 @@ matrix:
           language: generic
           env: SWBASE=/Users/Shared/buildbot/sw SW=$SWBASE/sw PATH=$SW/bin:$PATH
 
-        - os: osx
-          language: generic
-          env: USE_BREW=1 BUILD_PKG=osx-bundle
+        # Disabled because harfbuzz is currently broken in brew
+        # - os: osx
+        #   language: generic
+        #   env: USE_BREW=1 BUILD_PKG=osx-bundle
 
 env:
     global:
@@ -106,7 +107,7 @@ install: |
     if [[ "$TRAVIS_OS_NAME" == 'osx' ]]; then
         if [[ "$USE_BREW" == "1" ]]; then
             brew update;
-            brew upgrade python;
+            # brew upgrade python;
             brew install harfbuzz --without-graphite2 --without-icu4c --without-freetype;
             brew install imagemagick
             brew install optipng

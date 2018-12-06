@@ -61,6 +61,9 @@ def color_from_int(val):
 
 def parse_color_set(raw):
     parts = raw.split(';')
+    lp = len(parts)
+    if lp % 2 != 0:
+        return
     for c, spec in [parts[i:i + 2] for i in range(0, len(parts), 2)]:
         try:
             c = int(c)
@@ -419,7 +422,7 @@ def get_editor():
         import shlex
         ans = os.environ.get('EDITOR')
         if not ans or not exe_exists(shlex.split(ans)[0]):
-            for q in ('vim', 'vi', 'emacs', 'micro', 'nano'):
+            for q in ('vim', 'nvim', 'vi', 'emacs', 'micro', 'nano', 'vis'):
                 r = exe_exists(q)
                 if r:
                     ans = r

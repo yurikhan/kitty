@@ -1387,7 +1387,7 @@ typedef struct GLFWgamepadstate
 typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int);
 typedef int (* GLFWapplicationshouldhandlereopenfun)(int);
 typedef int (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
-
+typedef void (*GLFWwaylandframecallbackfunc)(unsigned long long id);
 typedef int (*glfwInit_func)();
 glfwInit_func glfwInit_impl;
 #define glfwInit glfwInit_impl
@@ -1543,6 +1543,10 @@ glfwGetWindowFrameSize_func glfwGetWindowFrameSize_impl;
 typedef void (*glfwGetWindowContentScale_func)(GLFWwindow*, float*, float*);
 glfwGetWindowContentScale_func glfwGetWindowContentScale_impl;
 #define glfwGetWindowContentScale glfwGetWindowContentScale_impl
+
+typedef double (*glfwGetDoubleClickInterval_func)(GLFWwindow*);
+glfwGetDoubleClickInterval_func glfwGetDoubleClickInterval_impl;
+#define glfwGetDoubleClickInterval glfwGetDoubleClickInterval_impl
 
 typedef float (*glfwGetWindowOpacity_func)(GLFWwindow*);
 glfwGetWindowOpacity_func glfwGetWindowOpacity_impl;
@@ -1880,16 +1884,20 @@ typedef int32_t (*glfwGetX11Window_func)(GLFWwindow*);
 glfwGetX11Window_func glfwGetX11Window_impl;
 #define glfwGetX11Window glfwGetX11Window_impl
 
-typedef void (*glfwSetX11SelectionString_func)(const char*);
-glfwSetX11SelectionString_func glfwSetX11SelectionString_impl;
-#define glfwSetX11SelectionString glfwSetX11SelectionString_impl
+typedef void (*glfwSetPrimarySelectionString_func)(GLFWwindow*, const char*);
+glfwSetPrimarySelectionString_func glfwSetPrimarySelectionString_impl;
+#define glfwSetPrimarySelectionString glfwSetPrimarySelectionString_impl
 
-typedef const char* (*glfwGetX11SelectionString_func)();
-glfwGetX11SelectionString_func glfwGetX11SelectionString_impl;
-#define glfwGetX11SelectionString glfwGetX11SelectionString_impl
+typedef const char* (*glfwGetPrimarySelectionString_func)(GLFWwindow*);
+glfwGetPrimarySelectionString_func glfwGetPrimarySelectionString_impl;
+#define glfwGetPrimarySelectionString glfwGetPrimarySelectionString_impl
 
 typedef int (*glfwGetXKBScancode_func)(const char*, int);
 glfwGetXKBScancode_func glfwGetXKBScancode_impl;
 #define glfwGetXKBScancode glfwGetXKBScancode_impl
+
+typedef void (*glfwRequestWaylandFrameEvent_func)(GLFWwindow*, unsigned long long, GLFWwaylandframecallbackfunc);
+glfwRequestWaylandFrameEvent_func glfwRequestWaylandFrameEvent_impl;
+#define glfwRequestWaylandFrameEvent glfwRequestWaylandFrameEvent_impl
 
 const char* load_glfw(const char* path);

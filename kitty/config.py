@@ -16,7 +16,7 @@ from .conf.utils import (
     parse_config_base, python_string, to_bool, to_cmdline
 )
 from .config_data import all_options, parse_mods, type_map
-from .constants import cache_dir, defconf
+from .constants import cache_dir, defconf, is_macos
 from .utils import log_error
 
 named_keys = {
@@ -173,6 +173,16 @@ def pipe(func, rest):
     return func, rest
 
 
+@func_with_args('nth_window')
+def nth_window(func, rest):
+    try:
+        num = int(rest)
+    except Exception:
+        log_error('Invalid nth_window number: {}'.format(rest))
+        num = 1
+    return func, [num]
+
+
 def parse_key_action(action):
     parts = action.split(' ', 1)
     func = parts[0]
@@ -302,6 +312,15 @@ special_handlers = {}
 
 def special_handler(func):
     special_handlers[func.__name__.partition('_')[2]] = func
+    return func
+
+
+def deprecated_handler(*names):
+    def special_handler(func):
+        for name in names:
+            special_handlers[name] = func
+        return func
+    return special_handler
 
 
 @special_handler
@@ -326,6 +345,15 @@ def handle_clear_all_shortcuts(key, val, ans):
         ans['key_definitions'] = [None]
 
 
+@deprecated_handler('x11_hide_window_decorations', 'macos_hide_titlebar')
+def handle_deprecated_hide_window_decorations_aliases(key, val, ans):
+    if not hasattr(handle_deprecated_hide_window_decorations_aliases, key):
+        handle_deprecated_hide_window_decorations_aliases.key = True
+        log_error('The option {} is deprecated. Use hide_window_decorations instead.'.format(key))
+    if to_bool(val):
+        ans['hide_window_decorations'] = True
+
+
 def expandvars(val, env):
 
     def sub(m):
@@ -337,7 +365,7 @@ def expandvars(val, env):
             result = m.group()
         return result
 
-    return re.sub(r'$\{(\S+)\}', sub, val)
+    return re.sub(r'\$\{(\S+?)\}', sub, val)
 
 
 @special_handler
@@ -542,4 +570,6 @@ def load_config(*paths, overrides=None):
     if opts.background_opacity < 1.0 and opts.macos_titlebar_color:
         log_error('Cannot use both macos_titlebar_color and background_opacity')
         opts.macos_titlebar_color = 0
+    if (is_macos and getattr(opts, 'macos_hide_titlebar', False)) or (not is_macos and getattr(opts, 'x11_hide_window_decorations', False)):
+        opts.hide_window_decorations = True
     return opts

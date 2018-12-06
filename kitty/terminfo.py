@@ -37,6 +37,10 @@ bool_capabilities = {
     # described at:
     # https://github.com/kovidgoyal/kitty/blob/master/protocol-extensions.asciidoc
     'Su',
+    # Indicates support for full keyboard mode (non-standard) as
+    # described at:
+    # https://github.com/kovidgoyal/kitty/blob/master/protocol-extensions.asciidoc
+    'fullkbd',
 
     # The following are entries that we don't use
     # # background color erase
@@ -223,8 +227,8 @@ string_capabilities = {
     'rmso': r'\E[27m',
     # Exit underline mode
     'rmul': r'\E[24m',
-    # Reset string1
-    'rs1': r'\Ec',
+    # Reset string1 (empty OSC sequence to exit OSC/OTH modes, and regular reset)
+    'rs1': r'\E]\E\\\Ec',
     # Save cursor
     'sc': r'\E7',
     # Set background color
@@ -284,10 +288,6 @@ string_capabilities = {
     'setrgbb': r'\E[48:2:%p1%d:%p2%d:%p3%dm',
 
     # The following are entries that we don't use
-    # # display status line
-    # 'dsl': r'\E]2;\007',
-    # # return from status line
-    # 'fsl': r'^G',
     # # turn on blank mode, (characters invisible)
     # 'invis': r'\E[8m',
     # # init2 string
@@ -436,7 +436,7 @@ termcap_aliases.update({
 queryable_capabilities = numeric_capabilities.copy()
 queryable_capabilities.update(string_capabilities)
 extra = (bool_capabilities | numeric_capabilities.keys() | string_capabilities.keys()) - set(termcap_aliases.values())
-no_termcap_for = frozenset('Su Tc setrgbf setrgbb'.split())
+no_termcap_for = frozenset('Su Tc setrgbf setrgbb fullkbd'.split())
 if extra - no_termcap_for:
     raise Exception('Termcap aliases not complete, missing: {}'.format(extra - no_termcap_for))
 del extra

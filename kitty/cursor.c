@@ -211,55 +211,15 @@ END_ALLOW_CASE_RANGE
 #undef RANGE
 }
 
-static inline int
-color_as_sgr(char *buf, size_t sz, unsigned long val, unsigned simple_code, unsigned aix_code, unsigned complex_code) {
-    switch(val & 0xff) {
-        case 1:
-            val >>= 8;
-            if (val < 16 && simple_code) {
-                return snprintf(buf, sz, "%lu;", (val < 8) ? simple_code + val : aix_code + (val - 8));
-            }
-            return snprintf(buf, sz, "%u:5:%lu;", complex_code, val);
-        case 2:
-            return snprintf(buf, sz, "%u:2:%lu:%lu:%lu;", complex_code, (val >> 24) & 0xff, (val >> 16) & 0xff, (val >> 8) & 0xff);
-        default:
-            return snprintf(buf, sz, "%u;", complex_code + 1);  // reset
-    }
-}
-
-static inline const char*
-decoration_as_sgr(uint8_t decoration) {
-    switch(decoration) {
-        case 1: return "4";
-        case 2: return "4:2";
-        case 3: return "4:3";
-        default: return "24";
-    }
-}
-
 const char*
-cursor_as_sgr(Cursor *self, Cursor *prev) {
-    static char buf[128];
-#define SZ sizeof(buf) - (p - buf) - 2
-#define P(fmt, ...) { p += snprintf(p, SZ, fmt ";", __VA_ARGS__); }
-    char *p = buf;
-    bool intensity_differs = self->bold != prev->bold || self->dim != prev->dim;
-    if (intensity_differs) {
-        if (!self->bold && !self->dim) { P("%d", 22); }
-        else { if (self->bold) P("%d", 1); if (self->dim) P("%d", 2); }
-    }
-    if (self->italic != prev->italic) P("%d", self->italic ? 3 : 23);
-    if (self->reverse != prev->reverse) P("%d", self->reverse ? 7 : 27);
-    if (self->strikethrough != prev->strikethrough) P("%d", self->strikethrough ? 9 : 29);
-    if (self->decoration != prev->decoration) P("%s", decoration_as_sgr(self->decoration));
-    if (self->fg != prev->fg) p += color_as_sgr(p, SZ, self->fg, 30, 90, 38);
-    if (self->bg != prev->bg) p += color_as_sgr(p, SZ, self->bg, 40, 100, 48);
-    if (self->decoration_fg != prev->decoration_fg) p += color_as_sgr(p, SZ, self->decoration_fg, 0, 0, DECORATION_FG_CODE);
-#undef P
-#undef SZ
-    if (p > buf) *(p - 1) = 0;  // remove trailing semi-colon
-    *p = 0;  // ensure string is null-terminated
-    return buf;
+cursor_as_sgr(const Cursor *self) {
+    GPUCell blank_cell = { 0 }, cursor_cell = {
+        .attrs = CURSOR_TO_ATTRS(self, 1),
+        .fg = self->fg & COL_MASK,
+        .bg = self->bg & COL_MASK,
+        .decoration_fg = self->decoration_fg & COL_MASK,
+    };
+    return cell_as_sgr(&cursor_cell, &blank_cell);
 }
 
 static PyObject *

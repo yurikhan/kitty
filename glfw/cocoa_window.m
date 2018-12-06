@@ -50,6 +50,11 @@
  #define NSEventTypeKeyUp NSKeyUp
 #endif
 
+#if (MAC_OS_X_VERSION_MAX_ALLOWED < 101400)
+ #define NSPasteboardTypeFileURL NSFilenamesPboardType
+ #define NSBitmapFormatAlphaNonpremultiplied NSAlphaNonpremultipliedBitmapFormat
+ #define NSPasteboardTypeString NSStringPboardType
+#endif
 
 // Returns the style mask corresponding to the window settings
 //
@@ -450,6 +455,12 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
 
     _glfwInputWindowFocus(window, GLFW_TRUE);
     updateCursorMode(window);
+    if (_glfw.ns.disabledCursorWindow != window && cursorInClientArea(window))
+    {
+        double x = 0, y = 0;
+        _glfwPlatformGetCursorPos(window, &x, &y);
+        _glfwInputCursorPos(window, x, y);
+    }
 }
 
 - (void)windowDidResignKey:(NSNotification *)notification
@@ -549,8 +560,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
         markedText = [[NSMutableAttributedString alloc] init];
 
         [self updateTrackingAreas];
-        [self registerForDraggedTypes:[NSArray arrayWithObjects:
-                                       NSFilenamesPboardType, nil]];
+        [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
     }
 
     return self;
@@ -585,6 +595,21 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
 - (BOOL)wantsUpdateLayer
 {
     return YES;
+}
+
+- (void)updateLayer
+{
+    if (window->context.client != GLFW_NO_API) {
+        @try {
+            [window->context.nsgl.object update];
+        } @catch (NSException *e) {
+            _glfwInputError(GLFW_PLATFORM_ERROR,
+                    "Failed to update NSGL Context object with error: %s (%s)",
+                    [[e name] UTF8String], [[e reason] UTF8String]);
+        }
+    }
+
+    _glfwInputWindowDamage(window);
 }
 
 - (id)makeBackingLayer
@@ -828,28 +853,22 @@ is_ascii_control_char(char x) {
             window->ns.deadKeyState = 0;
             return;
         }
+        debug_key(@"scancode: 0x%x (%s) %schar_count: %lu deadKeyState: %u ", scancode, safe_name_for_scancode(scancode), format_mods(mods), char_count, window->ns.deadKeyState);
         if (process_text) {
-            // We check if cocoa wants to insert text, as UCKeyTranslate
-            // inserts text even when the cmd key is pressed. For instance,
-            // cmd+a will result in the text a.
+            // this will call insertText which will fill up _glfw.ns.text
             [self interpretKeyEvents:[NSArray arrayWithObject:event]];
-            debug_key(@"char_count: %lu cocoa text: %s\n", char_count, format_text(_glfw.ns.text));
-            GLFWbool cocoa_wants_to_insert_text = !is_ascii_control_char(_glfw.ns.text[0]);
-            _glfw.ns.text[0] = 0;
-            if (char_count && cocoa_wants_to_insert_text) convert_utf16_to_utf8(text, char_count, _glfw.ns.text, sizeof(_glfw.ns.text));
         } else {
             window->ns.deadKeyState = 0;
         }
-        if (window->ns.deadKeyState && char_count == 0) {
-            debug_key(@"Ignoring dead key. deadKeyState: 0x%x scancode: 0x%x (%s) %s\n",
-                    window->ns.deadKeyState, scancode, safe_name_for_scancode(scancode), format_mods(mods));
+        if (window->ns.deadKeyState && (char_count == 0 || scancode == 0x75)) {
+            // 0x75 is the delete key which needs to be ignored during a compose sequence
+            debug_key(@"Ignoring dead key.\n");
             return;
         }
     }
-    debug_key(@"scancode: 0x%x (%s) %stext: %s glfw_key: %s\n",
-            scancode, safe_name_for_scancode(scancode), format_mods(mods),
-            format_text(_glfw.ns.text), _glfwGetKeyName(key));
     if (is_ascii_control_char(_glfw.ns.text[0])) _glfw.ns.text[0] = 0;  // don't send text for ascii control codes
+    debug_key(@"text: %s glfw_key: %s\n",
+            format_text(_glfw.ns.text), _glfwGetKeyName(key));
     _glfwInputKeyboard(window, key, scancode, GLFW_PRESS, mods, _glfw.ns.text, 0);
 }
 
@@ -889,6 +908,12 @@ is_ascii_control_char(char x) {
     deltaX = [event scrollingDeltaX];
     deltaY = [event scrollingDeltaY];
     int flags = [event hasPreciseScrollingDeltas] ? 1 : 0;
+    if (flags) {
+        float xscale = 1, yscale = 1;
+        _glfwPlatformGetWindowContentScale(window, &xscale, &yscale);
+        if (xscale > 0) deltaX *= xscale;
+        if (yscale > 0) deltaY *= yscale;
+    }
 
     if (fabs(deltaX) > 0.0 || fabs(deltaY) > 0.0)
         _glfwInputScroll(window, deltaX, deltaY, flags);
@@ -896,55 +921,39 @@ is_ascii_control_char(char x) {
 
 - (NSDragOperation)draggingEntered:(id <NSDraggingInfo>)sender
 {
-    if ((NSDragOperationGeneric & [sender draggingSourceOperationMask])
-        == NSDragOperationGeneric)
-    {
-        [self setNeedsDisplay:YES];
-        return NSDragOperationGeneric;
-    }
-
-    return NSDragOperationNone;
-}
-
-- (BOOL)prepareForDragOperation:(id <NSDraggingInfo>)sender
-{
-    [self setNeedsDisplay:YES];
-    return YES;
+    // HACK: We don't know what to say here because we don't know what the
+    // application wants to do with the paths
+    return NSDragOperationGeneric;
 }
 
 - (BOOL)performDragOperation:(id <NSDraggingInfo>)sender
 {
-    NSPasteboard* pasteboard = [sender draggingPasteboard];
-    NSArray* files = [pasteboard propertyListForType:NSFilenamesPboardType];
-
     const NSRect contentRect = [window->ns.view frame];
     _glfwInputCursorPos(window,
                         [sender draggingLocation].x,
                         contentRect.size.height - [sender draggingLocation].y);
+    NSPasteboard* pasteboard = [sender draggingPasteboard];
+    NSDictionary* options = @{NSPasteboardURLReadingFileURLsOnlyKey:@YES};
+    NSArray* urls = [pasteboard readObjectsForClasses:@[[NSURL class]]
+                                              options:options];
+    if (!urls) return NO;
+    const NSUInteger count = [urls count];
 
-    const NSUInteger count = [files count];
     if (count)
     {
-        NSEnumerator* e = [files objectEnumerator];
         char** paths = calloc(count, sizeof(char*));
-        NSUInteger i;
 
-        for (i = 0;  i < count;  i++)
-            paths[i] = _glfw_strdup([[e nextObject] UTF8String]);
+        for (NSUInteger i = 0;  i < count;  i++)
+            paths[i] = _glfw_strdup([[urls objectAtIndex:i] fileSystemRepresentation]);
 
         _glfwInputDrop(window, (int) count, (const char**) paths);
 
-        for (i = 0;  i < count;  i++)
+        for (NSUInteger i = 0;  i < count;  i++)
             free(paths[i]);
         free(paths);
     }
 
     return YES;
-}
-
-- (void)concludeDragOperation:(id <NSDraggingInfo>)sender
-{
-    [self setNeedsDisplay:YES];
 }
 
 - (BOOL)hasMarkedText
@@ -1569,6 +1578,11 @@ void _glfwPlatformGetWindowContentScale(_GLFWwindow* window,
         *yscale = (float) (pixels.size.height / points.size.height);
 }
 
+double _glfwPlatformGetDoubleClickInterval(_GLFWwindow* window)
+{
+    return [NSEvent doubleClickInterval];
+}
+
 void _glfwPlatformIconifyWindow(_GLFWwindow* window)
 {
     [window->ns.object miniaturize:nil];
@@ -1791,7 +1805,7 @@ void _glfwPlatformPollEvents(void)
         if (event == nil)
             break;
 
-        [NSApp sendEvent:event];
+        if ([event type] != NSEventTypeApplicationDefined) [NSApp sendEvent:event];
     }
 
     [_glfw.ns.autoreleasePool drain];
@@ -1807,7 +1821,7 @@ void _glfwPlatformWaitEvents(void)
                                         untilDate:[NSDate distantFuture]
                                            inMode:NSDefaultRunLoopMode
                                           dequeue:YES];
-    [NSApp sendEvent:event];
+    if ([event type] != NSEventTypeApplicationDefined) [NSApp sendEvent:event];
 
     _glfwPlatformPollEvents();
 }
@@ -1819,8 +1833,7 @@ void _glfwPlatformWaitEventsTimeout(double timeout)
                                         untilDate:date
                                            inMode:NSDefaultRunLoopMode
                                           dequeue:YES];
-    if (event)
-        [NSApp sendEvent:event];
+    if (event && [event type] != NSEventTypeApplicationDefined) [NSApp sendEvent:event];
 
     _glfwPlatformPollEvents();
 }
@@ -1940,7 +1953,7 @@ int _glfwPlatformCreateCursor(_GLFWcursor* cursor,
                             hasAlpha:YES
                             isPlanar:NO
                     colorSpaceName:NSCalibratedRGBColorSpace
-                        bitmapFormat:NSAlphaNonpremultipliedBitmapFormat
+                        bitmapFormat:NSBitmapFormatAlphaNonpremultiplied
                         bytesPerRow:src->width * 4
                         bitsPerPixel:32];
         if (rep == nil)
@@ -2002,26 +2015,26 @@ void _glfwPlatformSetCursor(_GLFWwindow* window, _GLFWcursor* cursor)
 
 void _glfwPlatformSetClipboardString(const char* string)
 {
-    NSArray* types = [NSArray arrayWithObjects:NSStringPboardType, nil];
+    NSArray* types = [NSArray arrayWithObjects:NSPasteboardTypeString, nil];
 
     NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
     [pasteboard declareTypes:types owner:nil];
     [pasteboard setString:[NSString stringWithUTF8String:string]
-                  forType:NSStringPboardType];
+                  forType:NSPasteboardTypeString];
 }
 
 const char* _glfwPlatformGetClipboardString(void)
 {
     NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
 
-    if (![[pasteboard types] containsObject:NSStringPboardType])
+    if (![[pasteboard types] containsObject:NSPasteboardTypeString])
     {
         _glfwInputError(GLFW_FORMAT_UNAVAILABLE,
                         "Cocoa: Failed to retrieve string from pasteboard");
         return NULL;
     }
 
-    NSString* object = [pasteboard stringForType:NSStringPboardType];
+    NSString* object = [pasteboard stringForType:NSPasteboardTypeString];
     if (!object)
     {
         _glfwInputError(GLFW_PLATFORM_ERROR,

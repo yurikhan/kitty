@@ -28,6 +28,7 @@
 
 #include "internal.h"
 #include "backend_utils.h"
+#include "memfd.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -115,18 +116,6 @@ static const struct wl_shell_surface_listener shellSurfaceListener = {
     handlePopupDone
 };
 
-static int
-createTmpfileCloexec(char* tmpname)
-{
-    int fd;
-
-    fd = mkostemp(tmpname, O_CLOEXEC);
-    if (fd >= 0)
-        unlink(tmpname);
-
-    return fd;
-}
-
 /*
  * Create a new, unique, anonymous file of the given size, and
  * return the file descriptor for it. The file descriptor is set
@@ -150,11 +139,21 @@ createTmpfileCloexec(char* tmpname)
 static int
 createAnonymousFile(off_t size)
 {
+    int ret;
+#ifdef HAS_MEMFD_CREATE
+    int fd = memfd_create("glfw-shared", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    if (fd < 0) return -1;
+    // We can add this seal before calling posix_fallocate(), as the file
+    // is currently zero-sized anyway.
+    //
+    // There is also no need to check for the return value, we couldn’t do
+    // anything with it anyway.
+    fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_SEAL);
+#else
     static const char template[] = "/glfw-shared-XXXXXX";
     const char* path;
     char* name;
     int fd;
-    int ret;
 
     path = getenv("XDG_RUNTIME_DIR");
     if (!path)
@@ -173,6 +172,7 @@ createAnonymousFile(off_t size)
 
     if (fd < 0)
         return -1;
+#endif
     ret = posix_fallocate(fd, 0, size);
     if (ret != 0)
     {
@@ -198,7 +198,7 @@ static struct wl_buffer* createShmBuffer(const GLFWimage* image)
         _glfwInputError(GLFW_PLATFORM_ERROR,
                         "Wayland: Creating a buffer file for %d B failed: %m",
                         length);
-        return GLFW_FALSE;
+        return NULL;
     }
 
     data = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -207,7 +207,7 @@ static struct wl_buffer* createShmBuffer(const GLFWimage* image)
         _glfwInputError(GLFW_PLATFORM_ERROR,
                         "Wayland: mmap failed: %m");
         close(fd);
-        return GLFW_FALSE;
+        return NULL;
     }
 
     pool = wl_shm_create_pool(_glfw.wl.shm, fd, length);
@@ -272,11 +272,13 @@ static void createDecorations(_GLFWwindow* window)
     const GLFWimage image = { 1, 1, data };
     GLFWbool opaque = (data[3] == 255);
 
-    if (!_glfw.wl.viewporter)
+    if (!_glfw.wl.viewporter || !window->decorated || window->wl.decorations.serverSide)
         return;
 
     if (!window->wl.decorations.buffer)
         window->wl.decorations.buffer = createShmBuffer(&image);
+    if (!window->wl.decorations.buffer)
+        return;
 
     createDecoration(&window->wl.decorations.top, window->wl.surface,
                      window->wl.decorations.buffer, opaque,
@@ -316,6 +318,20 @@ static void destroyDecorations(_GLFWwindow* window)
     destroyDecoration(&window->wl.decorations.right);
     destroyDecoration(&window->wl.decorations.bottom);
 }
+
+static void xdgDecorationHandleConfigure(void* data,
+                                         struct zxdg_toplevel_decoration_v1* decoration,
+                                         uint32_t mode)
+{
+    _GLFWwindow* window = data;
+     window->wl.decorations.serverSide = (mode == ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+     if (!window->wl.decorations.serverSide)
+        createDecorations(window);
+}
+
+static const struct zxdg_toplevel_decoration_v1_listener xdgDecorationListener = {
+    xdgDecorationHandleConfigure,
+};
 
 // Makes the surface considered as XRGB instead of ARGB.
 static void setOpaqueRegion(_GLFWwindow* window)
@@ -489,9 +505,6 @@ static GLFWbool createSurface(_GLFWwindow* window,
     if (!window->wl.transparent)
         setOpaqueRegion(window);
 
-    if (window->decorated && !window->monitor)
-        createDecorations(window);
-
     return GLFW_TRUE;
 }
 
@@ -512,7 +525,8 @@ static void setFullscreen(_GLFWwindow* window, _GLFWmonitor* monitor, int refres
             monitor->wl.output);
     }
     setIdleInhibitor(window, GLFW_TRUE);
-    destroyDecorations(window);
+    if (!window->wl.decorations.serverSide)
+        destroyDecorations(window);
 }
 
 static GLFWbool createShellSurface(_GLFWwindow* window)
@@ -548,11 +562,13 @@ static GLFWbool createShellSurface(_GLFWwindow* window)
     {
         wl_shell_surface_set_maximized(window->wl.shellSurface, NULL);
         setIdleInhibitor(window, GLFW_FALSE);
+        createDecorations(window);
     }
     else
     {
         wl_shell_surface_set_toplevel(window->wl.shellSurface);
         setIdleInhibitor(window, GLFW_FALSE);
+        createDecorations(window);
     }
 
     wl_surface_commit(window->wl.surface);
@@ -641,6 +657,27 @@ static const struct xdg_surface_listener xdgSurfaceListener = {
     xdgSurfaceHandleConfigure
 };
 
+static void setXdgDecorations(_GLFWwindow* window)
+{
+    if (_glfw.wl.decorationManager)
+    {
+        window->wl.xdg.decoration =
+            zxdg_decoration_manager_v1_get_toplevel_decoration(
+                _glfw.wl.decorationManager, window->wl.xdg.toplevel);
+        zxdg_toplevel_decoration_v1_add_listener(window->wl.xdg.decoration,
+                                                 &xdgDecorationListener,
+                                                 window);
+        zxdg_toplevel_decoration_v1_set_mode(
+            window->wl.xdg.decoration,
+            ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    }
+    else
+    {
+        window->wl.decorations.serverSide = GLFW_FALSE;
+        createDecorations(window);
+    }
+}
+
 static GLFWbool createXdgSurface(_GLFWwindow* window)
 {
     window->wl.xdg.surface = xdg_wm_base_get_xdg_surface(_glfw.wl.wmBase,
@@ -688,10 +725,12 @@ static GLFWbool createXdgSurface(_GLFWwindow* window)
     {
         xdg_toplevel_set_maximized(window->wl.xdg.toplevel);
         setIdleInhibitor(window, GLFW_FALSE);
+        setXdgDecorations(window);
     }
     else
     {
         setIdleInhibitor(window, GLFW_FALSE);
+        setXdgDecorations(window);
     }
     if (strlen(window->wl.appId))
         xdg_toplevel_set_app_id(window->wl.xdg.toplevel, window->wl.appId);
@@ -752,6 +791,7 @@ incrementCursorImage(_GLFWwindow* window)
             cursor->wl.currentImage += 1;
             cursor->wl.currentImage %= cursor->wl.cursor->image_count;
             setCursorImage(&cursor->wl);
+            toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.cursorAnimationTimer, cursor->wl.cursor->image_count > 1);
             return;
         }
     }
@@ -912,6 +952,8 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window)
         window->context.destroy(window);
 
     destroyDecorations(window);
+    if (window->wl.xdg.decoration)
+        zxdg_toplevel_decoration_v1_destroy(window->wl.xdg.decoration);
     if (window->wl.decorations.buffer)
         wl_buffer_destroy(window->wl.decorations.buffer);
 
@@ -932,6 +974,8 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window)
 
     free(window->wl.title);
     free(window->wl.monitors);
+    if (window->wl.frameCallbackData.current_wl_callback)
+        wl_callback_destroy(window->wl.frameCallbackData.current_wl_callback);
 }
 
 void _glfwPlatformSetWindowTitle(_GLFWwindow* window, const char* title)
@@ -1025,7 +1069,7 @@ void _glfwPlatformGetWindowFrameSize(_GLFWwindow* window,
                                      int* left, int* top,
                                      int* right, int* bottom)
 {
-    if (window->decorated && !window->monitor)
+    if (window->decorated && !window->monitor && !window->wl.decorations.serverSide)
     {
         if (top)
             *top = _GLFW_DECORATION_TOP;
@@ -1045,6 +1089,11 @@ void _glfwPlatformGetWindowContentScale(_GLFWwindow* window,
         *xscale = (float) window->wl.scale;
     if (yscale)
         *yscale = (float) window->wl.scale;
+}
+
+double _glfwPlatformGetDoubleClickInterval(_GLFWwindow* window)
+{
+    return 0.5;
 }
 
 void _glfwPlatformIconifyWindow(_GLFWwindow* window)
@@ -1167,7 +1216,7 @@ void _glfwPlatformSetWindowMonitor(_GLFWwindow* window,
         else if (window->wl.shellSurface)
             wl_shell_surface_set_toplevel(window->wl.shellSurface);
         setIdleInhibitor(window, GLFW_FALSE);
-        if (window->decorated)
+        if (!_glfw.wl.decorationManager)
             createDecorations(window);
     }
     _glfwInputWindowMonitor(window, monitor);
@@ -1304,6 +1353,8 @@ int _glfwPlatformCreateCursor(_GLFWcursor* cursor,
                               int xhot, int yhot, int count)
 {
     cursor->wl.buffer = createShmBuffer(image);
+    if (!cursor->wl.buffer)
+        return GLFW_FALSE;
     cursor->wl.width = image->width;
     cursor->wl.height = image->height;
     cursor->wl.xhot = xhot;
@@ -1491,13 +1542,13 @@ void _glfwPlatformSetCursor(_GLFWwindow* window, _GLFWcursor* cursor)
     }
 }
 
-static void _glfwSendClipboardText(void *data, struct wl_data_source *data_source, const char *mime_type, int fd)
+static void send_text(char *text, int fd)
 {
-    if (_glfw.wl.clipboardString) {
-        size_t len = strlen(_glfw.wl.clipboardString), pos = 0;
+    if (text) {
+        size_t len = strlen(text), pos = 0;
         double start = glfwGetTime();
         while (pos < len && glfwGetTime() - start < 2.0) {
-            ssize_t ret = write(fd, _glfw.wl.clipboardString + pos, len - pos);
+            ssize_t ret = write(fd, text + pos, len - pos);
             if (ret < 0) {
                 if (errno == EAGAIN || errno == EINTR) continue;
                 _glfwInputError(GLFW_PLATFORM_ERROR,
@@ -1513,22 +1564,27 @@ static void _glfwSendClipboardText(void *data, struct wl_data_source *data_sourc
     close(fd);
 }
 
-static char* read_data_offer(struct wl_data_offer *data_offer, const char *mime) {
-    int pipefd[2];
-    if (pipe2(pipefd, O_CLOEXEC) != 0) return NULL;
-    wl_data_offer_receive(data_offer, mime, pipefd[1]);
-    close(pipefd[1]);
+static void _glfwSendClipboardText(void *data, struct wl_data_source *data_source, const char *mime_type, int fd) {
+    send_text(_glfw.wl.clipboardString, fd);
+}
+
+static void _glfwSendPrimarySelectionText(void *data, struct zwp_primary_selection_source_v1 *primary_selection_source,
+        const char *mime_type, int fd) {
+    send_text(_glfw.wl.primarySelectionString, fd);
+}
+
+static char* read_offer_string(int data_pipe) {
     wl_display_flush(_glfw.wl.display);
     size_t sz = 0, capacity = 0;
     char *buf = NULL;
     struct pollfd fds;
-    fds.fd = pipefd[0];
+    fds.fd = data_pipe;
     fds.events = POLLIN;
     double start = glfwGetTime();
 #define bail(...) { \
     _glfwInputError(GLFW_PLATFORM_ERROR, __VA_ARGS__); \
     free(buf); buf = NULL; \
-    close(pipefd[0]); \
+    close(data_pipe); \
     return NULL; \
 }
 
@@ -1548,12 +1604,12 @@ static char* read_data_offer(struct wl_data_offer *data_offer, const char *mime)
                 bail("Wayland: Failed to allocate memory to read clipboard data");
             }
         }
-        ret = read(pipefd[0], buf + sz, capacity - sz - 1);
+        ret = read(data_pipe, buf + sz, capacity - sz - 1);
         if (ret == -1) {
             if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
             bail("Wayland: Failed to read clipboard data from pipe with error: %s", strerror(errno));
         }
-        if (ret == 0) { close(pipefd[0]); buf[sz] = 0; return buf; }
+        if (ret == 0) { close(data_pipe); buf[sz] = 0; return buf; }
         sz += ret;
         start = glfwGetTime();
     }
@@ -1562,19 +1618,32 @@ static char* read_data_offer(struct wl_data_offer *data_offer, const char *mime)
 
 }
 
-static const char* _glfwReceiveClipboardText(struct wl_data_offer *data_offer, const char *mime)
-{
-    if (_glfw.wl.clipboardSourceOffer == data_offer && _glfw.wl.clipboardSourceString)
-        return _glfw.wl.clipboardSourceString;
-    free(_glfw.wl.clipboardSourceString);
-    _glfw.wl.clipboardSourceString = read_data_offer(data_offer, mime);
-    return _glfw.wl.clipboardSourceString;
+static char* read_primary_selection_offer(struct zwp_primary_selection_offer_v1 *primary_selection_offer, const char *mime) {
+    int pipefd[2];
+    if (pipe2(pipefd, O_CLOEXEC) != 0) return NULL;
+    zwp_primary_selection_offer_v1_receive(primary_selection_offer, mime, pipefd[1]);
+    close(pipefd[1]);
+    return read_offer_string(pipefd[0]);
+}
+
+static char* read_data_offer(struct wl_data_offer *data_offer, const char *mime) {
+    int pipefd[2];
+    if (pipe2(pipefd, O_CLOEXEC) != 0) return NULL;
+    wl_data_offer_receive(data_offer, mime, pipefd[1]);
+    close(pipefd[1]);
+    return read_offer_string(pipefd[0]);
 }
 
 static void data_source_canceled(void *data, struct wl_data_source *wl_data_source) {
     if (_glfw.wl.dataSourceForClipboard == wl_data_source)
         _glfw.wl.dataSourceForClipboard = NULL;
     wl_data_source_destroy(wl_data_source);
+}
+
+static void primary_selection_source_canceled(void *data, struct zwp_primary_selection_source_v1 *primary_selection_source) {
+    if (_glfw.wl.dataSourceForPrimarySelection == primary_selection_source)
+        _glfw.wl.dataSourceForPrimarySelection = NULL;
+    zwp_primary_selection_source_v1_destroy(primary_selection_source);
 }
 
 static void data_source_target(void *data, struct wl_data_source *wl_data_source, const char* mime) {
@@ -1586,6 +1655,11 @@ const static struct wl_data_source_listener data_source_listener = {
     .target = data_source_target,
 };
 
+const static struct zwp_primary_selection_source_v1_listener primary_selection_source_listener = {
+    .send = _glfwSendPrimarySelectionText,
+    .cancelled = primary_selection_source_canceled,
+};
+
 static void prune_unclaimed_data_offers() {
     for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
         if (_glfw.wl.dataOffers[i].id && !_glfw.wl.dataOffers[i].offer_type) {
@@ -1595,29 +1669,63 @@ static void prune_unclaimed_data_offers() {
     }
 }
 
+static void prune_unclaimed_primary_selection_offers() {
+    for (size_t i = 0; i < arraysz(_glfw.wl.primarySelectionOffers); i++) {
+        if (_glfw.wl.primarySelectionOffers[i].id && !_glfw.wl.dataOffers[i].offer_type) {
+            zwp_primary_selection_offer_v1_destroy(_glfw.wl.primarySelectionOffers[i].id);
+            memset(_glfw.wl.primarySelectionOffers + i, 0, sizeof(_glfw.wl.primarySelectionOffers[0]));
+        }
+    }
+}
+
 static void mark_selection_offer(void *data, struct wl_data_device *data_device, struct wl_data_offer *data_offer)
 {
     for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
         if (_glfw.wl.dataOffers[i].id == data_offer) {
-            _glfw.wl.dataOffers[i].offer_type = 1;
-        } else if (_glfw.wl.dataOffers[i].offer_type == 1) {
-            _glfw.wl.dataOffers[i].offer_type = 0;  // previous selection offer
+            _glfw.wl.dataOffers[i].offer_type = CLIPBOARD;
+        } else if (_glfw.wl.dataOffers[i].offer_type == CLIPBOARD) {
+            _glfw.wl.dataOffers[i].offer_type = EXPIRED;  // previous selection offer
         }
     }
     prune_unclaimed_data_offers();
 }
 
+static void mark_primary_selection_offer(void *data, struct zwp_primary_selection_device_v1* primary_selection_device,
+        struct zwp_primary_selection_offer_v1 *primary_selection_offer) {
+    for (size_t i = 0; i < arraysz(_glfw.wl.primarySelectionOffers); i++) {
+        if (_glfw.wl.primarySelectionOffers[i].id == primary_selection_offer) {
+            _glfw.wl.primarySelectionOffers[i].offer_type = PRIMARY_SELECTION;
+        } else if (_glfw.wl.primarySelectionOffers[i].offer_type == PRIMARY_SELECTION) {
+            _glfw.wl.primarySelectionOffers[i].offer_type = EXPIRED;  // previous selection offer
+        }
+    }
+    prune_unclaimed_primary_selection_offers();
+}
+
+static void set_offer_mimetype(struct _GLFWWaylandDataOffer* offer, const char* mime) {
+    if (strcmp(mime, "text/plain;charset=utf-8") == 0)
+        offer->mime = "text/plain;charset=utf-8";
+    else if (!offer->mime && strcmp(mime, "text/plain") == 0)
+        offer->mime = "text/plain";
+    else if (strcmp(mime, clipboard_mime()) == 0)
+        offer->is_self_offer = 1;
+    else if (strcmp(mime, URI_LIST_MIME) == 0)
+        offer->has_uri_list = 1;
+}
+
 static void handle_offer_mimetype(void *data, struct wl_data_offer* id, const char *mime) {
     for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
         if (_glfw.wl.dataOffers[i].id == id) {
-            if (strcmp(mime, "text/plain;charset=utf-8") == 0)
-                _glfw.wl.dataOffers[i].mime = "text/plain;charset=utf-8";
-            else if (!_glfw.wl.dataOffers[i].mime && strcmp(mime, "text/plain") == 0)
-                _glfw.wl.dataOffers[i].mime = "text/plain";
-            else if (strcmp(mime, clipboard_mime()) == 0)
-                _glfw.wl.dataOffers[i].is_self_offer = 1;
-            else if (strcmp(mime, URI_LIST_MIME) == 0)
-                _glfw.wl.dataOffers[i].has_uri_list = 1;
+            set_offer_mimetype(&_glfw.wl.dataOffers[i], mime);
+            break;
+        }
+    }
+}
+
+static void handle_primary_selection_offer_mimetype(void *data, struct zwp_primary_selection_offer_v1* id, const char *mime) {
+    for (size_t i = 0; i < arraysz(_glfw.wl.primarySelectionOffers); i++) {
+        if (_glfw.wl.primarySelectionOffers[i].id == id) {
+            set_offer_mimetype((struct _GLFWWaylandDataOffer*)&_glfw.wl.primarySelectionOffers[i], mime);
             break;
         }
     }
@@ -1648,6 +1756,10 @@ static const struct wl_data_offer_listener data_offer_listener = {
     .action = data_offer_action,
 };
 
+static const struct zwp_primary_selection_offer_v1_listener primary_selection_offer_listener = {
+    .offer = handle_primary_selection_offer_mimetype,
+};
+
 static void handle_data_offer(void *data, struct wl_data_device *wl_data_device, struct wl_data_offer *id) {
     size_t smallest_idx = SIZE_MAX, pos = 0;
     for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
@@ -1669,15 +1781,36 @@ end:
     wl_data_offer_add_listener(id, &data_offer_listener, NULL);
 }
 
+static void handle_primary_selection_offer(void *data, struct zwp_primary_selection_device_v1 *zwp_primary_selection_device_v1, struct zwp_primary_selection_offer_v1 *id) {
+    size_t smallest_idx = SIZE_MAX, pos = 0;
+    for (size_t i = 0; i < arraysz(_glfw.wl.primarySelectionOffers); i++) {
+        if (_glfw.wl.primarySelectionOffers[i].idx && _glfw.wl.primarySelectionOffers[i].idx < smallest_idx) {
+            smallest_idx = _glfw.wl.primarySelectionOffers[i].idx;
+            pos = i;
+        }
+        if (_glfw.wl.primarySelectionOffers[i].id == NULL) {
+            _glfw.wl.primarySelectionOffers[i].id = id;
+            _glfw.wl.primarySelectionOffers[i].idx = ++_glfw.wl.primarySelectionOffersCounter;
+            goto end;
+        }
+    }
+    if (_glfw.wl.primarySelectionOffers[pos].id) zwp_primary_selection_offer_v1_destroy(_glfw.wl.primarySelectionOffers[pos].id);
+    memset(_glfw.wl.primarySelectionOffers + pos, 0, sizeof(_glfw.wl.primarySelectionOffers[0]));
+    _glfw.wl.primarySelectionOffers[pos].id = id;
+    _glfw.wl.primarySelectionOffers[pos].idx = ++_glfw.wl.primarySelectionOffersCounter;
+end:
+    zwp_primary_selection_offer_v1_add_listener(id, &primary_selection_offer_listener, NULL);
+}
+
 static void drag_enter(void *data, struct wl_data_device *wl_data_device, uint32_t serial, struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y, struct wl_data_offer *id) {
     for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
         if (_glfw.wl.dataOffers[i].id == id) {
-            _glfw.wl.dataOffers[i].offer_type = 2;
+            _glfw.wl.dataOffers[i].offer_type = DRAG_AND_DROP;
             _glfw.wl.dataOffers[i].surface = surface;
             const char *mime = _glfw.wl.dataOffers[i].has_uri_list ? URI_LIST_MIME : NULL;
             wl_data_offer_accept(id, serial, mime);
-        } else if (_glfw.wl.dataOffers[i].offer_type == 2) {
-            _glfw.wl.dataOffers[i].offer_type = 0;  // previous drag offer
+        } else if (_glfw.wl.dataOffers[i].offer_type == DRAG_AND_DROP) {
+            _glfw.wl.dataOffers[i].offer_type = EXPIRED;  // previous drag offer
         }
     }
     prune_unclaimed_data_offers();
@@ -1685,18 +1818,16 @@ static void drag_enter(void *data, struct wl_data_device *wl_data_device, uint32
 
 static void drag_leave(void *data, struct wl_data_device *wl_data_device) {
     for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
-        if (_glfw.wl.dataOffers[i].offer_type == 2) {
+        if (_glfw.wl.dataOffers[i].offer_type == DRAG_AND_DROP) {
             wl_data_offer_destroy(_glfw.wl.dataOffers[i].id);
             memset(_glfw.wl.dataOffers + i, 0, sizeof(_glfw.wl.dataOffers[0]));
         }
     }
 }
 
-
-
 static void drop(void *data, struct wl_data_device *wl_data_device) {
     for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
-        if (_glfw.wl.dataOffers[i].offer_type == 2) {
+        if (_glfw.wl.dataOffers[i].offer_type == DRAG_AND_DROP) {
             char *uri_list = read_data_offer(_glfw.wl.dataOffers[i].id, URI_LIST_MIME);
             if (uri_list) {
                 wl_data_offer_finish(_glfw.wl.dataOffers[i].id);
@@ -1738,22 +1869,36 @@ const static struct wl_data_device_listener data_device_listener = {
     .leave = drag_leave,
 };
 
+const static struct zwp_primary_selection_device_v1_listener primary_selection_device_listener = {
+    .data_offer = handle_primary_selection_offer,
+    .selection = mark_primary_selection_offer,
+};
+
 
 static void
-copy_callback_done(void *data, struct wl_callback *callback, uint32_t serial) {
-    if (!_glfw.wl.dataDevice) return;
-    if (data == (void*)_glfw.wl.dataSourceForClipboard) {
+clipboard_copy_callback_done(void *data, struct wl_callback *callback, uint32_t serial) {
+    if (_glfw.wl.dataDevice && data == (void*)_glfw.wl.dataSourceForClipboard) {
         wl_data_device_set_selection(_glfw.wl.dataDevice, data, serial);
     }
+    wl_callback_destroy(callback);
 }
 
-const static struct wl_callback_listener copy_callback_listener = {
-    .done = copy_callback_done
-};
+static void
+primary_selection_copy_callback_done(void *data, struct wl_callback *callback, uint32_t serial) {
+    if (_glfw.wl.primarySelectionDevice && data == (void*)_glfw.wl.dataSourceForPrimarySelection) {
+        zwp_primary_selection_device_v1_set_selection(_glfw.wl.primarySelectionDevice, data, serial);
+    }
+    wl_callback_destroy(callback);
+}
 
 void _glfwSetupWaylandDataDevice() {
     _glfw.wl.dataDevice = wl_data_device_manager_get_data_device(_glfw.wl.dataDeviceManager, _glfw.wl.seat);
     if (_glfw.wl.dataDevice) wl_data_device_add_listener(_glfw.wl.dataDevice, &data_device_listener, NULL);
+}
+
+void _glfwSetupWaylandPrimarySelectionDevice() {
+    _glfw.wl.primarySelectionDevice = zwp_primary_selection_device_manager_v1_get_device(_glfw.wl.primarySelectionDeviceManager, _glfw.wl.seat);
+    if (_glfw.wl.primarySelectionDevice) zwp_primary_selection_device_v1_add_listener(_glfw.wl.primarySelectionDevice, &primary_selection_device_listener, NULL);
 }
 
 static inline GLFWbool _glfwEnsureDataDevice() {
@@ -1804,15 +1949,71 @@ void _glfwPlatformSetClipboardString(const char* string)
     wl_data_source_offer(_glfw.wl.dataSourceForClipboard, "STRING");
     wl_data_source_offer(_glfw.wl.dataSourceForClipboard, "UTF8_STRING");
     struct wl_callback *callback = wl_display_sync(_glfw.wl.display);
-    wl_callback_add_listener(callback, &copy_callback_listener, _glfw.wl.dataSourceForClipboard);
+    const static struct wl_callback_listener clipboard_copy_callback_listener = {.done = clipboard_copy_callback_done};
+    wl_callback_add_listener(callback, &clipboard_copy_callback_listener, _glfw.wl.dataSourceForClipboard);
 }
 
 const char* _glfwPlatformGetClipboardString(void)
 {
     for (size_t i = 0; i < arraysz(_glfw.wl.dataOffers); i++) {
-        if (_glfw.wl.dataOffers[i].id && _glfw.wl.dataOffers[i].mime && _glfw.wl.dataOffers[i].offer_type == 1) {
+        if (_glfw.wl.dataOffers[i].id && _glfw.wl.dataOffers[i].mime && _glfw.wl.dataOffers[i].offer_type == CLIPBOARD) {
             if (_glfw.wl.dataOffers[i].is_self_offer) return _glfw.wl.clipboardString;
-            return _glfwReceiveClipboardText(_glfw.wl.dataOffers[i].id, _glfw.wl.dataOffers[i].mime);
+            free(_glfw.wl.pasteString);
+            _glfw.wl.pasteString = read_data_offer(_glfw.wl.dataOffers[i].id, _glfw.wl.dataOffers[i].mime);
+            return _glfw.wl.pasteString;
+        }
+    }
+    return NULL;
+}
+
+void _glfwPlatformSetPrimarySelectionString(const char* string)
+{
+    if (!_glfw.wl.primarySelectionDevice) {
+        static GLFWbool warned_about_primary_selection_device = GLFW_FALSE;
+        if (!warned_about_primary_selection_device) {
+            _glfwInputError(GLFW_PLATFORM_ERROR,
+                            "Wayland: Cannot copy no primary selection device available");
+            warned_about_primary_selection_device = GLFW_TRUE;
+        }
+        return;
+    }
+    if (_glfw.wl.primarySelectionString == string) return;
+    free(_glfw.wl.primarySelectionString);
+    _glfw.wl.primarySelectionString = _glfw_strdup(string);
+
+    if (_glfw.wl.dataSourceForPrimarySelection)
+        zwp_primary_selection_source_v1_destroy(_glfw.wl.dataSourceForPrimarySelection);
+    _glfw.wl.dataSourceForPrimarySelection = zwp_primary_selection_device_manager_v1_create_source(_glfw.wl.primarySelectionDeviceManager);
+    if (!_glfw.wl.dataSourceForPrimarySelection)
+    {
+        _glfwInputError(GLFW_PLATFORM_ERROR,
+                        "Wayland: Cannot copy failed to create primary selection source");
+        return;
+    }
+    zwp_primary_selection_source_v1_add_listener(_glfw.wl.dataSourceForPrimarySelection, &primary_selection_source_listener, NULL);
+    zwp_primary_selection_source_v1_offer(_glfw.wl.dataSourceForPrimarySelection, clipboard_mime());
+    zwp_primary_selection_source_v1_offer(_glfw.wl.dataSourceForPrimarySelection, "text/plain");
+    zwp_primary_selection_source_v1_offer(_glfw.wl.dataSourceForPrimarySelection, "text/plain;charset=utf-8");
+    zwp_primary_selection_source_v1_offer(_glfw.wl.dataSourceForPrimarySelection, "TEXT");
+    zwp_primary_selection_source_v1_offer(_glfw.wl.dataSourceForPrimarySelection, "STRING");
+    zwp_primary_selection_source_v1_offer(_glfw.wl.dataSourceForPrimarySelection, "UTF8_STRING");
+    struct wl_callback *callback = wl_display_sync(_glfw.wl.display);
+    const static struct wl_callback_listener primary_selection_copy_callback_listener = {.done = primary_selection_copy_callback_done};
+    wl_callback_add_listener(callback, &primary_selection_copy_callback_listener, _glfw.wl.dataSourceForPrimarySelection);
+}
+
+const char* _glfwPlatformGetPrimarySelectionString(void)
+{
+    if (_glfw.wl.dataSourceForPrimarySelection != NULL) return _glfw.wl.primarySelectionString;
+
+    for (size_t i = 0; i < arraysz(_glfw.wl.primarySelectionOffers); i++) {
+        if (_glfw.wl.primarySelectionOffers[i].id && _glfw.wl.primarySelectionOffers[i].mime && _glfw.wl.primarySelectionOffers[i].offer_type == PRIMARY_SELECTION) {
+            if (_glfw.wl.primarySelectionOffers[i].is_self_offer) {
+                return _glfw.wl.primarySelectionString;
+            }
+            free(_glfw.wl.pasteString);
+            _glfw.wl.pasteString = read_primary_selection_offer(_glfw.wl.primarySelectionOffers[i].id, _glfw.wl.primarySelectionOffers[i].mime);
+            return _glfw.wl.pasteString;
         }
     }
     return NULL;
@@ -1886,6 +2087,15 @@ _glfwPlatformUpdateIMEState(_GLFWwindow *w, int which, int a, int b, int c, int 
     glfw_xkb_update_ime_state(w, &_glfw.wl.xkb, which, a, b, c, d);
 }
 
+static void
+frame_handle_redraw(void *data, struct wl_callback *callback, uint32_t time) {
+    _GLFWwindow* window = (_GLFWwindow*) data;
+    if (callback == window->wl.frameCallbackData.current_wl_callback) {
+        window->wl.frameCallbackData.callback(window->wl.frameCallbackData.id);
+        window->wl.frameCallbackData.current_wl_callback = NULL;
+    }
+    wl_callback_destroy(callback);
+}
 
 //////////////////////////////////////////////////////////////////////////
 //////                        GLFW native API                       //////
@@ -1906,4 +2116,17 @@ GLFWAPI struct wl_surface* glfwGetWaylandWindow(GLFWwindow* handle)
 
 GLFWAPI int glfwGetXKBScancode(const char* keyName, GLFWbool caseSensitive) {
     return glfw_xkb_keysym_from_name(keyName, caseSensitive);
+}
+
+GLFWAPI void glfwRequestWaylandFrameEvent(GLFWwindow *handle, unsigned long long id, void(*callback)(unsigned long long id)) {
+    _GLFWwindow* window = (_GLFWwindow*) handle;
+    static const struct wl_callback_listener frame_listener = { .done = frame_handle_redraw };
+    if (window->wl.frameCallbackData.current_wl_callback) wl_callback_destroy(window->wl.frameCallbackData.current_wl_callback);
+    window->wl.frameCallbackData.id = id;
+    window->wl.frameCallbackData.callback = callback;
+    window->wl.frameCallbackData.current_wl_callback = wl_surface_frame(window->wl.surface);
+    if (window->wl.frameCallbackData.current_wl_callback) {
+        wl_callback_add_listener(window->wl.frameCallbackData.current_wl_callback, &frame_listener, window);
+        wl_surface_commit(window->wl.surface);
+    }
 }

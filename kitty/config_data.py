@@ -140,7 +140,8 @@ For example::
     'shortcuts.tab': [
             _('Tab management'), '',
             _('''\
-You can also create shortcuts to go to specific tabs, with 1 being the first tab::
+You can also create shortcuts to go to specific tabs, with 1 being the first
+tab, 2 the second tab and -1 being the previously active tab::
 
     map ctrl+alt+1 goto_tab 1
     map ctrl+alt+2 goto_tab 2
@@ -323,10 +324,15 @@ def scrollback_lines(x):
     return x
 
 
+def scrollback_pager_history_size(x):
+    ans = int(max(0, float(x)) * 1024 * 1024)
+    return min(ans, 4096 * 1024 * 1024 - 1)
+
+
 o('scrollback_lines', 2000, option_type=scrollback_lines, long_text=_('''
 Number of lines of history to keep in memory for scrolling back. Memory is allocated
 on demand. Negative numbers are (effectively) infinite scrollback. Note that using
-very large scrollback is not recommended a it can slow down resizing of the terminal
+very large scrollback is not recommended as it can slow down resizing of the terminal
 and also use large amounts of RAM.'''))
 
 o('scrollback_pager', 'less --chop-long-lines --RAW-CONTROL-CHARS +INPUT_LINE_NUMBER', option_type=to_cmdline, long_text=_('''
@@ -336,10 +342,26 @@ use can handle ANSI escape sequences for colors and text formatting.
 INPUT_LINE_NUMBER in the command line above will be replaced by an integer
 representing which line should be at the top of the screen.'''))
 
+o('scrollback_pager_history_size', 0, option_type=scrollback_pager_history_size, long_text=_('''
+Separate scrollback history size, used only for browsing the scrollback buffer (in MB).
+This separate buffer is not available for interactive scrolling but will be
+piped to the pager program when viewing scrollback buffer in a separate window.
+The current implementation stores one character in 4 bytes, so approximatively
+2500 lines per megabyte at 100 chars per line. A value of zero or less disables
+this feature. The maximum allowed size is 4GB.'''))
+
 o('wheel_scroll_multiplier', 5.0, long_text=_('''
 Modify the amount scrolled by the mouse wheel. Note this is only used for low
 precision scrolling devices, not for high precision scrolling on platforms such
 as macOS and Wayland. Use negative numbers to change scroll direction.'''))
+
+o('touch_scroll_multiplier', 1.0, long_text=_('''
+Modify the amount scrolled by a touchpad. Note this is only used for high
+precision scrolling devices on platforms such as macOS and Wayland.
+Use negative numbers to change scroll direction.'''))
+
+# }}}
+
 # }}}
 
 g('mouse')  # {{{
@@ -372,7 +394,7 @@ operating system's default URL handler.'''))
 o('copy_on_select', False, long_text=_('''
 Copy to clipboard on select. With this enabled, simply selecting text with
 the mouse will cause the text to be copied to clipboard. Useful on platforms
-such as macOS/Wayland that do not have the concept of primary selections. Note
+such as macOS that do not have the concept of primary selections. Note
 that this is a security risk, as all programs, including websites open in your
 browser can read the contents of the clipboard.'''))
 
@@ -385,9 +407,9 @@ Characters considered part of a word when double clicking. In addition to these 
 any character that is marked as an alpha-numeric character in the unicode
 database will be matched.'''))
 
-o('click_interval', 0.5, option_type=positive_float, long_text=_('''
-The interval between successive clicks to detect
-double/triple clicks (in seconds)'''))
+o('click_interval', -1.0, option_type=float, long_text=_('''
+The interval between successive clicks to detect double/triple clicks (in seconds).
+Negative numbers will use the system default instead, if available, or fallback to 0.5.'''))
 
 o('mouse_hide_wait', 3.0, option_type=positive_float, long_text=_('''
 Hide mouse cursor after the specified number of seconds
@@ -524,6 +546,12 @@ o('inactive_text_alpha', 1.0, option_type=unit_float, long_text=_('''
 Fade the text in inactive windows by the specified amount (a number between
 zero and one, with zero being fully faded).
 '''))
+
+o('hide_window_decorations', False, long_text=_('''
+Hide the window decorations (title-bar and window borders).
+Whether this works and exactly what effect it has depends on the
+window manager/operating system.
+'''))
 # }}}
 
 g('tabbar')   # {{{
@@ -558,8 +586,8 @@ Which edge to show the tab bar on, top or bottom'''))
 o('tab_bar_margin_width', 0.0, option_type=positive_float, long_text=_('''
 The margin to the left and right of the tab bar (in pts)'''))
 
-o('tab_bar_style', 'fade', option_type=choices('fade', 'separator'), long_text=_('''
-The tab bar style, can be one of: :code:`fade` or :code:`separator`. In the fade style,
+o('tab_bar_style', 'fade', option_type=choices('fade', 'separator', 'hidden'), long_text=_('''
+The tab bar style, can be one of: :code:`fade`, :code:`separator` or :code:`hidden`. In the fade style,
 each tab's edges fade into the background color, in the separator style, tabs are
 separated by a configurable separator.
 '''))
@@ -690,7 +718,7 @@ Specify environment variables to set in all child processes. Note that
 environment variables are expanded recursively, so if you use::
 
     env MYVAR1=a
-    env MYVAR2=${MYVAR}/${HOME}/b
+    env MYVAR2=${MYVAR1}/${HOME}/b
 
 The value of MYVAR2 will be :code:`a/<path to home directory>/b`.
 '''))
@@ -755,17 +783,8 @@ an arbitrary color, such as :code:`#12af59` or :code:`red`. WARNING: This option
 using a hack, as there is no proper Cocoa API for it. It sets the background
 color of the entire window and makes the titlebar transparent. As such it is
 incompatible with :opt:`background_opacity`. If you want to use both, you are
-probably better off just hiding the titlebar with :opt:`macos_hide_titlebar`.
+probably better off just hiding the titlebar with :opt:`hide_window_decorations`.
 '''))
-
-o('macos_hide_titlebar', False, long_text=_('''
-Hide the kitty window's title bar on macOS.'''))
-
-o('x11_hide_window_decorations', False, long_text=_('''
-Hide the window decorations (title bar and window borders) on X11 and Wayland.
-Whether this works and exactly what effect it has depends on the window
-manager, as it is the job of the window manager/compositor to draw window
-decorations.'''))
 
 o('macos_option_as_alt', True, long_text=_('''
 Use the option key as an alt key. With this set to no, kitty will use
@@ -858,18 +877,9 @@ the following opens the scrollback buffer in less in an overlay window::
 
     map f1 pipe @ansi overlay less +G -R
 
-Placeholders available are: @text (which is plain text) and @ansi (which
-includes text styling escape codes). For only the current screen, use @screen
-or @ansi_screen. For the secondary screen, use @alternate and @ansi_alternate.
-The secondary screen is the screen not currently displayed. For
-example if you run a fullscreen terminal application, the secondary screen will
-be the screen you return to when quitting the application. You can also use
-``none`` for no :file:`STDIN` input.
-
-To open in a new window, tab or new OS window, use ``window``, ``tab``, or
-``os_window`` respectively. You can also use ``none`` in which case the data
-will be piped into the program without creating any windows, useful if the
-program is a GUI program that creates its own windows. '''))
+For more details on piping screen and buffer contents to external programs,
+see :doc:`pipe`.
+'''))
 
 
 # }}}
@@ -977,12 +987,21 @@ k('reset_terminal', 'kitty_mod+delete', 'clear_terminal reset active', _('Reset 
     long_text=_('''
 You can create shortcuts to clear/reset the terminal. For example::
 
+    # Reset the terminal
     map kitty_mod+f9 clear_terminal reset active
+    # Clear the terminal screen by erasing all contents
     map kitty_mod+f10 clear_terminal clear active
+    # Clear the terminal scrollback by erasing it
     map kitty_mod+f11 clear_terminal scrollback active
+    # Scroll the contents of the screen into the scrollback
+    map kitty_mod+f12 clear_terminal scroll active
 
-These will reset screen/clear screen/clear screen+scrollback respectively. If you want to
-operate on all windows instead of just the current one, use :italic:`all` instead of :italic`active`.
+If you want to operate on all windows instead of just the current one, use :italic:`all` instead of :italic`active`.
+
+It is also possible to remap Ctrl+L to both scroll the current screen contents into the scrollback buffer
+and clear the screen, instead of just clearing the screen::
+
+    map ctrl+l combine : clear_terminal scroll active : send_text normal,application \x0c
 '''))
 k('send_text', 'ctrl+shift+alt+h', 'send_text all Hello World', _('Send arbitrary text on key presses'),
   add_to_default=False, long_text=_('''

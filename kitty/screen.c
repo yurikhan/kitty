@@ -107,7 +107,7 @@ new(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
         self->color_profile = alloc_color_profile();
         self->main_linebuf = alloc_linebuf(lines, columns); self->alt_linebuf = alloc_linebuf(lines, columns);
         self->linebuf = self->main_linebuf;
-        self->historybuf = alloc_historybuf(MAX(scrollback, lines), columns);
+        self->historybuf = alloc_historybuf(MAX(scrollback, lines), columns, OPT(scrollback_pager_history_size));
         self->main_grman = grman_alloc();
         self->alt_grman = grman_alloc();
         self->grman = self->main_grman;
@@ -165,8 +165,9 @@ screen_dirty_sprite_positions(Screen *self) {
 
 static inline HistoryBuf*
 realloc_hb(HistoryBuf *old, unsigned int lines, unsigned int columns) {
-    HistoryBuf *ans = alloc_historybuf(lines, columns);
+    HistoryBuf *ans = alloc_historybuf(lines, columns, 0);
     if (ans == NULL) { PyErr_NoMemory(); return NULL; }
+    ans->pagerhist = old->pagerhist; old->pagerhist = NULL;
     historybuf_rewrap(old, ans);
     return ans;
 }
@@ -365,6 +366,7 @@ draw_combining_char(Screen *self, char_type ch) {
             CPUCell *cpu_cell = self->linebuf->line->cpu_cells + xpos;
             GPUCell *gpu_cell = self->linebuf->line->gpu_cells + xpos;
             if ((gpu_cell->attrs & WIDTH_MASK) != 2 && cpu_cell->cc_idx[0] == VS16 && is_emoji_presentation_base(cpu_cell->ch)) {
+                if (self->cursor->x <= self->columns - 1) line_set_char(self->linebuf->line, self->cursor->x, 0, 0, self->cursor, true);
                 gpu_cell->attrs = (gpu_cell->attrs & !WIDTH_MASK) | 2;
                 if (xpos == self->columns - 1) move_widened_char(self, cpu_cell, gpu_cell, xpos, ypos);
                 else self->cursor->x++;
@@ -974,9 +976,9 @@ screen_restore_cursor(Screen *self) {
 
 void
 screen_restore_modes(Screen *self) {
-    ScreenModes *m;
+    const ScreenModes *m;
     buffer_pop(&self->modes_savepoints, m);
-    if (m == NULL) *m = empty_modes;
+    if (m == NULL) m = &empty_modes;
 #define S(name) set_mode_from_const(self, name, m->m##name)
     S(DECTCEM); S(DECSCNM); S(DECSCNM); S(DECOM); S(DECAWM); S(DECARM); S(DECCKM);
     S(BRACKETED_PASTE); S(FOCUS_TRACKING); S(EXTENDED_KEYBOARD);
@@ -1124,6 +1126,15 @@ screen_insert_lines(Screen *self, unsigned int count) {
         self->selection = EMPTY_SELECTION;
         screen_carriage_return(self);
     }
+}
+
+void
+screen_scroll_until_cursor(Screen *self) {
+    unsigned int num_lines_to_scroll = MIN(self->margin_bottom, self->cursor->y + 1);
+    index_type y = self->cursor->y;
+    self->cursor->y = self->margin_bottom;
+    while (num_lines_to_scroll--) screen_index(self);
+    self->cursor->y = y;
 }
 
 void
@@ -1405,7 +1416,6 @@ screen_request_capabilities(Screen *self, char c, PyObject *q) {
     static char buf[128];
     int shape = 0;
     const char *query;
-    Cursor blank_cursor = {{0}};
     switch(c) {
         case '+':
             CALLBACK("request_capabilities", "O", q);
@@ -1429,7 +1439,7 @@ screen_request_capabilities(Screen *self, char c, PyObject *q) {
                 shape = snprintf(buf, sizeof(buf), "1$r%d q", shape);
             } else if (strcmp("m", query) == 0) {
                 // SGR
-                shape = snprintf(buf, sizeof(buf), "1$r%sm", cursor_as_sgr(self->cursor, &blank_cursor));
+                shape = snprintf(buf, sizeof(buf), "1$r%sm", cursor_as_sgr(self->cursor));
             } else if (strcmp("r", query) == 0) {
                 shape = snprintf(buf, sizeof(buf), "1$r%u;%ur", self->margin_top + 1, self->margin_bottom + 1);
             } else {
@@ -1863,6 +1873,7 @@ is_using_alternate_linebuf(Screen *self, PyObject *a UNUSED) {
 WRAP1E(cursor_back, 1, -1)
 WRAP1B(erase_in_line, 0)
 WRAP1B(erase_in_display, 0)
+WRAP0(scroll_until_cursor)
 
 #define MODE_GETSET(name, uname) \
     static PyObject* name##_get(Screen *self, void UNUSED *closure) { PyObject *ans = self->modes.m##uname ? Py_True : Py_False; Py_INCREF(ans); return ans; } \
@@ -2169,6 +2180,7 @@ static PyMethodDef methods[] = {
     MND(cursor_back, METH_VARARGS)
     MND(erase_in_line, METH_VARARGS)
     MND(erase_in_display, METH_VARARGS)
+    MND(scroll_until_cursor, METH_NOARGS)
     METHOD(current_char_width, METH_NOARGS)
     MND(insert_lines, METH_VARARGS)
     MND(delete_lines, METH_VARARGS)

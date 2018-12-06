@@ -565,7 +565,10 @@ prepare_to_render_os_window(OSWindow *os_window, double now, unsigned int *activ
         }
         if (send_cell_data_to_gpu(TD.vao_idx, 0, TD.xstart, TD.ystart, TD.dx, TD.dy, TD.screen, os_window)) needs_render = true;
     }
-    if (OPT(mouse_hide_wait) > 0 && now - os_window->last_mouse_activity_at > OPT(mouse_hide_wait)) hide_mouse(os_window);
+    if (OPT(mouse_hide_wait) > 0 && !is_mouse_hidden(os_window)) {
+        if (now - os_window->last_mouse_activity_at >= OPT(mouse_hide_wait)) hide_mouse(os_window);
+        else set_maximum_wait(OPT(mouse_hide_wait) - now + os_window->last_mouse_activity_at);
+    }
     Tab *tab = os_window->tabs + os_window->active_tab;
     *active_window_bg = OPT(background);
     for (unsigned int i = 0; i < tab->num_windows; i++) {
@@ -599,6 +602,8 @@ prepare_to_render_os_window(OSWindow *os_window, double now, unsigned int *activ
 
 static inline void
 render_os_window(OSWindow *os_window, double now, unsigned int active_window_id, color_type active_window_bg, unsigned int num_visible_windows) {
+    // ensure all pixels are cleared to background color at least once in every buffer
+    if (os_window->clear_count++ < 3) blank_os_window(os_window);
     Tab *tab = os_window->tabs + os_window->active_tab;
     BorderRects *br = &tab->border_rects;
     draw_borders(br->vao_idx, br->num_border_rects, br->rect_buf, br->is_dirty, os_window->viewport_width, os_window->viewport_height, active_window_bg, num_visible_windows, os_window);
@@ -620,6 +625,7 @@ render_os_window(OSWindow *os_window, double now, unsigned int active_window_id,
     os_window->last_active_tab = os_window->active_tab; os_window->last_num_tabs = os_window->num_tabs; os_window->last_active_window_id = active_window_id;
     os_window->focused_at_last_render = os_window->is_focused;
     os_window->is_damaged = false;
+    if (global_state.is_wayland && OPT(sync_to_monitor)) wayland_request_frame_render(os_window);
 #undef WD
 #undef TD
 }
@@ -635,6 +641,10 @@ render(double now) {
     for (size_t i = 0; i < global_state.num_os_windows; i++) {
         OSWindow *w = global_state.os_windows + i;
         if (!w->num_tabs || !should_os_window_be_rendered(w)) continue;
+        if (global_state.is_wayland && w->wayland_render_state != RENDER_FRAME_READY && OPT(sync_to_monitor)) {
+            if (w->wayland_render_state == RENDER_FRAME_NOT_REQUESTED) wayland_request_frame_render(w);
+            continue;
+        }
         bool needs_render = w->is_damaged;
         make_os_window_context_current(w);
         if (w->viewport_size_dirty) {
@@ -864,7 +874,7 @@ read_bytes(int fd, Screen *screen) {
     while(true) {
         len = read(fd, screen->read_buf + orig_sz, available_buffer_space);
         if (len < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR || errno == EAGAIN) continue;
             if (errno != EIO) perror("Call to read() from child fd failed");
             return false;
         }
@@ -981,7 +991,8 @@ io_loop(void *data) {
     // The I/O thread loop
     size_t i;
     int ret;
-    bool has_more, data_received;
+    bool has_more, data_received, has_pending_wakeups = false;
+    double last_main_loop_wakeup_at = -1, now = -1;
     Screen *screen;
     ChildMonitor *self = (ChildMonitor*)data;
     set_thread_name("KittyChildMon");
@@ -1000,7 +1011,14 @@ io_loop(void *data) {
             fds[EXTRA_FDS + i].events = (screen->read_buf_sz < READ_BUF_SZ ? POLLIN : 0) | (screen->write_buf_used ? POLLOUT  : 0);
             screen_mutex(unlock, read); screen_mutex(unlock, write);
         }
-        ret = poll(fds, self->count + EXTRA_FDS, -1);
+        if (has_pending_wakeups) {
+            now = monotonic();
+            double time_delta = OPT(input_delay) - (now - last_main_loop_wakeup_at);
+            if (time_delta >= 0) ret = poll(fds, self->count + EXTRA_FDS, (int)ceil(1000 * time_delta));
+            else ret = 0;
+        } else {
+            ret = poll(fds, self->count + EXTRA_FDS, -1);
+        }
         if (ret > 0) {
             if (fds[0].revents && POLLIN) drain_fd(fds[0].fd); // wakeup
             if (fds[1].revents && POLLIN) {
@@ -1044,8 +1062,17 @@ io_loop(void *data) {
                 perror("Call to poll() failed");
             }
         }
-        if (data_received) wakeup_main_loop();
+#define WAKEUP { wakeup_main_loop(); last_main_loop_wakeup_at = now; has_pending_wakeups = false; }
+        // we only wakeup the main loop after input_delay as wakeup is an expensive operation
+        // on some platforms, such as cocoa
+        if (data_received) {
+            if ((now = monotonic()) - last_main_loop_wakeup_at > OPT(input_delay)) WAKEUP
+            else has_pending_wakeups = true;
+        } else {
+            if (has_pending_wakeups && (now = monotonic()) - last_main_loop_wakeup_at > OPT(input_delay)) WAKEUP
+        }
     }
+#undef WAKEUP
     children_mutex(lock);
     for (i = 0; i < self->count; i++) children[i].needs_removal = true;
     remove_children(self);

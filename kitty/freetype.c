@@ -16,6 +16,10 @@
 #define HARFBUZZ_HAS_CHANGE_FONT
 #endif
 
+#if FREETYPE_MAJOR == 2 && FREETYPE_MINOR < 7
+#define FT_Bitmap_Init FT_Bitmap_New
+#endif
+
 #include FT_FREETYPE_H
 #include FT_BITMAP_H
 typedef struct {
@@ -232,27 +236,6 @@ load_glyph(Face *self, int glyph_index, int load_type) {
     int flags = get_load_flags(self->hinting, self->hintstyle, load_type);
     int error = FT_Load_Glyph(self->face, glyph_index, flags);
     if (error) { set_freetype_error("Failed to load glyph, with error:", error); return false; }
-
-    // Embedded bitmap glyph?
-    if (self->face->glyph->bitmap.pixel_mode == FT_PIXEL_MODE_MONO && load_type != FT_LOAD_DEFAULT) {
-        FT_Bitmap bitmap;
-        FT_Bitmap_New(&bitmap);
-
-        // This also sets pixel_mode to FT_PIXEL_MODE_GRAY so we don't have to
-        error = FT_Bitmap_Convert(library, &self->face->glyph->bitmap, &bitmap, 1);
-        if (error) { set_freetype_error("Failed to convert bitmap, with error:", error); return false; }
-
-        // Normalize gray levels to the range [0..255]
-        bitmap.num_grays = 256;
-        unsigned int stride = bitmap.pitch < 0 ? -bitmap.pitch : bitmap.pitch;
-        for (unsigned int i = 0; i < bitmap.rows; ++i) {
-            // We only have 2 levels
-            for (unsigned int j = 0; j < bitmap.width; ++j) bitmap.buffer[i * stride + j] *= 255;
-        }
-        error = FT_Bitmap_Copy(library, &bitmap, &self->face->glyph->bitmap);
-        if (error) { set_freetype_error("Failed to copy bitmap, with error:", error); return false; }
-        FT_Bitmap_Done(library, &bitmap);
-    }
     return true;
 }
 
@@ -294,6 +277,20 @@ is_glyph_empty(PyObject *s, glyph_index g) {
 #undef M
 }
 
+int
+get_glyph_width(PyObject *s, glyph_index g) {
+    Face *self = (Face*)s;
+    if (!load_glyph(self, g, FT_LOAD_DEFAULT)) { PyErr_Print(); return false; }
+    FT_Bitmap *bitmap = &self->face->glyph->bitmap;
+#define M self->face->glyph->metrics
+#define B self->face->glyph->bitmap
+    /* printf("glyph: %u bitmap.width: %d bitmap.rows: %d horiAdvance: %ld horiBearingX: %ld horiBearingY: %ld vertBearingX: %ld vertBearingY: %ld vertAdvance: %ld width: %ld height: %ld\n", */
+    /*         g, B.width, B.rows, M.horiAdvance, M.horiBearingX, M.horiBearingY, M.vertBearingX, M.vertBearingY, M.vertAdvance, M.width, M.height); */
+    return bitmap->width;
+#undef M
+#undef B
+}
+
 hb_font_t*
 harfbuzz_font_for_face(PyObject *self) { return ((Face*)self)->harfbuzz_font; }
 
@@ -305,7 +302,16 @@ typedef struct {
     FT_Pixel_Mode pixel_mode;
     bool needs_free;
     unsigned int factor, right_edge;
+    int bitmap_left, bitmap_top;
 } ProcessedBitmap;
+
+static inline void
+free_processed_bitmap(ProcessedBitmap *bm) {
+    if (bm->needs_free) {
+        bm->needs_free = false;
+        free(bm->buf); bm->buf = NULL;
+    }
+}
 
 static inline void
 trim_borders(ProcessedBitmap *ans, size_t extra) {
@@ -324,17 +330,48 @@ trim_borders(ProcessedBitmap *ans, size_t extra) {
     ans->width -= extra;
 }
 
+static inline void
+populate_processed_bitmap(FT_GlyphSlotRec *slot, FT_Bitmap *bitmap, ProcessedBitmap *ans, bool copy_buf) {
+    ans->stride = bitmap->pitch < 0 ? -bitmap->pitch : bitmap->pitch;
+    ans->rows = bitmap->rows;
+    if (copy_buf) {
+        ans->buf = calloc(ans->rows, ans->stride);
+        if (!ans->buf) fatal("Out of memory");
+        ans->needs_free = true;
+        memcpy(ans->buf, bitmap->buffer, ans->rows * ans->stride);
+    } else ans->buf = bitmap->buffer;
+    ans->start_x = 0; ans->width = bitmap->width;
+    ans->pixel_mode = bitmap->pixel_mode;
+    ans->bitmap_top = slot->bitmap_top; ans->bitmap_left = slot->bitmap_left;
+}
 
 static inline bool
 render_bitmap(Face *self, int glyph_id, ProcessedBitmap *ans, unsigned int cell_width, unsigned int cell_height, unsigned int num_cells, bool bold, bool italic, bool rescale, FONTS_DATA_HANDLE fg) {
     if (!load_glyph(self, glyph_id, FT_LOAD_RENDER)) return false;
     unsigned int max_width = cell_width * num_cells;
-    FT_Bitmap *bitmap = &self->face->glyph->bitmap;
-    ans->buf = bitmap->buffer;
-    ans->start_x = 0; ans->width = bitmap->width;
-    ans->stride = bitmap->pitch < 0 ? -bitmap->pitch : bitmap->pitch;
-    ans->rows = bitmap->rows;
-    ans->pixel_mode = bitmap->pixel_mode;
+
+    // Embedded bitmap glyph?
+    if (self->face->glyph->bitmap.pixel_mode == FT_PIXEL_MODE_MONO) {
+        FT_Bitmap bitmap;
+        FT_Bitmap_Init(&bitmap);
+
+        // This also sets pixel_mode to FT_PIXEL_MODE_GRAY so we don't have to
+        int error = FT_Bitmap_Convert(library, &self->face->glyph->bitmap, &bitmap, 1);
+        if (error) { set_freetype_error("Failed to convert bitmap, with error:", error); return false; }
+
+        // Normalize gray levels to the range [0..255]
+        bitmap.num_grays = 256;
+        unsigned int stride = bitmap.pitch < 0 ? -bitmap.pitch : bitmap.pitch;
+        for (unsigned int i = 0; i < bitmap.rows; ++i) {
+            // We only have 2 levels
+            for (unsigned int j = 0; j < bitmap.width; ++j) bitmap.buffer[i * stride + j] *= 255;
+        }
+        populate_processed_bitmap(self->face->glyph, &bitmap, ans, true);
+        FT_Bitmap_Done(library, &bitmap);
+    } else {
+        populate_processed_bitmap(self->face->glyph, &self->face->glyph->bitmap, ans, false);
+    }
+
     if (ans->width > max_width) {
         size_t extra = ans->width - max_width;
         if (italic && extra < cell_width / 2) {
@@ -345,8 +382,9 @@ render_bitmap(Face *self, int glyph_id, ProcessedBitmap *ans, unsigned int cell_
             // bad, we just crop the bitmap on the right. See https://github.com/kovidgoyal/kitty/issues/352
         } else if (rescale && self->is_scalable && extra > 1) {
             FT_F26Dot6 char_width = self->char_width, char_height = self->char_height;
-            float ar = (float)max_width / (float)bitmap->width;
+            float ar = (float)max_width / (float)ans->width;
             if (set_font_size(self, (FT_F26Dot6)((float)self->char_width * ar), (FT_F26Dot6)((float)self->char_height * ar), self->xdpi, self->ydpi, 0, fg->cell_height)) {
+                free_processed_bitmap(ans);
                 if (!render_bitmap(self, glyph_id, ans, cell_width, cell_height, num_cells, bold, italic, false, fg)) return false;
                 if (!set_font_size(self, char_width, char_height, self->xdpi, self->ydpi, 0, fg->cell_height)) return false;
             } else return false;
@@ -422,6 +460,8 @@ render_color_bitmap(Face *self, int glyph_id, ProcessedBitmap *ans, unsigned int
     ans->rows = bitmap->rows;
     ans->pixel_mode = bitmap->pixel_mode;
     if (ans->width > num_cells * cell_width + 2) downsample_bitmap(ans, num_cells * cell_width, cell_height);
+    ans->bitmap_top = (float)self->face->glyph->bitmap_top / ans->factor;
+    ans->bitmap_left = (float)self->face->glyph->bitmap_left / ans->factor;
     detect_right_edge(ans);
     return true;
 }
@@ -444,16 +484,14 @@ copy_color_bitmap(uint8_t *src, pixel* dest, Region *src_rect, Region *dest_rect
 }
 
 static inline void
-place_bitmap_in_canvas(pixel *cell, ProcessedBitmap *bm, size_t cell_width, size_t cell_height, float x_offset, float y_offset, FT_Glyph_Metrics *metrics, size_t baseline) {
+place_bitmap_in_canvas(pixel *cell, ProcessedBitmap *bm, size_t cell_width, size_t cell_height, float x_offset, float y_offset, size_t baseline) {
     // We want the glyph to be positioned inside the cell based on the bearingX
     // and bearingY values, making sure that it does not overflow the cell.
 
     Region src = { .left = bm->start_x, .bottom = bm->rows, .right = bm->width + bm->start_x }, dest = { .bottom = cell_height, .right = cell_width };
 
     // Calculate column bounds
-    float bearing_x = (float)metrics->horiBearingX / 64.f;
-    bearing_x /= bm->factor;
-    int32_t xoff = (ssize_t)(x_offset + bearing_x);
+    int32_t xoff = (ssize_t)(x_offset + bm->bitmap_left);
     uint32_t extra;
     if (xoff < 0) src.left += -xoff;
     else dest.left = xoff;
@@ -464,9 +502,7 @@ place_bitmap_in_canvas(pixel *cell, ProcessedBitmap *bm, size_t cell_width, size
     }
 
     // Calculate row bounds
-    float bearing_y = (float)metrics->horiBearingY / 64.f;
-    bearing_y /= bm->factor;
-    int32_t yoff = (ssize_t)(y_offset + bearing_y);
+    int32_t yoff = (ssize_t)(y_offset + bm->bitmap_top);
     if ((yoff > 0 && (size_t)yoff > baseline)) {
         dest.top = 0;
     } else {
@@ -483,7 +519,7 @@ place_bitmap_in_canvas(pixel *cell, ProcessedBitmap *bm, size_t cell_width, size
 static const ProcessedBitmap EMPTY_PBM = {.factor = 1};
 
 bool
-render_glyphs_in_cells(PyObject *f, bool bold, bool italic, hb_glyph_info_t *info, hb_glyph_position_t *positions, unsigned int num_glyphs, pixel *canvas, unsigned int cell_width, unsigned int cell_height, unsigned int num_cells, unsigned int baseline, bool *was_colored, FONTS_DATA_HANDLE fg) {
+render_glyphs_in_cells(PyObject *f, bool bold, bool italic, hb_glyph_info_t *info, hb_glyph_position_t *positions, unsigned int num_glyphs, pixel *canvas, unsigned int cell_width, unsigned int cell_height, unsigned int num_cells, unsigned int baseline, bool *was_colored, FONTS_DATA_HANDLE fg, bool center_glyph) {
     Face *self = (Face*)f;
     bool is_emoji = *was_colored; *was_colored = is_emoji && self->has_color;
     float x = 0.f, y = 0.f, x_offset = 0.f;
@@ -502,17 +538,20 @@ render_glyphs_in_cells(PyObject *f, bool bold, bool italic, hb_glyph_info_t *inf
         }
         x_offset = x + (float)positions[i].x_offset / 64.0f;
         y = (float)positions[i].y_offset / 64.0f;
-        if ((*was_colored || self->face->glyph->metrics.width > 0) && bm.width > 0) place_bitmap_in_canvas(canvas, &bm, canvas_width, cell_height, x_offset, y, &self->face->glyph->metrics, baseline);
+        if ((*was_colored || self->face->glyph->metrics.width > 0) && bm.width > 0) {
+            place_bitmap_in_canvas(canvas, &bm, canvas_width, cell_height, x_offset, y, baseline);
+        }
         x += (float)positions[i].x_advance / 64.0f;
-        if (bm.needs_free) free(bm.buf);
+        free_processed_bitmap(&bm);
     }
 
-    // center the glyphs in the canvas
-    unsigned int right_edge = (unsigned int)x, delta;
-    // x_advance is wrong for colored bitmaps that have been downsampled
-    if (*was_colored) right_edge = num_glyphs == 1 ? bm.right_edge : canvas_width;
-    if (num_cells > 1 && right_edge < canvas_width && (delta = (canvas_width - right_edge) / 2) && delta > 1) {
-        right_shift_canvas(canvas, canvas_width, cell_height, delta);
+    if (center_glyph && num_glyphs) {
+        unsigned int right_edge = (unsigned int)x, delta;
+        // x_advance is wrong for colored bitmaps that have been downsampled
+        if (*was_colored) right_edge = num_glyphs == 1 ? bm.right_edge : canvas_width;
+        if (num_cells > 1 && right_edge < canvas_width && (delta = (canvas_width - right_edge) / 2) && delta > 1) {
+            right_shift_canvas(canvas, canvas_width, cell_height, delta);
+        }
     }
     return true;
 }
