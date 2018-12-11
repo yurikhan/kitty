@@ -1,3 +1,9 @@
+kitty (0.13.1-1yk2) bionic; urgency=medium
+
+  * Add Emacs-specific setb24, setf24 terminfo capabilities
+
+ -- Yuri Khan <yurivkhan@gmail.com>  Tue, 11 Dec 2018 01:08:51 +0700
+
 kitty (0.13.1-1yk1) bionic; urgency=medium
 
   * New upstream release
