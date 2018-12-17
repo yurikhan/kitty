@@ -1,10 +1,11 @@
-kitty (0.12.3-2) UNRELEASED; urgency=medium
+kitty (0.13.1-1) UNRELEASED; urgency=medium
 
+  * New upstream release
   * Add python3-pil to Build-Depends for tests
   * Update kitty's homepage.
     Thanks to Chris Lamb for the patch (Closes: #911848)
 
- -- James McCoy <jamessan@debian.org>  Sun, 16 Dec 2018 20:14:14 -0500
+ -- James McCoy <jamessan@debian.org>  Sun, 16 Dec 2018 20:30:08 -0500
 
 kitty (0.12.3-1) unstable; urgency=medium
 
