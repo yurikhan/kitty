@@ -129,7 +129,6 @@ typedef enum VkStructureType
     VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR = 1000004000,
     VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR = 1000005000,
     VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR = 1000006000,
-    VK_STRUCTURE_TYPE_MIR_SURFACE_CREATE_INFO_KHR = 1000007000,
     VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR = 1000009000,
     VK_STRUCTURE_TYPE_MACOS_SURFACE_CREATE_INFO_MVK = 1000123000,
     VK_STRUCTURE_TYPE_MAX_ENUM = 0x7FFFFFFF
@@ -191,8 +190,6 @@ typedef void (APIENTRY * PFN_vkVoidFunction)(void);
  #include "x11_platform.h"
 #elif defined(_GLFW_WAYLAND)
  #include "wl_platform.h"
-#elif defined(_GLFW_MIR)
- #include "mir_platform.h"
 #elif defined(_GLFW_OSMESA)
  #include "null_platform.h"
 #else
@@ -571,8 +568,6 @@ struct _GLFWlibrary
         GLFWbool        KHR_xcb_surface;
 #elif defined(_GLFW_WAYLAND)
         GLFWbool        KHR_wayland_surface;
-#elif defined(_GLFW_MIR)
-        GLFWbool        KHR_mir_surface;
 #endif
     } vk;
 
@@ -629,6 +624,10 @@ void _glfwPlatformSetGammaRamp(_GLFWmonitor* monitor, const GLFWgammaramp* ramp)
 
 void _glfwPlatformSetClipboardString(const char* string);
 const char* _glfwPlatformGetClipboardString(void);
+#if defined(_GLFW_X11) || defined(_GLFW_WAYLAND)
+void _glfwPlatformSetPrimarySelectionString(const char* string);
+const char* _glfwPlatformGetPrimarySelectionString(void);
+#endif
 
 int _glfwPlatformPollJoystick(_GLFWjoystick* js, int mode);
 void _glfwPlatformUpdateGamepadGUID(char* guid);
@@ -658,6 +657,7 @@ void _glfwPlatformGetWindowFrameSize(_GLFWwindow* window,
                                      int* right, int* bottom);
 void _glfwPlatformGetWindowContentScale(_GLFWwindow* window,
                                         float* xscale, float* yscale);
+double _glfwPlatformGetDoubleClickInterval(_GLFWwindow* window);
 void _glfwPlatformIconifyWindow(_GLFWwindow* window);
 void _glfwPlatformRestoreWindow(_GLFWwindow* window);
 void _glfwPlatformMaximizeWindow(_GLFWwindow* window);

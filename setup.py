@@ -13,7 +13,6 @@ import shutil
 import subprocess
 import sys
 import sysconfig
-import tempfile
 import time
 
 base = os.path.dirname(os.path.abspath(__file__))
@@ -141,11 +140,13 @@ def get_sanitize_args(cc, ccver):
 
 
 def test_compile(cc, *cflags, src=None):
-    with tempfile.NamedTemporaryFile(suffix='.c') as f:
-        src = src or 'int main(void) { return 0; }'
-        f.write(src.encode('utf-8'))
-        f.flush()
-        return subprocess.Popen([cc] + list(cflags) + [f.name, '-o', os.devnull]).wait() == 0
+    src = src or 'int main(void) { return 0; }'
+    p = subprocess.Popen([cc] + list(cflags) + ['-x', 'c', '-o', os.devnull, '-'], stdin=subprocess.PIPE)
+    try:
+        p.stdin.write(src.encode('utf-8')), p.stdin.close()
+    except BrokenPipeError:
+        return False
+    return p.wait() == 0
 
 
 def first_successful_compile(cc, *cflags, src=None):
@@ -423,7 +424,7 @@ def compile_glfw(incremental, compilation_database, all_keys):
     modules = 'cocoa' if is_macos else 'x11 wayland'
     for module in modules.split():
         try:
-            genv = glfw.init_env(env, pkg_config, at_least_version, module)
+            genv = glfw.init_env(env, pkg_config, at_least_version, test_compile, module)
         except SystemExit as err:
             if module != 'wayland':
                 raise
@@ -575,6 +576,7 @@ make && make docs
 
 def compile_python(base_path):
     import compileall
+    import py_compile
     try:
         from multiprocessing import cpu_count
         num_workers = max(1, cpu_count())
@@ -584,7 +586,10 @@ def compile_python(base_path):
         for f in files:
             if f.rpartition('.')[-1] in ('pyc', 'pyo'):
                 os.remove(os.path.join(root, f))
-    compileall.compile_dir(base_path, ddir='', force=True, optimize=1, quiet=1, workers=num_workers)
+    kwargs = dict(ddir='', force=True, optimize=1, quiet=1, workers=num_workers)
+    if hasattr(py_compile, 'PycInvalidationMode'):
+        kwargs['invalidation_mode'] = py_compile.PycInvalidationMode.UNCHECKED_HASH
+    compileall.compile_dir(base_path, **kwargs)
 
 
 def package(args, for_bundle=False, sh_launcher=False):
@@ -598,7 +603,11 @@ def package(args, for_bundle=False, sh_launcher=False):
     for x in (libdir, os.path.join(ddir, 'share')):
         odir = os.path.join(x, 'terminfo')
         safe_makedirs(odir)
-        subprocess.check_call(['tic', '-x', '-o' + odir, 'terminfo/kitty.terminfo'])
+        proc = subprocess.run(['tic', '-x', '-o' + odir, 'terminfo/kitty.terminfo'], check=True, stderr=subprocess.PIPE)
+        regex = '^"terminfo/kitty.terminfo", line [0-9]+, col [0-9]+, terminal \'xterm-kitty\': older tic versions may treat the description field as an alias$'
+        for error in proc.stderr.decode('utf-8').splitlines():
+            if not re.match(regex, error):
+                print(error, file=sys.stderr)
         if not glob.glob(os.path.join(odir, '*/xterm-kitty')):
             raise SystemExit('tic failed to output the compiled kitty terminfo file')
     shutil.copy2('__main__.py', libdir)

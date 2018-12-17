@@ -873,6 +873,7 @@ static const char* getSelectionString(Atom selection)
         Atom actualType;
         int actualFormat;
         unsigned long itemCount, bytesAfter;
+        double start = glfwGetTime();
         XEvent notification, dummy;
 
         XConvertSelection(_glfw.x11.display,
@@ -887,7 +888,10 @@ static const char* getSelectionString(Atom selection)
                                        SelectionNotify,
                                        &notification))
         {
-            waitForX11Event(-1);
+            double time = glfwGetTime();
+            if (time - start > 2)
+                return "";
+            waitForX11Event(2.0 - (time - start));
         }
 
         if (notification.xselection.property == None)
@@ -918,12 +922,16 @@ static const char* getSelectionString(Atom selection)
 
             for (;;)
             {
+                start = glfwGetTime();
                 while (!XCheckIfEvent(_glfw.x11.display,
                                       &dummy,
                                       isSelPropNewValueNotify,
                                       (XPointer) &notification))
                 {
-                    waitForX11Event(-1);
+                    double time = glfwGetTime();
+                    if (time - start > 2)
+                        return "";
+                    waitForX11Event(2.0 - (time - start));
                 }
 
                 XFree(data);
@@ -1291,12 +1299,20 @@ static void processEvent(XEvent *event)
 
         case EnterNotify:
         {
+            // XEnterWindowEvent is XCrossingEvent
+            const int x = event->xcrossing.x;
+            const int y = event->xcrossing.y;
+
             // HACK: This is a workaround for WMs (KWM, Fluxbox) that otherwise
             //       ignore the defined cursor for hidden cursor mode
             if (window->cursorMode == GLFW_CURSOR_HIDDEN)
                 updateCursorImage(window);
 
             _glfwInputCursorEnter(window, GLFW_TRUE);
+            _glfwInputCursorPos(window, x, y);
+
+            window->x11.lastCursorPosX = x;
+            window->x11.lastCursorPosY = y;
             return;
         }
 
@@ -2100,6 +2116,11 @@ void _glfwPlatformGetWindowContentScale(_GLFWwindow* window,
         *yscale = _glfw.x11.contentScaleY;
 }
 
+double _glfwPlatformGetDoubleClickInterval(_GLFWwindow* window)
+{
+    return 0.5;
+}
+
 void _glfwPlatformIconifyWindow(_GLFWwindow* window)
 {
     if (window->x11.overrideRedirect)
@@ -2278,6 +2299,10 @@ int _glfwPlatformWindowMaximized(_GLFWwindow* window)
     Atom* states;
     unsigned long i;
     GLFWbool maximized = GLFW_FALSE;
+    if (!_glfw.x11.NET_WM_STATE ||
+            !_glfw.x11.NET_WM_STATE_MAXIMIZED_VERT ||
+            !_glfw.x11.NET_WM_STATE_MAXIMIZED_HORZ)
+        return maximized;
     const unsigned long count =
         _glfwGetWindowPropertyX11(window->x11.handle,
                                   _glfw.x11.NET_WM_STATE,
@@ -2667,6 +2692,29 @@ const char* _glfwPlatformGetClipboardString(void)
     return getSelectionString(_glfw.x11.CLIPBOARD);
 }
 
+void _glfwPlatformSetPrimarySelectionString(const char* string)
+{
+    free(_glfw.x11.primarySelectionString);
+    _glfw.x11.primarySelectionString = _glfw_strdup(string);
+
+    XSetSelectionOwner(_glfw.x11.display,
+                       _glfw.x11.PRIMARY,
+                       _glfw.x11.helperWindowHandle,
+                       CurrentTime);
+
+    if (XGetSelectionOwner(_glfw.x11.display, _glfw.x11.PRIMARY) !=
+        _glfw.x11.helperWindowHandle)
+    {
+        _glfwInputError(GLFW_PLATFORM_ERROR,
+                        "X11: Failed to become owner of primary selection");
+    }
+}
+
+const char* _glfwPlatformGetPrimarySelectionString(void)
+{
+    return getSelectionString(_glfw.x11.PRIMARY);
+}
+
 void _glfwPlatformGetRequiredInstanceExtensions(char** extensions)
 {
     if (!_glfw.vk.KHR_surface)
@@ -2836,32 +2884,6 @@ GLFWAPI Window glfwGetX11Window(GLFWwindow* handle)
     _GLFWwindow* window = (_GLFWwindow*) handle;
     _GLFW_REQUIRE_INIT_OR_RETURN(None);
     return window->x11.handle;
-}
-
-GLFWAPI void glfwSetX11SelectionString(const char* string)
-{
-    _GLFW_REQUIRE_INIT();
-
-    free(_glfw.x11.primarySelectionString);
-    _glfw.x11.primarySelectionString = _glfw_strdup(string);
-
-    XSetSelectionOwner(_glfw.x11.display,
-                       _glfw.x11.PRIMARY,
-                       _glfw.x11.helperWindowHandle,
-                       CurrentTime);
-
-    if (XGetSelectionOwner(_glfw.x11.display, _glfw.x11.PRIMARY) !=
-        _glfw.x11.helperWindowHandle)
-    {
-        _glfwInputError(GLFW_PLATFORM_ERROR,
-                        "X11: Failed to become owner of primary selection");
-    }
-}
-
-GLFWAPI const char* glfwGetX11SelectionString(void)
-{
-    _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
-    return getSelectionString(_glfw.x11.PRIMARY);
 }
 
 GLFWAPI int glfwGetXKBScancode(const char* keyName, GLFWbool caseSensitive) {

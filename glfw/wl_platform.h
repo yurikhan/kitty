@@ -56,9 +56,11 @@ typedef VkBool32 (APIENTRY *PFN_vkGetPhysicalDeviceWaylandPresentationSupportKHR
 
 #include "wayland-xdg-shell-client-protocol.h"
 #include "wayland-viewporter-client-protocol.h"
+#include "wayland-xdg-decoration-unstable-v1-client-protocol.h"
 #include "wayland-relative-pointer-unstable-v1-client-protocol.h"
 #include "wayland-pointer-constraints-unstable-v1-client-protocol.h"
 #include "wayland-idle-inhibit-unstable-v1-client-protocol.h"
+#include "wayland-primary-selection-unstable-v1-client-protocol.h"
 
 #define _glfw_dlopen(name) dlopen(name, RTLD_LAZY | RTLD_LOCAL)
 #define _glfw_dlclose(handle) dlclose(handle)
@@ -143,6 +145,7 @@ typedef struct _GLFWwindowWayland
     struct {
         struct xdg_surface*     surface;
         struct xdg_toplevel*    toplevel;
+        struct zxdg_toplevel_decoration_v1* decoration;
     } xdg;
 
     _GLFWcursor*                currentCursor;
@@ -169,18 +172,34 @@ typedef struct _GLFWwindowWayland
     GLFWbool                    justCreated;
 
     struct {
+        GLFWbool                           serverSide;
         struct wl_buffer*                  buffer;
         _GLFWdecorationWayland             top, left, right, bottom;
         int                                focus;
     } decorations;
 
+    struct {
+        unsigned long long id;
+        void(*callback)(unsigned long long id);
+        struct wl_callback *current_wl_callback;
+    } frameCallbackData;
+
+
 } _GLFWwindowWayland;
+
+typedef enum _GLFWWaylandOfferType
+{
+    EXPIRED,
+    CLIPBOARD,
+    DRAG_AND_DROP,
+    PRIMARY_SELECTION
+}_GLFWWaylandOfferType ;
 
 typedef struct _GLFWWaylandDataOffer
 {
     struct wl_data_offer *id;
     const char *mime;
-    int offer_type;
+    _GLFWWaylandOfferType offer_type;
     size_t idx;
     int is_self_offer;
     int has_uri_list;
@@ -188,6 +207,17 @@ typedef struct _GLFWWaylandDataOffer
     uint32_t dnd_action;
     struct wl_surface *surface;
 } _GLFWWaylandDataOffer;
+
+typedef struct _GLFWWaylandPrimaryOffer
+{
+    struct zwp_primary_selection_offer_v1 *id;
+    const char *mime;
+    _GLFWWaylandOfferType offer_type;
+    size_t idx;
+    int is_self_offer;
+    int has_uri_list;
+    struct wl_surface *surface;
+} _GLFWWaylandPrimaryOffer;
 
 // Wayland-specific global data
 //
@@ -203,6 +233,7 @@ typedef struct _GLFWlibraryWayland
     struct wl_pointer*          pointer;
     struct wl_keyboard*         keyboard;
     struct xdg_wm_base*         wmBase;
+    struct zxdg_decoration_manager_v1*      decorationManager;
     struct wp_viewporter*       viewporter;
     struct zwp_relative_pointer_manager_v1* relativePointerManager;
     struct zwp_pointer_constraints_v1*      pointerConstraints;
@@ -210,6 +241,9 @@ typedef struct _GLFWlibraryWayland
     struct wl_data_device_manager*          dataDeviceManager;
     struct wl_data_device*                  dataDevice;
     struct wl_data_source*                  dataSourceForClipboard;
+    struct zwp_primary_selection_device_manager_v1* primarySelectionDeviceManager;
+    struct zwp_primary_selection_device_v1*    primarySelectionDevice;
+    struct zwp_primary_selection_source_v1*    dataSourceForPrimarySelection;
 
     int                         compositorVersion;
     int                         seatVersion;
@@ -250,11 +284,13 @@ typedef struct _GLFWlibraryWayland
     } egl;
 
     EventLoopData eventLoopData;
+    char* pasteString;
     char* clipboardString;
-    char* clipboardSourceString;
-    struct wl_data_offer* clipboardSourceOffer;
     size_t dataOffersCounter;
     _GLFWWaylandDataOffer dataOffers[8];
+    char* primarySelectionString;
+    size_t primarySelectionOffersCounter;
+    _GLFWWaylandPrimaryOffer primarySelectionOffers[8];
 } _GLFWlibraryWayland;
 
 // Wayland-specific per-monitor data
@@ -285,4 +321,5 @@ typedef struct _GLFWcursorWayland
 
 void _glfwAddOutputWayland(uint32_t name, uint32_t version);
 void _glfwSetupWaylandDataDevice();
+void _glfwSetupWaylandPrimarySelectionDevice();
 void animateCursorImage(id_type timer_id, void *data);

@@ -29,6 +29,8 @@
 #include "backend_utils.h"
 
 #include <assert.h>
+#include <errno.h>
+#include <limits.h>
 #include <linux/input.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -407,7 +409,7 @@ static void
 dispatchPendingKeyRepeats(id_type timer_id, void *data) {
     if (_glfw.wl.keyRepeatInfo.keyboardFocus != _glfw.wl.keyboardFocus || _glfw.wl.keyboardRepeatRate == 0) return;
     glfw_xkb_handle_key_event(_glfw.wl.keyRepeatInfo.keyboardFocus, &_glfw.wl.xkb, _glfw.wl.keyRepeatInfo.key, GLFW_REPEAT);
-    changeTimerInterval(&_glfw.wl.eventLoopData, _glfw.wl.keyRepeatInfo.keyRepeatTimer, ((double)_glfw.wl.keyboardRepeatRate) / 1000.0);
+    changeTimerInterval(&_glfw.wl.eventLoopData, _glfw.wl.keyRepeatInfo.keyRepeatTimer, (1.0 / (double)_glfw.wl.keyboardRepeatRate));
     toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.keyRepeatInfo.keyRepeatTimer, 1);
 }
 
@@ -561,8 +563,11 @@ static void registryHandleGlobal(void* data,
                                  _glfw.wl.seatVersion);
             wl_seat_add_listener(_glfw.wl.seat, &seatListener, NULL);
         }
-        if (_glfw.wl.seat && _glfw.wl.dataDeviceManager && !_glfw.wl.dataDevice) {
-            _glfwSetupWaylandDataDevice();
+        if (_glfw.wl.seat) {
+            if (_glfw.wl.dataDeviceManager && !_glfw.wl.dataDevice) _glfwSetupWaylandDataDevice();
+            if (_glfw.wl.primarySelectionDeviceManager && !_glfw.wl.primarySelectionDevice) {
+                _glfwSetupWaylandPrimarySelectionDevice();
+            }
         }
     }
     else if (strcmp(interface, "xdg_wm_base") == 0)
@@ -570,6 +575,12 @@ static void registryHandleGlobal(void* data,
         _glfw.wl.wmBase =
             wl_registry_bind(registry, name, &xdg_wm_base_interface, 1);
         xdg_wm_base_add_listener(_glfw.wl.wmBase, &wmBaseListener, NULL);
+    }
+    else if (strcmp(interface, "zxdg_decoration_manager_v1") == 0)
+    {
+        _glfw.wl.decorationManager =
+        wl_registry_bind(registry, name,
+            &zxdg_decoration_manager_v1_interface, 1);
     }
     else if (strcmp(interface, "wp_viewporter") == 0)
     {
@@ -605,6 +616,17 @@ static void registryHandleGlobal(void* data,
                              1);
         if (_glfw.wl.seat && _glfw.wl.dataDeviceManager && !_glfw.wl.dataDevice) {
             _glfwSetupWaylandDataDevice();
+        }
+    }
+    else if (strcmp(interface, "zwp_primary_selection_device_manager_v1") == 0 ||
+        strcmp(interface, "gtk_primary_selection_device_manager") == 0)
+    {
+        _glfw.wl.primarySelectionDeviceManager =
+            wl_registry_bind(registry, name,
+                             &zwp_primary_selection_device_manager_v1_interface,
+                             1);
+        if (_glfw.wl.seat && _glfw.wl.primarySelectionDeviceManager && !_glfw.wl.primarySelectionDevice) {
+            _glfwSetupWaylandPrimarySelectionDevice();
         }
     }
 
@@ -714,7 +736,17 @@ int _glfwPlatformInit(void)
 
     if (_glfw.wl.pointer && _glfw.wl.shm)
     {
-        _glfw.wl.cursorTheme = wl_cursor_theme_load(NULL, 32, _glfw.wl.shm);
+        const char *cursorTheme = getenv("XCURSOR_THEME"), *cursorSizeStr = getenv("XCURSOR_SIZE");
+        char *cursorSizeEnd;
+        int cursorSize = 32;
+        if (cursorSizeStr)
+        {
+            errno = 0;
+            long cursorSizeLong = strtol(cursorSizeStr, &cursorSizeEnd, 10);
+            if (!*cursorSizeEnd && !errno && cursorSizeLong > 0 && cursorSizeLong <= INT_MAX)
+                cursorSize = (int)cursorSizeLong;
+        }
+        _glfw.wl.cursorTheme = wl_cursor_theme_load(cursorTheme, cursorSize, _glfw.wl.shm);
         if (!_glfw.wl.cursorTheme)
         {
             _glfwInputError(GLFW_PLATFORM_ERROR,
@@ -763,6 +795,8 @@ void _glfwPlatformTerminate(void)
         wl_shell_destroy(_glfw.wl.shell);
     if (_glfw.wl.viewporter)
         wp_viewporter_destroy(_glfw.wl.viewporter);
+    if (_glfw.wl.decorationManager)
+        zxdg_decoration_manager_v1_destroy(_glfw.wl.decorationManager);
     if (_glfw.wl.wmBase)
         xdg_wm_base_destroy(_glfw.wl.wmBase);
     if (_glfw.wl.pointer)
@@ -788,6 +822,10 @@ void _glfwPlatformTerminate(void)
         wl_data_device_destroy(_glfw.wl.dataDevice);
     if (_glfw.wl.dataDeviceManager)
         wl_data_device_manager_destroy(_glfw.wl.dataDeviceManager);
+    if (_glfw.wl.primarySelectionDevice)
+        zwp_primary_selection_device_v1_destroy(_glfw.wl.primarySelectionDevice);
+    if (_glfw.wl.primarySelectionDeviceManager)
+        zwp_primary_selection_device_manager_v1_destroy(_glfw.wl.primarySelectionDeviceManager);
     if (_glfw.wl.registry)
         wl_registry_destroy(_glfw.wl.registry);
     if (_glfw.wl.display)
@@ -797,7 +835,8 @@ void _glfwPlatformTerminate(void)
     }
     closeFds(_glfw.wl.eventLoopData.wakeupFds, sizeof(_glfw.wl.eventLoopData.wakeupFds)/sizeof(_glfw.wl.eventLoopData.wakeupFds[0]));
     free(_glfw.wl.clipboardString); _glfw.wl.clipboardString = NULL;
-    free(_glfw.wl.clipboardSourceString); _glfw.wl.clipboardSourceString = NULL;
+    free(_glfw.wl.primarySelectionString); _glfw.wl.primarySelectionString = NULL;
+    free(_glfw.wl.pasteString); _glfw.wl.pasteString = NULL;
 
 }
 

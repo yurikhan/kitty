@@ -44,8 +44,12 @@ def list_fonts():
             yield {'family': f, 'full_name': fn, 'is_monospace': is_mono}
 
 
+def family_name_to_key(family):
+    return re.sub(r'\s+', ' ', family.lower())
+
+
 def find_best_match(family, bold=False, italic=False, monospaced=True):
-    q = re.sub(r'\s+', ' ', family.lower())
+    q = family_name_to_key(family)
     font_map = all_fonts_map(monospaced)
 
     def score(candidate):
@@ -60,6 +64,22 @@ def find_best_match(family, bold=False, italic=False, monospaced=True):
         if candidates:
             candidates.sort(key=score)
             return candidates[0]
+
+    # Use fc-match to see if we can find a monospaced font that matches family
+    possibility = fc_match(family, False, False)
+    for key, map_key in (('postscript_name', 'ps_map'), ('full_name', 'full_map'), ('family', 'family_map')):
+        val = possibility.get(key)
+        if val:
+            candidates = font_map[map_key].get(family_name_to_key(val))
+            if candidates:
+                if len(candidates) == 1:
+                    # happens if the family name is an alias, so we search with
+                    # the actual family name to see if we can find all the
+                    # fonts in the family.
+                    family_name_candidates = font_map['family_map'].get(family_name_to_key(candidates[0]['family']))
+                    if family_name_candidates and len(family_name_candidates) > 1:
+                        candidates = family_name_candidates
+                return sorted(candidates, key=score)[0]
 
     # Use fc-match with a generic family
     family = 'monospace' if monospaced else 'sans-serif'

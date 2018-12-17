@@ -249,7 +249,7 @@ add_borders_rect(id_type os_window_id, id_type tab_id, uint32_t left, uint32_t t
 
 void
 os_window_regions(OSWindow *os_window, Region *central, Region *tab_bar) {
-    if (os_window->num_tabs > 1) {
+    if (!global_state.tab_bar_hidden && os_window->num_tabs > 1) {
         switch(OPT(tab_bar_edge)) {
             case TOP_EDGE:
                 central->left = 0; central->top = os_window->fonts_data->cell_height; central->right = os_window->viewport_width - 1;
@@ -354,9 +354,10 @@ PYWRAP1(set_options) {
     global_state.debug_gl = debug_gl ? true : false;
     global_state.debug_font_fallback = debug_font_fallback ? true : false;
 #define GA(name) ret = PyObject_GetAttrString(opts, #name); if (ret == NULL) return NULL;
-#define S(name, convert) { GA(name); global_state.opts.name = convert(ret); Py_DECREF(ret); if (PyErr_Occurred()) return NULL; }
-    GA(kitty_mod);
-    kitty_mod = PyLong_AsLong(ret); Py_CLEAR(ret); if (PyErr_Occurred()) return NULL;
+#define SS(name, dest, convert) { GA(name); dest = convert(ret); Py_DECREF(ret); if (PyErr_Occurred()) return NULL; }
+#define S(name, convert) SS(name, global_state.opts.name, convert)
+    SS(kitty_mod, kitty_mod, PyLong_AsLong);
+    S(hide_window_decorations, PyObject_IsTrue);
     S(visual_bell_duration, PyFloat_AsDouble);
     S(enable_audio_bell, PyObject_IsTrue);
     S(focus_follows_mouse, PyObject_IsTrue);
@@ -367,11 +368,13 @@ PYWRAP1(set_options) {
     S(dynamic_background_opacity, PyObject_IsTrue);
     S(inactive_text_alpha, PyFloat_AsDouble);
     S(window_padding_width, PyFloat_AsDouble);
+    S(scrollback_pager_history_size, PyLong_AsUnsignedLong);
     S(cursor_shape, PyLong_AsLong);
     S(url_style, PyLong_AsUnsignedLong);
     S(tab_bar_edge, PyLong_AsLong);
     S(mouse_hide_wait, PyFloat_AsDouble);
     S(wheel_scroll_multiplier, PyFloat_AsDouble);
+    S(touch_scroll_multiplier, PyFloat_AsDouble);
     S(open_url_modifiers, convert_mods);
     S(rectangle_select_modifiers, convert_mods);
     S(click_interval, PyFloat_AsDouble);
@@ -387,12 +390,15 @@ PYWRAP1(set_options) {
     S(window_alert_on_bell, PyObject_IsTrue);
     S(macos_option_as_alt, PyObject_IsTrue);
     S(macos_traditional_fullscreen, PyObject_IsTrue);
-    S(macos_hide_titlebar, PyObject_IsTrue);
     S(macos_quit_when_last_window_closed, PyObject_IsTrue);
     S(macos_window_resizable, PyObject_IsTrue);
-    S(x11_hide_window_decorations, PyObject_IsTrue);
     S(macos_hide_from_tasks, PyObject_IsTrue);
     S(macos_thicken_font, PyFloat_AsDouble);
+
+    GA(tab_bar_style);
+    global_state.tab_bar_hidden = PyUnicode_CompareWithASCIIString(ret, "hidden") == 0 ? true: false;
+    Py_CLEAR(ret);
+    if (PyErr_Occurred()) return NULL;
 
     PyObject *chars = PyObject_GetAttrString(opts, "select_by_word_characters");
     if (chars == NULL) return NULL;
@@ -422,6 +428,7 @@ PYWRAP1(set_options) {
     read_adjust(adjust_column_width);
 #undef read_adjust
 #undef S
+#undef SS
     Py_RETURN_NONE;
 }
 

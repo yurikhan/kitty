@@ -7,9 +7,8 @@ import pwd
 import sys
 from collections import namedtuple
 
-
 appname = 'kitty'
-version = (0, 12, 3)
+version = (0, 13, 1)
 str_version = '.'.join(map(str, version))
 _plat = sys.platform.lower()
 is_macos = 'darwin' in _plat
@@ -61,6 +60,18 @@ def _get_config_dir():
         os.makedirs(ans, exist_ok=True)
     except FileExistsError:
         raise SystemExit('A file {} already exists. It must be a directory, not a file.'.format(ans))
+    except PermissionError:
+        import tempfile
+        import atexit
+        ans = tempfile.mkdtemp(prefix='kitty-conf-')
+
+        def cleanup():
+            import shutil
+            try:
+                shutil.rmtree(ans)
+            except Exception:
+                pass
+        atexit.register(cleanup)
     return ans
 
 
@@ -125,4 +136,4 @@ if os.environ.get('WAYLAND_DISPLAY') and 'KITTY_ENABLE_WAYLAND' in os.environ an
     is_wayland = True
 
 
-supports_primary_selection = not is_macos and not is_wayland
+supports_primary_selection = not is_macos

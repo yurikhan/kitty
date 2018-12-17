@@ -14,7 +14,6 @@ extern bool cocoa_toggle_fullscreen(void *w, bool);
 extern void cocoa_create_global_menu(void);
 extern void cocoa_set_hide_from_tasks(void);
 extern void cocoa_set_titlebar_color(void *w, color_type color);
-extern void cocoa_update_nsgl_context(void* id);
 
 
 #if GLFW_KEY_LAST >= MAX_KEY_COUNT
@@ -28,9 +27,13 @@ static void set_os_window_dpi(OSWindow *w);
 
 void
 update_os_window_viewport(OSWindow *window, bool notify_boss) {
-    int w, h;
-    glfwGetFramebufferSize(window->handle, &window->viewport_width, &window->viewport_height);
+    int w, h, fw, fh;
+    glfwGetFramebufferSize(window->handle, &fw, &fh);
     glfwGetWindowSize(window->handle, &w, &h);
+    if (fw == window->viewport_width && fh == window->viewport_height && w == window->window_width && h == window->window_height) {
+        return; // no change, ignore
+    }
+    window->viewport_width = fw; window->viewport_height = fh;
     double xr = window->viewport_x_ratio, yr = window->viewport_y_ratio;
     window->viewport_x_ratio = (double)window->viewport_width / (double)w;
     window->viewport_y_ratio = (double)window->viewport_height / (double)h;
@@ -46,6 +49,11 @@ update_os_window_viewport(OSWindow *window, bool notify_boss) {
     window->window_height = MAX(h, 100);
     if (notify_boss) {
         call_boss(on_window_resize, "KiiO", window->id, window->viewport_width, window->viewport_height, dpi_changed ? Py_True : Py_False);
+        if (dpi_changed && global_state.is_wayland) {
+           // Fake resize event needed on weston to ensure surface is
+           // positioned correctly after DPI change
+            glfwSetWindowSize(window->handle, window->window_width, window->window_height);
+        }
     }
 }
 
@@ -302,6 +310,7 @@ make_os_window_context_current(OSWindow *w) {
 }
 
 
+#ifndef __APPLE__
 static GLFWmonitor*
 current_monitor(GLFWwindow *window) {
     // Find the monitor that has the maximum overlap with this window
@@ -336,14 +345,15 @@ current_monitor(GLFWwindow *window) {
 
     return bestmonitor;
 }
+#endif
 
 static inline void
 get_window_dpi(GLFWwindow *w, double *x, double *y) {
-    GLFWmonitor *monitor = NULL;
-    if (w) monitor = current_monitor(w);
-    if (monitor == NULL) { PyErr_Print(); monitor = glfwGetPrimaryMonitor(); }
     float xscale = 1, yscale = 1;
-    if (monitor) glfwGetMonitorContentScale(monitor, &xscale, &yscale);
+    if (w) glfwGetWindowContentScale(w, &xscale, &yscale);
+    else glfwGetMonitorContentScale(glfwGetPrimaryMonitor(), &xscale, &yscale);
+    if (!xscale) xscale = 1.0;
+    if (!yscale) yscale = 1.0;
 #ifdef __APPLE__
     double factor = 72.0;
 #else
@@ -465,9 +475,9 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
         glfwWindowHint(GLFW_DEPTH_BITS, 0);
         glfwWindowHint(GLFW_STENCIL_BITS, 0);
 #ifdef __APPLE__
-        if (OPT(macos_hide_titlebar)) glfwWindowHint(GLFW_DECORATED, false);
         glfwWindowHint(GLFW_COCOA_GRAPHICS_SWITCHING, true);
         glfwSetApplicationShouldHandleReopen(on_application_reopen);
+        if (OPT(hide_window_decorations)) glfwWindowHint(GLFW_DECORATED, false);
 #endif
 
     }
@@ -476,9 +486,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
     glfwWindowHintString(GLFW_X11_INSTANCE_NAME, wm_class_name);
     glfwWindowHintString(GLFW_X11_CLASS_NAME, wm_class_class);
     glfwWindowHintString(GLFW_WAYLAND_APP_ID, wm_class_class);
-    if (OPT(x11_hide_window_decorations)) {
-        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
-    }
+    if (OPT(hide_window_decorations)) glfwWindowHint(GLFW_DECORATED, false);
 #endif
 
     if (global_state.num_os_windows >= MAX_CHILDREN) {
@@ -543,6 +551,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
 }}
     CC(standard, IBEAM); CC(click, HAND); CC(arrow, ARROW);
 #undef CC
+        if (OPT(click_interval) < 0) OPT(click_interval) = glfwGetDoubleClickInterval(glfw_window);
         is_first_window = false;
     }
     OSWindow *w = add_os_window();
@@ -557,7 +566,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
     w->fonts_data = fonts_data;
     w->shown_once = true;
     push_focus_history(w);
-    glfwSwapInterval(OPT(sync_to_monitor) ? 1 : 0);
+    glfwSwapInterval(OPT(sync_to_monitor) && !global_state.is_wayland ? 1 : 0);
 #ifdef __APPLE__
     if (OPT(macos_option_as_alt)) glfwSetCocoaTextInputFilter(glfw_window, filter_option);
     glfwSetCocoaToggleFullscreenIntercept(glfw_window, intercept_cocoa_fullscreen);
@@ -808,16 +817,15 @@ hide_mouse(OSWindow *w) {
     glfwSetInputMode(w->handle, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
 }
 
+bool
+is_mouse_hidden(OSWindow *w) {
+    return w->handle && glfwGetInputMode(w->handle, GLFW_CURSOR) == GLFW_CURSOR_HIDDEN;
+}
+
+
 void
-swap_window_buffers(OSWindow *w) {
-#ifdef __APPLE__
-    if (w->nsgl_ctx_updated++ < 2) {
-        // Needed on Mojave for initial window render, see
-        // https://github.com/kovidgoyal/kitty/issues/887
-        cocoa_update_nsgl_context(glfwGetNSGLContext(w->handle));
-    }
-#endif
-    glfwSwapBuffers(w->handle);
+swap_window_buffers(OSWindow *os_window) {
+    glfwSwapBuffers(os_window->handle);
 }
 
 void
@@ -887,9 +895,10 @@ x11_window_id(PyObject UNUSED *self, PyObject *os_wid) {
 
 static PyObject*
 get_primary_selection(PYNOARG) {
-    if (glfwGetX11SelectionString) {
-        return Py_BuildValue("y", glfwGetX11SelectionString());
-    } else log_error("Failed to load glfwGetX11SelectionString");
+    if (glfwGetPrimarySelectionString) {
+        OSWindow *w = current_os_window();
+        if (w) return Py_BuildValue("y", glfwGetPrimarySelectionString(w->handle));
+    } else log_error("Failed to load glfwGetPrimarySelectionString");
     Py_RETURN_NONE;
 }
 
@@ -897,8 +906,11 @@ static PyObject*
 set_primary_selection(PyObject UNUSED *self, PyObject *args) {
     char *text;
     if (!PyArg_ParseTuple(args, "s", &text)) return NULL;
-    if (glfwSetX11SelectionString) glfwSetX11SelectionString(text);
-    else log_error("Failed to load glfwSetX11SelectionString");
+    if (glfwSetPrimarySelectionString) {
+        OSWindow *w = current_os_window();
+        if (w) glfwSetPrimarySelectionString(w->handle, text);
+    }
+    else log_error("Failed to load glfwSetPrimarySelectionString");
     Py_RETURN_NONE;
 }
 
@@ -981,6 +993,23 @@ get_cocoa_key_equivalent(int key, int mods, unsigned short *cocoa_key, int *coco
     glfwGetCocoaKeyEquivalent(key, mods, cocoa_key, cocoa_mods);
 }
 #endif
+
+void
+wayland_frame_request_callback(id_type os_window_id) {
+    for (size_t i = 0; i < global_state.num_os_windows; i++) {
+        if (global_state.os_windows[i].id == os_window_id) {
+            global_state.os_windows[i].wayland_render_state = RENDER_FRAME_READY;
+            break;
+        }
+    }
+}
+
+void
+wayland_request_frame_render(OSWindow *w) {
+    glfwRequestWaylandFrameEvent(w->handle, w->id, wayland_frame_request_callback);
+    w->wayland_render_state = RENDER_FRAME_REQUESTED;
+}
+
 // Boilerplate {{{
 
 static PyMethodDef module_methods[] = {

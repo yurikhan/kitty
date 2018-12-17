@@ -48,21 +48,29 @@ def listen_on(spec):
     return s.fileno()
 
 
-def data_for_at(w, arg):
+def data_for_at(w, arg, add_wrap_markers=False):
+    def as_text(**kw):
+        kw['add_wrap_markers'] = add_wrap_markers
+        return w.as_text(**kw)
+
     if arg == '@selection':
         return w.text_for_selection()
     if arg == '@ansi':
-        return w.as_text(as_ansi=True, add_history=True)
+        return as_text(as_ansi=True, add_history=True)
     if arg == '@text':
-        return w.as_text(add_history=True)
+        return as_text(add_history=True)
     if arg == '@screen':
-        return w.as_text()
+        return as_text()
     if arg == '@ansi_screen':
-        return w.as_text(as_ansi=True)
+        return as_text(as_ansi=True)
     if arg == '@alternate':
-        return w.as_text(alternate_screen=True)
+        return as_text(alternate_screen=True)
+    if arg == '@alternate_scrollback':
+        return as_text(alternate_screen=True, add_history=True)
     if arg == '@ansi_alternate':
-        return w.as_text(as_ansi=True, alternate_screen=True)
+        return as_text(as_ansi=True, alternate_screen=True)
+    if arg == '@ansi_alternate_scrollback':
+        return as_text(as_ansi=True, alternate_screen=True, add_history=True)
 
 
 class DumpCommands:  # {{{
@@ -236,8 +244,15 @@ class Boss:
     def new_os_window(self, *args):
         self._new_os_window(args)
 
-    def new_os_window_with_cwd(self, *args):
+    @property
+    def active_window_for_cwd(self):
         w = self.active_window
+        if w is not None and w.overlay_for is not None and w.overlay_for in self.window_id_map:
+            w = self.window_id_map[w.overlay_for]
+        return w
+
+    def new_os_window_with_cwd(self, *args):
+        w = self.active_window_for_cwd
         cwd_from = w.child.pid if w is not None else None
         self._new_os_window(args, cwd_from)
 
@@ -362,6 +377,9 @@ class Boss:
         reset = action == 'reset'
         how = 3 if action == 'scrollback' else 2
         for w in windows:
+            if action == 'scroll':
+                w.screen.scroll_until_cursor()
+                continue
             w.screen.cursor.x = w.screen.cursor.y = 0
             if reset:
                 w.screen.reset()
@@ -445,10 +463,10 @@ class Boss:
                     _('You must set the dynamic_background_opacity option in kitty.conf to be able to change background opacity'))
         os_window_id = window.os_window_id
         if opacity[0] in '+-':
-            opacity = background_opacity_of(os_window_id)
-            if opacity is None:
+            old_opacity = background_opacity_of(os_window_id)
+            if old_opacity is None:
                 return
-            opacity += float(opacity)
+            opacity = old_opacity + float(opacity)
         elif opacity == 'default':
             opacity = self.opts.background_opacity
         else:
@@ -541,6 +559,8 @@ class Boss:
         if key_action is not None:
             f = getattr(self, key_action.func, None)
             if f is not None:
+                if self.args.debug_keyboard:
+                    print('Keypress matched action:', f.__name__)
                 passthrough = f(*key_action.args)
                 if passthrough is not True:
                     return True
@@ -554,6 +574,8 @@ class Boss:
             f = getattr(tab, key_action.func, getattr(window, key_action.func, None))
             if f is not None:
                 passthrough = f(*key_action.args)
+                if self.args.debug_keyboard:
+                    print('Keypress matched action:', f.__name__)
                 if passthrough is not True:
                     return True
         return False
@@ -631,17 +653,20 @@ class Boss:
         return output
 
     def _run_kitten(self, kitten, args=(), input_data=None, window=None):
+        orig_args, args = list(args), list(args)
+        from kittens.runner import create_kitten_handler
+        end_kitten = create_kitten_handler(kitten, orig_args)
         if window is None:
             w = self.active_window
             tab = self.active_tab
         else:
             w = window
             tab = w.tabref()
+        if end_kitten.no_ui:
+            end_kitten(None, getattr(w, 'id', None), self)
+            return
 
         if w is not None and tab is not None and w.overlay_for is None:
-            orig_args, args = list(args), list(args)
-            from kittens.runner import create_kitten_handler
-            end_kitten = create_kitten_handler(kitten, orig_args)
             args[0:0] = [config_dir, kitten]
             if input_data is None:
                 type_of_input = end_kitten.type_of_input
@@ -793,12 +818,27 @@ class Boss:
 
     prev_tab = previous_tab
 
+    def process_stdin_source(self, window=None, stdin=None):
+        w = window or self.active_window
+        env = None
+        if stdin:
+            add_wrap_markers = stdin.endswith('_wrap')
+            if add_wrap_markers:
+                stdin = stdin[:-len('_wrap')]
+            stdin = data_for_at(w, stdin, add_wrap_markers=add_wrap_markers)
+            if stdin is not None:
+                pipe_data = w.pipe_data(stdin, has_wrap_markers=add_wrap_markers) if w else {}
+                if pipe_data:
+                    env = {
+                        'KITTY_PIPE_DATA':
+                        '{scrolled_by}:{cursor_x},{cursor_y}:{lines},{columns}'.format(**pipe_data)
+                    }
+                stdin = stdin.encode('utf-8')
+        return env, stdin
+
     def special_window_for_cmd(self, cmd, window=None, stdin=None, cwd_from=None, as_overlay=False):
         w = window or self.active_window
-        if stdin:
-            stdin = data_for_at(w, stdin)
-            if stdin is not None:
-                stdin = stdin.encode('utf-8')
+        env, stdin = self.process_stdin_source(w, stdin)
         cmdline = []
         for arg in cmd:
             if arg == '@selection':
@@ -807,7 +847,7 @@ class Boss:
                     continue
             cmdline.append(arg)
         overlay_for = w.id if as_overlay and w.overlay_for is None else None
-        return SpecialWindow(cmd, stdin, cwd_from=cwd_from, overlay_for=overlay_for)
+        return SpecialWindow(cmd, stdin, cwd_from=cwd_from, overlay_for=overlay_for, env=env)
 
     def pipe(self, source, dest, exe, *args):
         cmd = [exe] + list(args)
@@ -830,7 +870,12 @@ class Boss:
             self._new_os_window(create_window(), cwd_from=cwd_from)
         else:
             import subprocess
-            subprocess.Popen(cmd)
+            env, stdin = self.process_stdin_source(stdin=source, window=window)
+            if stdin:
+                p = subprocess.Popen(cmd, env=env, stdin=subprocess.PIPE)
+                p.communicate(stdin)
+            else:
+                subprocess.Popen(cmd)
 
     def args_to_special_window(self, args, cwd_from=None):
         args = list(args)
@@ -874,7 +919,7 @@ class Boss:
         self._create_tab(args)
 
     def new_tab_with_cwd(self, *args):
-        w = self.active_window
+        w = self.active_window_for_cwd
         cwd_from = w.child.pid if w is not None else None
         self._create_tab(args, cwd_from=cwd_from)
 
@@ -890,7 +935,7 @@ class Boss:
         self._new_window(args)
 
     def new_window_with_cwd(self, *args):
-        w = self.active_window
+        w = self.active_window_for_cwd
         if w is None:
             return self.new_window(*args)
         cwd_from = w.child.pid if w is not None else None
