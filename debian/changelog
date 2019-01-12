@@ -1,11 +1,34 @@
-kitty (0.13.2-1) UNRELEASED; urgency=medium
+kitty (0.13.2-1yk1) bionic; urgency=medium
 
   * New upstream release
+    + Add a new option ‘tab_title_template’ to control how tab titles
+      are formatted. In particular the template can be used to display
+      the tab number next to the title (issue 1223)
+    + Report the current foreground processes as well as the original child process,
+      when using ‘kitty @ ls’
+    + Use the current working directory of the foreground process for the
+      ‘*_with_cwd’ actions that open a new window with the current working
+      directory.
+    + Add a new ‘copy_or_interrupt’ action that can be mapped to ‘ctrl+c’. It
+      will copy if there is a selection and interrupt otherwise (issue 1286)
+    + Fix setting ‘background_opacity’ causing window margins/padding to be slightly
+      different shade from background (issue 1221)
+    + Handle keyboards with a “+” key (issue 1224)
+    + Fix Private use Unicode area characters followed by spaces at the end of text
+      not being rendered correctly (issue 1210)
+    + Fix changing ‘cursor_text_color’ via remote control not working
+      (issue 1229)
+    + Add an action to resize windows that can be mapped to shortcuts in ‘kitty.conf’
+      (pull request 1245)
+    + Fix using the ‘new_tab !neighbor’ action changing the order of the
+      non-neighboring tabs (issue 1256)
+
+  [ James McCoy ]
   * Add python3-pil to Build-Depends for tests
   * Update kitty's homepage.
     Thanks to Chris Lamb for the patch (Closes: #911848)
 
- -- James McCoy <jamessan@debian.org>  Sun, 16 Dec 2018 20:40:07 -0500
+ -- Yuri Khan <yurivkhan@gmail.com>  Sat, 12 Jan 2019 19:35:24 +0700
 
 kitty (0.13.1-1yk2) bionic; urgency=medium
 
