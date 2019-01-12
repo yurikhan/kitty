@@ -8,35 +8,35 @@ Subject: [PATCH] wip: Draw tab index
  kitty/tabs.py    | 4 ++--
  2 files changed, 6 insertions(+), 4 deletions(-)
 
-diff --git a/kitty/tab_bar.py b/kitty/tab_bar.py
-index fef66b5f..69b79f10 100644
---- a/kitty/tab_bar.py
-+++ b/kitty/tab_bar.py
-@@ -15,7 +15,7 @@ from .utils import color_as_int
+Index: kitty/kitty/tab_bar.py
+===================================================================
+--- kitty.orig/kitty/tab_bar.py	2019-01-12 19:47:21.937003059 +0700
++++ kitty/kitty/tab_bar.py	2019-01-12 19:47:51.264245613 +0700
+@@ -15,7 +15,7 @@
  from .window import calculate_gl_geometry
  from .rgb import alpha_blend, color_from_int
  
 -TabBarData = namedtuple('TabBarData', 'title is_active needs_attention')
 +TabBarData = namedtuple('TabBarData', 'title is_active needs_attention index')
- DrawData = namedtuple('DrawData', 'leading_spaces sep trailing_spaces bell_on_tab bell_fg alpha active_bg inactive_bg default_bg')
- 
- 
-@@ -29,7 +29,9 @@ def draw_title(draw_data, screen, tab):
-         screen.cursor.fg = draw_data.bell_fg
-         screen.draw('🔔 ')
-         screen.cursor.fg = fg
--    screen.draw(tab.title)
+ DrawData = namedtuple(
+     'DrawData', 'leading_spaces sep trailing_spaces bell_on_tab'
+     ' bell_fg alpha active_bg inactive_bg default_bg title_template')
+@@ -38,7 +38,9 @@
+             draw_title.template_failure_reported = True
+             log_error('Invalid tab title template: "{}" with error: {}'.format(draw_data.title_template, e))
+         title = tab.title
+-    screen.draw(title)
 +    screen.draw('{index} {title}'.format(
 +        index=tab.index,
 +        title=tab.title))
  
  
- def draw_tab_with_separator(draw_data, screen, tab, before, max_title_length):
-diff --git a/kitty/tabs.py b/kitty/tabs.py
-index 24a280ac..dbeaad24 100644
---- a/kitty/tabs.py
-+++ b/kitty/tabs.py
-@@ -500,14 +500,14 @@ class TabManager:  # {{{
+ def draw_tab_with_separator(draw_data, screen, tab, before, max_title_length, index):
+Index: kitty/kitty/tabs.py
+===================================================================
+--- kitty.orig/kitty/tabs.py	2019-01-12 19:47:21.937003059 +0700
++++ kitty/kitty/tabs.py	2019-01-12 19:47:21.937003059 +0700
+@@ -553,14 +553,14 @@
      def tab_bar_data(self):
          at = self.active_tab
          ans = []
@@ -53,6 +53,3 @@ index 24a280ac..dbeaad24 100644
          return ans
  
      def activate_tab_at(self, x):
--- 
-2.19.1
-

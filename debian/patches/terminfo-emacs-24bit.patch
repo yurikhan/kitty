@@ -1,8 +1,8 @@
 Index: kitty/terminfo/kitty.terminfo
 ===================================================================
---- kitty.orig/terminfo/kitty.terminfo	2018-12-06 22:20:12.005799156 +0700
-+++ kitty/terminfo/kitty.terminfo	2018-12-11 01:08:02.522887744 +0700
-@@ -127,6 +127,8 @@
+--- kitty.orig/terminfo/kitty.terminfo	2019-01-12 19:48:53.646636866 +0700
++++ kitty/terminfo/kitty.terminfo	2019-01-12 19:48:53.642636969 +0700
+@@ -221,6 +221,8 @@
  	setaf=\E[%?%p1%{8}%<%t3%p1%d%e%p1%{16}%<%t9%p1%{8}%-%d%e38;5;%p1%d%;m,
  	setrgbb=\E[48:2:%p1%d:%p2%d:%p3%dm,
  	setrgbf=\E[38:2:%p1%d:%p2%d:%p3%dm,
