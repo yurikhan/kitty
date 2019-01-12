@@ -4,7 +4,7 @@ Maintainer: James McCoy <jamessan@debian.org>
 Section: x11
 Standards-Version: 4.2.1
 Rules-Requires-Root: no
-Homepage: https://github.com/kovidgoyal/kitty
+Homepage: https://sw.kovidgoyal.net/kitty/
 Vcs-Git: https://salsa.debian.org/jamessan/kitty.git
 Vcs-Browser: https://salsa.debian.org/jamessan/kitty
 Build-Depends:
@@ -24,6 +24,7 @@ Build-Depends:
  libxrandr-dev,
  pkg-config,
  python3-dev (>= 3.5),
+ python3-pil <!nocheck>,
  python3-sphinx,
  zlib1g-dev,
 

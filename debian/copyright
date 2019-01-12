@@ -23,6 +23,7 @@ License: Zlib
 
 Files: glfw/glfw.py
        glfw/backend_utils.c
+       glfw/memfd.h
 Copyright: 2017-2018, Kovid Goyal <kovid at kovidgoyal.net>
 License: GPL-3+
 
