@@ -169,14 +169,14 @@ Similarly, to switch back to the previous layout::
 ''')],
     'shortcuts.fonts': [
         _('Font sizes'), _('''\
-You can change the font size for all top-level kitty windows at a time
+You can change the font size for all top-level kitty OS windows at a time
 or only the current one.
 '''), _('''\
 To setup shortcuts for specific font sizes::
 
     map kitty_mod+f6 change_font_size all 10.0
 
-To setup shortcuts to change only the current window's font size::
+To setup shortcuts to change only the current OS window's font size::
 
     map kitty_mod+f6 change_font_size current 10.0
 ''')],
@@ -608,6 +608,13 @@ entries to this list.
 o('tab_separator', '"{}"'.format(default_tab_separator), option_type=tab_separator, long_text=_('''
 The separator between tabs in the tab bar when using :code:`separator` as the :opt:`tab_bar_style`.'''))
 
+o('tab_title_template', '{title}', long_text=_('''
+A template to render the tab title. The default just renders
+the title. If you wish to include the tab-index as well,
+use something like: :code:`{index}: {title}`. Useful
+if you have shortcuts mapped for :code:`goto_tab N`.
+'''))
+
 o('active_tab_foreground', '#000', option_type=to_color, long_text=_('''
 Tab bar colors and styles'''))
 o('active_tab_background', '#eee', option_type=to_color)
@@ -841,7 +848,9 @@ g('shortcuts.clipboard')  # {{{
 if is_macos:
     k('copy_to_clipboard', 'cmd+c', 'copy_to_clipboard', _('Copy to clipboard'), add_to_docs=False)
     k('paste_from_clipboard', 'cmd+v', 'paste_from_clipboard', _('Paste from clipboard'), add_to_docs=False)
-k('copy_to_clipboard', 'kitty_mod+c', 'copy_to_clipboard', _('Copy to clipboard'))
+k('copy_to_clipboard', 'kitty_mod+c', 'copy_to_clipboard', _('Copy to clipboard'), long_text=_('''
+There is also a :code:`copy_or_interrupt` action that can be optionally mapped to :kbd:`Ctrl+c`.
+It will copy only if there is a selection and send an interrupt otherwise.'''))
 k('paste_from_clipboard', 'kitty_mod+v', 'paste_from_clipboard', _('Paste from clipboard'))
 k('paste_from_selection', 'kitty_mod+s', 'paste_from_selection', _('Paste from selection'))
 k('paste_from_selection', 'shift+insert', 'paste_from_selection', _('Paste from selection'))

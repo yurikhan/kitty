@@ -10,6 +10,7 @@ from functools import partial
 from gettext import gettext as _
 from weakref import WeakValueDictionary
 
+from .child import cached_process_data
 from .cli import create_opts, parse_args
 from .conf.utils import to_cmdline
 from .config import initial_window_size_func, prepare_config_file_for_editing
@@ -32,9 +33,9 @@ from .rgb import Color, color_from_int
 from .session import create_session
 from .tabs import SpecialWindow, SpecialWindowInstance, TabManager
 from .utils import (
-    get_editor, get_primary_selection, log_error, open_url, parse_address_spec,
-    remove_socket_file, safe_print, set_primary_selection, single_instance,
-    startup_notification_handler
+    get_editor, get_primary_selection, is_path_in_temp_dir, log_error,
+    open_url, parse_address_spec, remove_socket_file, safe_print,
+    set_primary_selection, single_instance, startup_notification_handler
 )
 
 
@@ -106,6 +107,7 @@ class Boss:
         set_draw_minimal_borders(opts)
         self.window_id_map = WeakValueDictionary()
         self.startup_colors = {k: opts[k] for k in opts if isinstance(opts[k], Color)}
+        self.startup_cursor_text_color = opts.cursor_text_color
         self.pending_sequences = None
         self.cached_values = cached_values
         self.os_window_map = {}
@@ -149,14 +151,15 @@ class Boss:
         return os_window_id
 
     def list_os_windows(self):
-        active_tab, active_window = self.active_tab, self.active_window
-        active_tab_manager = self.active_tab_manager
-        for os_window_id, tm in self.os_window_map.items():
-            yield {
-                'id': os_window_id,
-                'is_focused': tm is active_tab_manager,
-                'tabs': list(tm.list_tabs(active_tab, active_window)),
-            }
+        with cached_process_data():
+            active_tab, active_window = self.active_tab, self.active_window
+            active_tab_manager = self.active_tab_manager
+            for os_window_id, tm in self.os_window_map.items():
+                yield {
+                    'id': os_window_id,
+                    'is_focused': tm is active_tab_manager,
+                    'tabs': list(tm.list_tabs(active_tab, active_window)),
+                }
 
     @property
     def all_tab_managers(self):
@@ -253,7 +256,7 @@ class Boss:
 
     def new_os_window_with_cwd(self, *args):
         w = self.active_window_for_cwd
-        cwd_from = w.child.pid if w is not None else None
+        cwd_from = w.child.pid_for_cwd if w is not None else None
         self._new_os_window(args, cwd_from)
 
     def add_child(self, window):
@@ -852,7 +855,7 @@ class Boss:
     def pipe(self, source, dest, exe, *args):
         cmd = [exe] + list(args)
         window = self.active_window
-        cwd_from = window.child.pid if window else None
+        cwd_from = window.child.pid_for_cwd if window else None
 
         def create_window():
             return self.special_window_for_cmd(
@@ -920,7 +923,7 @@ class Boss:
 
     def new_tab_with_cwd(self, *args):
         w = self.active_window_for_cwd
-        cwd_from = w.child.pid if w is not None else None
+        cwd_from = w.child.pid_for_cwd if w is not None else None
         self._create_tab(args, cwd_from=cwd_from)
 
     def _new_window(self, args, cwd_from=None):
@@ -938,7 +941,7 @@ class Boss:
         w = self.active_window_for_cwd
         if w is None:
             return self.new_window(*args)
-        cwd_from = w.child.pid if w is not None else None
+        cwd_from = w.child.pid_for_cwd if w is not None else None
         self._new_window(args, cwd_from=cwd_from)
 
     def move_tab_forward(self):
@@ -951,11 +954,20 @@ class Boss:
         if tm is not None:
             tm.move_tab(-1)
 
-    def patch_colors(self, spec, configured=False):
+    def patch_colors(self, spec, cursor_text_color, configured=False):
         if configured:
             for k, v in spec.items():
                 if hasattr(self.opts, k):
                     setattr(self.opts, k, color_from_int(v))
+            if cursor_text_color is not False:
+                self.opts.cursor_text_color = cursor_text_color
         for tm in self.all_tab_managers:
             tm.tab_bar.patch_colors(spec)
         patch_global_colors(spec, configured)
+
+    def safe_delete_temp_file(self, path):
+        if is_path_in_temp_dir(path):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass

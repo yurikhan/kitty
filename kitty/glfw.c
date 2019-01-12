@@ -650,6 +650,12 @@ bool
 application_quit_requested() {
     return !application_quit_canary || glfwWindowShouldClose(application_quit_canary);
 }
+
+void
+request_application_quit() {
+    if (application_quit_canary)
+        glfwSetWindowShouldClose(application_quit_canary, true);
+}
 #endif
 
 // Global functions {{{
@@ -749,6 +755,24 @@ get_clipboard_string(PYNOARG) {
     return Py_BuildValue("s", "");
 }
 
+void
+ring_audio_bell(OSWindow *w) {
+    static double last_bell_at = -1;
+    double now = monotonic();
+    if (now - last_bell_at <= 0.1) return;
+    last_bell_at = now;
+    if (w->handle) {
+        glfwWindowBell(w->handle);
+    }
+}
+
+static PyObject*
+ring_bell(PYNOARG) {
+    OSWindow *w = current_os_window();
+    ring_audio_bell(w);
+    Py_RETURN_NONE;
+}
+
 static PyObject*
 get_content_scale_for_window(PYNOARG) {
     OSWindow *w = global_state.callback_os_window ? global_state.callback_os_window : global_state.os_windows;
@@ -784,17 +808,6 @@ change_os_window_state(PyObject *self UNUSED, PyObject *args) {
     else if (strcmp(state, "minimized") == 0) glfwIconifyWindow(w->handle);
     else { PyErr_SetString(PyExc_ValueError, "Unknown window state"); return NULL; }
     Py_RETURN_NONE;
-}
-
-void
-ring_audio_bell(OSWindow *w) {
-    static double last_bell_at = -1;
-    double now = monotonic();
-    if (now - last_bell_at <= 0.1) return;
-    last_bell_at = now;
-    if (w->handle) {
-        glfwWindowBell(w->handle);
-    }
 }
 
 void
@@ -1019,6 +1032,7 @@ static PyMethodDef module_methods[] = {
     METHODB(set_default_window_icon, METH_VARARGS),
     METHODB(get_clipboard_string, METH_NOARGS),
     METHODB(get_content_scale_for_window, METH_NOARGS),
+    METHODB(ring_bell, METH_NOARGS),
     METHODB(set_clipboard_string, METH_VARARGS),
     METHODB(toggle_fullscreen, METH_NOARGS),
     METHODB(change_os_window_state, METH_VARARGS),
@@ -1116,6 +1130,7 @@ init_glfw(PyObject *m) {
     ADDC(GLFW_KEY_GRAVE_ACCENT);
     ADDC(GLFW_KEY_WORLD_1);
     ADDC(GLFW_KEY_WORLD_2);
+    ADDC(GLFW_KEY_PLUS);
 
 // --- Function keys -----------------------------------------------------------
     ADDC(GLFW_KEY_ESCAPE);

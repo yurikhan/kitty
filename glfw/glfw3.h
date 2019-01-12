@@ -407,6 +407,7 @@ extern "C" {
 #define GLFW_KEY_GRAVE_ACCENT       96  /* ` */
 #define GLFW_KEY_WORLD_1            161 /* non-US #1 */
 #define GLFW_KEY_WORLD_2            162 /* non-US #2 */
+#define GLFW_KEY_PLUS               163
 
 /* Function keys */
 #define GLFW_KEY_ESCAPE             256
@@ -1379,7 +1380,13 @@ typedef void (* GLFWcursorenterfun)(GLFWwindow*,int);
  *  @param[in] window The window that received the event.
  *  @param[in] xoffset The scroll offset along the x-axis.
  *  @param[in] yoffset The scroll offset along the y-axis.
- *  @param[in] flags A bit-mask providing extra data about the event. flags & 1 will be true if and only if the offset values are "high-precision". Typically pixel values. Otherwise the offset values are number of lines.
+ *  @param[in] flags A bit-mask providing extra data about the event.
+ *  flags & 1 will be true if and only if the offset values are "high-precision".
+ *  Typically pixel values. Otherwise the offset values are number of lines.
+ *  (flags >> 1) & 7 will have value 1 for the start of momentum scrolling,
+ *  value 2 for stationary momentum scrolling, value 3 for momentum scrolling
+ *  in progress, value 4 for momentum scrolling ended, value 5 for momentum
+ *  scrolling cancelled and value 6 if scrolling may begin soon.
  *
  *  @sa @ref scrolling
  *  @sa @ref glfwSetScrollCallback
@@ -2121,9 +2128,9 @@ GLFWAPI const GLFWvidmode* glfwGetVideoMode(GLFWmonitor* monitor);
 
 /*! @brief Generates a gamma ramp and sets it for the specified monitor.
  *
- *  This function generates a 256-element gamma ramp from the specified exponent
- *  and then calls @ref glfwSetGammaRamp with it.  The value must be a finite
- *  number greater than zero.
+ *  This function generates an appropriately sized gamma ramp from the
+ *  specified exponent and then calls @ref glfwSetGammaRamp with it.  The value
+ *  must be a finite number greater than zero.
  *
  *  The software controlled gamma ramp is applied _in addition_ to the hardware
  *  gamma correction, which today is usually an approximation of sRGB gamma.
@@ -2202,8 +2209,8 @@ GLFWAPI const GLFWgammaramp* glfwGetGammaRamp(GLFWmonitor* monitor);
  *  @errors Possible errors include @ref GLFW_NOT_INITIALIZED and @ref
  *  GLFW_PLATFORM_ERROR.
  *
- *  @remark Gamma ramp sizes other than 256 are not supported by all platforms
- *  or graphics hardware.
+ *  @remark The size of the specified gamma ramp should match the size of the
+ *  current ramp for that monitor.
  *
  *  @remark @win32 The gamma ramp size must be 256.
  *

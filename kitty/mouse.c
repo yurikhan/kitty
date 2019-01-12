@@ -557,6 +557,8 @@ mouse_event(int button, int modifiers, int action) {
 void
 scroll_event(double UNUSED xoffset, double yoffset, int flags) {
     bool in_tab_bar;
+    static id_type window_for_momentum_scroll = 0;
+    static bool main_screen_for_momentum_scroll = false;
     unsigned int window_idx = 0;
     Window *w = window_for_event(&window_idx, &in_tab_bar);
     if (!w && !in_tab_bar) {
@@ -567,9 +569,35 @@ scroll_event(double UNUSED xoffset, double yoffset, int flags) {
         if (t) w = t->windows + t->active_window;
     }
     if (!w) return;
+    Screen *screen = w->render_data.screen;
+
+    enum MomentumData { NoMomentumData, MomentumPhaseBegan, MomentumPhaseStationary, MomentumPhaseActive, MomentumPhaseEnded, MomentumPhaseCancelled, MomentumPhaseMayBegin };
+    enum MomentumData momentum_data = (flags >> 1) & 7;
+
+    switch(momentum_data) {
+        case NoMomentumData:
+            break;
+        case MomentumPhaseBegan:
+            window_for_momentum_scroll = w->id;
+            main_screen_for_momentum_scroll = screen->linebuf == screen->main_linebuf;
+            break;
+        case MomentumPhaseStationary:
+        case MomentumPhaseActive:
+            if (window_for_momentum_scroll != w->id || main_screen_for_momentum_scroll != (screen->linebuf == screen->main_linebuf)) return;
+            break;
+        case MomentumPhaseEnded:
+        case MomentumPhaseCancelled:
+            window_for_momentum_scroll = 0;
+            break;
+        case MomentumPhaseMayBegin:
+        default:
+            break;
+    }
+    if (yoffset == 0.0) return;
 
     int s;
     bool is_high_resolution = flags & 1;
+
     if (is_high_resolution) {
         yoffset *= OPT(touch_scroll_multiplier);
         if (yoffset * global_state.callback_os_window->pending_scroll_pixels < 0) {
@@ -580,16 +608,22 @@ scroll_event(double UNUSED xoffset, double yoffset, int flags) {
             global_state.callback_os_window->pending_scroll_pixels = pixels;
             return;
         }
-        s = abs(((int)round(pixels))) / global_state.callback_os_window->fonts_data->cell_height;
-        if (pixels < 0) s *= -1;
+        s = (int)round(pixels) / (int)global_state.callback_os_window->fonts_data->cell_height;
         global_state.callback_os_window->pending_scroll_pixels = pixels - s * (int) global_state.callback_os_window->fonts_data->cell_height;
     } else {
-        s = (int) round(yoffset * OPT(wheel_scroll_multiplier));
+        if (screen->linebuf == screen->main_linebuf || !screen->modes.mouse_tracking_mode) {
+            // Only use wheel_scroll_multiplier if we are scrolling kitty scrollback or in mouse
+            // tracking mode, where the application is responsible for interpreting scroll events
+            yoffset *= OPT(wheel_scroll_multiplier);
+        }
+        s = (int) round(yoffset);
+        // apparently on cocoa some mice generate really small yoffset values
+        // when scrolling slowly https://github.com/kovidgoyal/kitty/issues/1238
+        if (s == 0 && yoffset != 0) s = yoffset > 0 ? 1 : -1;
         global_state.callback_os_window->pending_scroll_pixels = 0;
     }
     if (s == 0) return;
     bool upwards = s > 0;
-    Screen *screen = w->render_data.screen;
     if (screen->linebuf == screen->main_linebuf) {
         screen_history_scroll(screen, abs(s), upwards);
     } else {
@@ -597,13 +631,7 @@ scroll_event(double UNUSED xoffset, double yoffset, int flags) {
             int sz = encode_mouse_event(w, upwards ? GLFW_MOUSE_BUTTON_4 : GLFW_MOUSE_BUTTON_5, PRESS, 0);
             if (sz > 0) {
                 mouse_event_buf[sz] = 0;
-                if (is_high_resolution) {
-                    for (s = abs(s); s > 0; s--) {
-                        write_escape_code_to_child(screen, CSI, mouse_event_buf);
-                    }
-                } else {
-                    // Since we are sending a mouse button 4/5 event, we ignore 's'
-                    // and simply send one event per received scroll event
+                for (s = abs(s); s > 0; s--) {
                     write_escape_code_to_child(screen, CSI, mouse_event_buf);
                 }
             }
