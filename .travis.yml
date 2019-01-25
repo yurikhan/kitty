@@ -4,7 +4,7 @@ matrix:
     fast_finish: true
     include:
         - os: linux
-          dist: trusty
+          dist: xenial
           group: beta
           language: python
           sudo: false
@@ -12,6 +12,7 @@ matrix:
           addons:
             apt:
               packages:
+                - libgl1-mesa-dev
                 - libxi-dev
                 - libxrandr-dev
                 - libxinerama-dev
@@ -20,7 +21,7 @@ matrix:
                 - libdbus-1-dev
 
         - os: linux
-          dist: trusty
+          dist: xenial
           group: beta
           sudo: false
           env:
@@ -30,6 +31,7 @@ matrix:
           addons:
             apt:
               packages:
+                - libgl1-mesa-dev
                 - libfontconfig1-dev
                 - libharfbuzz-dev
                 - libxi-dev
@@ -42,7 +44,7 @@ matrix:
                 - python3-pil
 
         - os: linux
-          dist: trusty
+          dist: xenial
           group: beta
           sudo: false
           env:
@@ -52,6 +54,7 @@ matrix:
           addons:
             apt:
               packages:
+                - libgl1-mesa-dev
                 - libfontconfig1-dev
                 - libharfbuzz-dev
                 - libxi-dev
@@ -64,7 +67,7 @@ matrix:
                 - python3-pil
 
         - os: linux
-          dist: trusty
+          dist: xenial
           group: beta
           sudo: false
           env:
@@ -74,6 +77,7 @@ matrix:
           addons:
             apt:
               packages:
+                - libgl1-mesa-dev
                 - libfontconfig1-dev
                 - libharfbuzz-dev
                 - libxi-dev
@@ -89,10 +93,13 @@ matrix:
           language: generic
           env: SWBASE=/Users/Shared/buildbot/sw SW=$SWBASE/sw PATH=$SW/bin:$PATH
 
-        # Disabled because harfbuzz is currently broken in brew
-        # - os: osx
-        #   language: generic
-        #   env: USE_BREW=1 BUILD_PKG=osx-bundle
+        - os: osx
+          language: generic
+          addons:
+            homebrew:
+              update: true
+              brewfile: true
+          env: USE_BREW=1 BUILD_PKG=osx-bundle
 
 env:
     global:
@@ -106,12 +113,6 @@ install: |
     if [[ "$RUN_FLAKE" == "1" ]]; then pip install flake8; fi
     if [[ "$TRAVIS_OS_NAME" == 'osx' ]]; then
         if [[ "$USE_BREW" == "1" ]]; then
-            brew update;
-            # brew upgrade python;
-            brew install harfbuzz --without-graphite2 --without-icu4c --without-freetype;
-            brew install imagemagick
-            brew install optipng
-            brew install librsvg
             logo/make.py
         else
             mkdir -p $SW;

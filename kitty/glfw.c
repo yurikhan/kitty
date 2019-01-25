@@ -35,8 +35,8 @@ update_os_window_viewport(OSWindow *window, bool notify_boss) {
     }
     window->viewport_width = fw; window->viewport_height = fh;
     double xr = window->viewport_x_ratio, yr = window->viewport_y_ratio;
-    window->viewport_x_ratio = (double)window->viewport_width / (double)w;
-    window->viewport_y_ratio = (double)window->viewport_height / (double)h;
+    window->viewport_x_ratio = w > 0 ? (double)window->viewport_width / (double)w : xr;
+    window->viewport_y_ratio = h > 0 ? (double)window->viewport_height / (double)h : yr;
     double xdpi = window->logical_dpi_x, ydpi = window->logical_dpi_y;
     set_os_window_dpi(window);
     bool dpi_changed = (xr != 0.0 && xr != window->viewport_x_ratio) || (yr != 0.0 && yr != window->viewport_y_ratio) || (xdpi != window->logical_dpi_x) || (ydpi != window->logical_dpi_y);
@@ -55,6 +55,19 @@ update_os_window_viewport(OSWindow *window, bool notify_boss) {
             glfwSetWindowSize(window->handle, window->window_width, window->window_height);
         }
     }
+}
+
+// On Cocoa, glfwWaitEvents() can block indefinitely because of the way Cocoa
+// works. See https://github.com/glfw/glfw/issues/1251. I have noticed this
+// happening in particular with window resize events, when waiting with no
+// timeout. See https://github.com/kovidgoyal/kitty/issues/458
+// So we use an unlovely hack to workaround that case
+void
+unjam_event_loop() {
+#ifdef __APPLE__
+    if (event_loop_blocking_with_no_timeout)
+        wakeup_main_loop();
+#endif
 }
 
 
@@ -98,16 +111,6 @@ show_mouse_cursor(GLFWwindow *w) {
 }
 
 static int min_width = 100, min_height = 100;
-// On Cocoa, glfwWaitEvents() can block indefinitely because of the way Cocoa
-// works. See https://github.com/glfw/glfw/issues/1251. I have noticed this
-// happening in particular with window resize events, when waiting with no
-// timeout. See https://github.com/kovidgoyal/kitty/issues/458
-// So we use an unlovely hack to workaround that case
-#ifdef __APPLE__
-#define unjam_event_loop() { if (event_loop_blocking_with_no_timeout) wakeup_main_loop(); }
-#else
-#define unjam_event_loop()
-#endif
 
 static void
 framebuffer_size_callback(GLFWwindow *w, int width, int height) {
@@ -352,8 +355,9 @@ get_window_dpi(GLFWwindow *w, double *x, double *y) {
     float xscale = 1, yscale = 1;
     if (w) glfwGetWindowContentScale(w, &xscale, &yscale);
     else glfwGetMonitorContentScale(glfwGetPrimaryMonitor(), &xscale, &yscale);
-    if (!xscale) xscale = 1.0;
-    if (!yscale) yscale = 1.0;
+    // check for zero or NaN values of xscale/yscale
+    if (!xscale || xscale != xscale) xscale = 1.0;
+    if (!yscale || yscale != yscale) yscale = 1.0;
 #ifdef __APPLE__
     double factor = 72.0;
 #else
@@ -650,6 +654,12 @@ bool
 application_quit_requested() {
     return !application_quit_canary || glfwWindowShouldClose(application_quit_canary);
 }
+
+void
+request_application_quit() {
+    if (application_quit_canary)
+        glfwSetWindowShouldClose(application_quit_canary, true);
+}
 #endif
 
 // Global functions {{{
@@ -749,6 +759,24 @@ get_clipboard_string(PYNOARG) {
     return Py_BuildValue("s", "");
 }
 
+void
+ring_audio_bell(OSWindow *w) {
+    static double last_bell_at = -1;
+    double now = monotonic();
+    if (now - last_bell_at <= 0.1) return;
+    last_bell_at = now;
+    if (w->handle) {
+        glfwWindowBell(w->handle);
+    }
+}
+
+static PyObject*
+ring_bell(PYNOARG) {
+    OSWindow *w = current_os_window();
+    ring_audio_bell(w);
+    Py_RETURN_NONE;
+}
+
 static PyObject*
 get_content_scale_for_window(PYNOARG) {
     OSWindow *w = global_state.callback_os_window ? global_state.callback_os_window : global_state.os_windows;
@@ -784,17 +812,6 @@ change_os_window_state(PyObject *self UNUSED, PyObject *args) {
     else if (strcmp(state, "minimized") == 0) glfwIconifyWindow(w->handle);
     else { PyErr_SetString(PyExc_ValueError, "Unknown window state"); return NULL; }
     Py_RETURN_NONE;
-}
-
-void
-ring_audio_bell(OSWindow *w) {
-    static double last_bell_at = -1;
-    double now = monotonic();
-    if (now - last_bell_at <= 0.1) return;
-    last_bell_at = now;
-    if (w->handle) {
-        glfwWindowBell(w->handle);
-    }
 }
 
 void
@@ -1019,6 +1036,7 @@ static PyMethodDef module_methods[] = {
     METHODB(set_default_window_icon, METH_VARARGS),
     METHODB(get_clipboard_string, METH_NOARGS),
     METHODB(get_content_scale_for_window, METH_NOARGS),
+    METHODB(ring_bell, METH_NOARGS),
     METHODB(set_clipboard_string, METH_VARARGS),
     METHODB(toggle_fullscreen, METH_NOARGS),
     METHODB(change_os_window_state, METH_VARARGS),
@@ -1116,6 +1134,7 @@ init_glfw(PyObject *m) {
     ADDC(GLFW_KEY_GRAVE_ACCENT);
     ADDC(GLFW_KEY_WORLD_1);
     ADDC(GLFW_KEY_WORLD_2);
+    ADDC(GLFW_KEY_PLUS);
 
 // --- Function keys -----------------------------------------------------------
     ADDC(GLFW_KEY_ESCAPE);

@@ -144,7 +144,7 @@ typedef struct {
     OSWindow *os_windows;
     size_t num_os_windows, capacity;
     OSWindow *callback_os_window;
-    bool close_all_windows;
+    bool terminate;
     bool is_wayland;
     bool debug_gl, debug_font_fallback;
     bool has_pending_resizes;
@@ -172,6 +172,7 @@ void make_os_window_context_current(OSWindow *w);
 void update_os_window_references();
 void mark_os_window_for_close(OSWindow* w, bool yes);
 void update_os_window_viewport(OSWindow *window, bool);
+void unjam_event_loop();
 bool should_os_window_close(OSWindow* w);
 bool should_os_window_be_rendered(OSWindow* w);
 void wakeup_main_loop();
@@ -209,5 +210,6 @@ typedef enum {
 } CocoaPendingAction;
 void set_cocoa_pending_action(CocoaPendingAction action);
 bool application_quit_requested();
+void request_application_quit();
 #endif
 void wayland_request_frame_render(OSWindow *w);

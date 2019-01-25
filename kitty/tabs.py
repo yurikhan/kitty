@@ -11,7 +11,7 @@ from .child import Child
 from .constants import appname, get_boss, is_macos, is_wayland
 from .fast_data_types import (
     add_tab, glfw_post_empty_event, mark_tab_bar_dirty, next_window_id,
-    pt_to_px, remove_tab, remove_window, set_active_tab, swap_tabs,
+    pt_to_px, remove_tab, remove_window, ring_bell, set_active_tab, swap_tabs,
     x11_window_id
 )
 from .layout import create_layout_object_for, evict_cached_layouts
@@ -198,6 +198,16 @@ class Tab:  # {{{
             self.relayout()
             return
         return 'Could not resize'
+
+    def resize_window(self, quality, increment):
+        if increment < 1:
+            raise ValueError(increment)
+        is_horizontal = quality in ('wider', 'narrower')
+        increment *= 1 if quality in ('wider', 'taller') else -1
+        if self.resize_window_by(
+                self.windows[self.active_window_idx].id,
+                increment, is_horizontal) is not None:
+            ring_bell()
 
     def reset_window_sizes(self):
         if self.current_layout.remove_all_biases():
@@ -501,8 +511,10 @@ class TabManager:  # {{{
         if len(self.tabs) > 1:
             idx = self.active_tab_idx
             nidx = (idx + len(self.tabs) + delta) % len(self.tabs)
-            self.tabs[idx], self.tabs[nidx] = self.tabs[nidx], self.tabs[idx]
-            swap_tabs(self.os_window_id, idx, nidx)
+            step = 1 if idx < nidx else -1
+            for i in range(idx, nidx, step):
+                self.tabs[i], self.tabs[i + step] = self.tabs[i + step], self.tabs[i]
+                swap_tabs(self.os_window_id, i, i + step)
             self._set_active_tab(nidx)
             self.mark_tab_bar_dirty()
 
@@ -512,8 +524,9 @@ class TabManager:  # {{{
         self._add_tab(Tab(self, special_window=special_window, cwd_from=cwd_from))
         self._set_active_tab(idx)
         if len(self.tabs) > 2 and as_neighbor and idx != nidx:
-            self.tabs[idx], self.tabs[nidx] = self.tabs[nidx], self.tabs[idx]
-            swap_tabs(self.os_window_id, idx, nidx)
+            for i in range(idx, nidx, -1):
+                self.tabs[i], self.tabs[i-1] = self.tabs[i-1], self.tabs[i]
+                swap_tabs(self.os_window_id, i, i-1)
             self._set_active_tab(nidx)
             idx = nidx
         self.mark_tab_bar_dirty()

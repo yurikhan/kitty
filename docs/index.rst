@@ -122,7 +122,7 @@ Tabs
 ========================    =======================
 Action                      Shortcut
 ========================    =======================
-New tab                     :sc:`new_tab`
+New tab                     :sc:`new_tab` (also :kbd:`⌘+t` on macOS)
 Close tab                   :sc:`close_tab`
 Next tab                    :sc:`next_tab` (also :kbd:`control+tab` on macOS)
 Previous tab                :sc:`previous_tab` (also :kbd:`control+shift+tab` on macOS)
@@ -141,7 +141,7 @@ Action                      Shortcut
 ========================    =======================
 New window                  :sc:`new_window`
 New OS window               :sc:`new_os_window` (also :kbd:`⌘+n` on macOS)
-Close window                :sc:`close_window`
+Close window                :sc:`close_window` (also :kbd:`⌘+w` on macOS)
 Next window                 :sc:`next_window`
 Previous window             :sc:`previous_window`
 Move window forward         :sc:`move_window_forward`
@@ -222,6 +222,19 @@ layout only some operations may be possible for a particular window. For
 example, in the Tall layout you can make the first window wider/narrower, but
 not taller/shorter. Note that what you are resizing is actually not a window,
 but a row/column in the layout, all windows in that row/column will be resized.
+
+You can also define shortcuts in :file:`kitty.conf` to make the active window
+wider, narrower, taller, or shorter by mapping to the ``resize_window``
+action, for example::
+
+   map ctrl+left resize_window narrower
+   map ctrl+right resize_window wider
+   map ctrl+up resize_window taller
+   map ctrl+down resize_window shorter 3
+
+The ``resize_window`` action has a second, optional argument to control
+the resizing increment (a positive integer that defaults to 1).
+
 
 Some layouts take options to control their behavior. For example, the ``fat``
 and ``tall`` layouts accept the ``bias`` option to control how the available

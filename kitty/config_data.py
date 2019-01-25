@@ -169,14 +169,14 @@ Similarly, to switch back to the previous layout::
 ''')],
     'shortcuts.fonts': [
         _('Font sizes'), _('''\
-You can change the font size for all top-level kitty windows at a time
+You can change the font size for all top-level kitty OS windows at a time
 or only the current one.
 '''), _('''\
 To setup shortcuts for specific font sizes::
 
     map kitty_mod+f6 change_font_size all 10.0
 
-To setup shortcuts to change only the current window's font size::
+To setup shortcuts to change only the current OS window's font size::
 
     map kitty_mod+f6 change_font_size current 10.0
 ''')],
@@ -608,6 +608,13 @@ entries to this list.
 o('tab_separator', '"{}"'.format(default_tab_separator), option_type=tab_separator, long_text=_('''
 The separator between tabs in the tab bar when using :code:`separator` as the :opt:`tab_bar_style`.'''))
 
+o('tab_title_template', '{title}', long_text=_('''
+A template to render the tab title. The default just renders
+the title. If you wish to include the tab-index as well,
+use something like: :code:`{index}: {title}`. Useful
+if you have shortcuts mapped for :code:`goto_tab N`.
+'''))
+
 o('active_tab_foreground', '#000', option_type=to_color, long_text=_('''
 Tab bar colors and styles'''))
 o('active_tab_background', '#eee', option_type=to_color)
@@ -841,7 +848,9 @@ g('shortcuts.clipboard')  # {{{
 if is_macos:
     k('copy_to_clipboard', 'cmd+c', 'copy_to_clipboard', _('Copy to clipboard'), add_to_docs=False)
     k('paste_from_clipboard', 'cmd+v', 'paste_from_clipboard', _('Paste from clipboard'), add_to_docs=False)
-k('copy_to_clipboard', 'kitty_mod+c', 'copy_to_clipboard', _('Copy to clipboard'))
+k('copy_to_clipboard', 'kitty_mod+c', 'copy_to_clipboard', _('Copy to clipboard'), long_text=_('''
+There is also a :code:`copy_or_interrupt` action that can be optionally mapped to :kbd:`Ctrl+c`.
+It will copy only if there is a selection and send an interrupt otherwise.'''))
 k('paste_from_clipboard', 'kitty_mod+v', 'paste_from_clipboard', _('Paste from clipboard'))
 k('paste_from_selection', 'kitty_mod+s', 'paste_from_selection', _('Paste from selection'))
 k('paste_from_selection', 'shift+insert', 'paste_from_selection', _('Paste from selection'))
@@ -906,6 +915,8 @@ if is_macos:
     k('new_os_window', 'cmd+n', 'new_os_window', _('New OS window'))
 k('new_os_window', 'kitty_mod+n', 'new_os_window', _('New OS window'))
 k('close_window', 'kitty_mod+w', 'close_window', _('Close window'))
+if is_macos:
+    k('close_window', 'cmd+w', 'close_window', _('Close window'), add_to_docs=False)
 k('next_window', 'kitty_mod+]', 'next_window', _('Next window'))
 k('previous_window', 'kitty_mod+[', 'previous_window', _('Previous window'))
 k('move_window_forward', 'kitty_mod+f', 'move_window_forward', _('Move window forward'))
@@ -926,12 +937,14 @@ k('tenth_window', 'kitty_mod+0', 'tenth_window', _('Tenth window'))
 
 g('shortcuts.tab')  # {{{
 if is_macos:
-    k('next_tab', 'ctrl+tab', 'next_tab', _('Next tab'))
+    k('next_tab', 'ctrl+tab', 'next_tab', _('Next tab'), add_to_docs=False)
 k('next_tab', 'kitty_mod+right', 'next_tab', _('Next tab'))
 if is_macos:
-    k('previous_tab', 'ctrl+shift+tab', 'previous_tab', _('Previous tab'))
+    k('previous_tab', 'ctrl+shift+tab', 'previous_tab', _('Previous tab'), add_to_docs=False)
 k('previous_tab', 'kitty_mod+left', 'previous_tab', _('Previous tab'))
 k('new_tab', 'kitty_mod+t', 'new_tab', _('New tab'))
+if is_macos:
+    k('new_tab', 'cmd+t', 'new_tab', _('New tab'), add_to_docs=False)
 k('close_tab', 'kitty_mod+q', 'close_tab', _('Close tab'))
 k('move_tab_forward', 'kitty_mod+.', 'move_tab_forward', _('Move tab forward'))
 k('move_tab_backward', 'kitty_mod+,', 'move_tab_backward', _('Move tab backward'))

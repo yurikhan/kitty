@@ -126,7 +126,7 @@ def set_font_size(boss, window, payload):
     ' and :italic:`\\u21fa` to send unicode characters. If you use the :option:`kitty @ send-text --match` option'
     ' the text will be sent to all matched windows. By default, text is sent to'
     ' only the currently active window.',
-    options_spec=MATCH_WINDOW_OPTION + '''\n
+    options_spec=MATCH_WINDOW_OPTION + '\n\n' + MATCH_TAB_OPTION.replace('--match -m', '--match-tab -t') + '''\n
 --stdin
 type=bool-set
 Read the text to be sent from :italic:`stdin`. Note that in this case the text is sent as is,
@@ -142,7 +142,7 @@ are sent as is, not interpreted for escapes.
 )
 def cmd_send_text(global_opts, opts, args):
     limit = 1024
-    ret = {'match': opts.match, 'is_binary': False}
+    ret = {'match': opts.match, 'is_binary': False, 'match_tab': opts.match_tab}
 
     def pipe():
         ret['is_binary'] = True
@@ -209,6 +209,13 @@ def send_text(boss, window, payload):
     match = payload['match']
     if match:
         windows = tuple(boss.match_windows(match))
+    if payload['match_tab']:
+        windows = []
+        tabs = tuple(boss.match_tabs(payload['match_tab']))
+        if not tabs:
+            raise MatchError(payload['match_tab'], 'tabs')
+        for tab in tabs:
+            windows += tuple(tab)
     data = payload['text'].encode('utf-8') if payload['is_binary'] else parse_send_text_bytes(payload['text'])
     for window in windows:
         if window is not None:
@@ -684,7 +691,7 @@ this option, any color arguments are ignored and --configured and --all are impl
 )
 def cmd_set_colors(global_opts, opts, args):
     from .rgb import color_as_int, Color
-    colors = {}
+    colors, cursor_text_color = {}, False
     if not opts.reset:
         for spec in args:
             if '=' in spec:
@@ -692,15 +699,17 @@ def cmd_set_colors(global_opts, opts, args):
             else:
                 with open(os.path.expanduser(spec), encoding='utf-8', errors='replace') as f:
                     colors.update(parse_config(f))
+        cursor_text_color = colors.pop('cursor_text_color', False)
         colors = {k: color_as_int(v) for k, v in colors.items() if isinstance(v, Color)}
     return {
-            'title': ' '.join(args), 'match_window': opts.match, 'match_tab': opts.match_tab,
-            'all': opts.all or opts.reset, 'configured': opts.configured or opts.reset, 'colors': colors, 'reset': opts.reset
+        'title': ' '.join(args), 'match_window': opts.match, 'match_tab': opts.match_tab,
+        'all': opts.all or opts.reset, 'configured': opts.configured or opts.reset,
+        'colors': colors, 'reset': opts.reset, 'cursor_text_color': cursor_text_color
     }
 
 
 def set_colors(boss, window, payload):
-    from .rgb import color_as_int
+    from .rgb import color_as_int, Color
     if payload['all']:
         windows = tuple(boss.all_windows)
     else:
@@ -717,10 +726,14 @@ def set_colors(boss, window, payload):
                 windows += tuple(tab)
     if payload['reset']:
         payload['colors'] = {k: color_as_int(v) for k, v in boss.startup_colors.items()}
+        payload['cursor_text_color'] = boss.startup_cursor_text_color
     profiles = tuple(w.screen.color_profile for w in windows)
     from .fast_data_types import patch_color_profiles
-    patch_color_profiles(payload['colors'], profiles, payload['configured'])
-    boss.patch_colors(payload['colors'], payload['configured'])
+    cursor_text_color = payload.get('cursor_text_color', False)
+    if isinstance(cursor_text_color, (tuple, list, Color)):
+        cursor_text_color = color_as_int(Color(*cursor_text_color))
+    patch_color_profiles(payload['colors'], cursor_text_color, profiles, payload['configured'])
+    boss.patch_colors(payload['colors'], cursor_text_color, payload['configured'])
     default_bg_changed = 'background' in payload['colors']
     for w in windows:
         if default_bg_changed:
