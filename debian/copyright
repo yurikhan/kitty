@@ -4,11 +4,11 @@ Upstream-Contact: Kovid Goyal <kovid at kovidgoyal.net>
 Source: https://github.com/kovidgoyal/kitty
 
 Files: *
-Copyright: 2015-2018, Kovid Goyal <kovid at kovidgoyal.net>
+Copyright: 2015-2019, Kovid Goyal <kovid at kovidgoyal.net>
 License: GPL-3+
 
 Files: debian/*
-Copyright: 2018, James McCoy <jamessan at debian.org>
+Copyright: 2019, James McCoy <jamessan at debian.org>
 License: Expat
 
 Files: glfw/*
