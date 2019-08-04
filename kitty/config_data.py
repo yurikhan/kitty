@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -9,7 +9,8 @@ from gettext import gettext as _
 from . import fast_data_types as defines
 from .conf.definition import option_func
 from .conf.utils import (
-    choices, positive_float, positive_int, to_cmdline, to_color, unit_float
+    choices, positive_float, positive_int, to_bool, to_cmdline, to_color,
+    to_color_or_none, unit_float
 )
 from .constants import config_dir, is_macos
 from .fast_data_types import CURSOR_BEAM, CURSOR_BLOCK, CURSOR_UNDERLINE
@@ -84,9 +85,9 @@ as color16 to color255.''')
         _('Keyboard shortcuts'),
         _('''\
 For a list of key names, see: :link:`GLFW keys
-<http://www.glfw.org/docs/latest/group__keys.html>`. The name to use is the part
+<https://www.glfw.org/docs/latest/group__keys.html>`. The name to use is the part
 after the :code:`GLFW_KEY_` prefix. For a list of modifier names, see:
-:link:`GLFW mods <http://www.glfw.org/docs/latest/group__mods.html>`
+:link:`GLFW mods <https://www.glfw.org/docs/latest/group__mods.html>`
 
 On Linux you can also use XKB key names to bind keys that are not supported by
 GLFW. See :link:`XKB keys
@@ -198,6 +199,7 @@ o(
     'monospace',
     long_text=_('''
 You can specify different fonts for the bold/italic/bold-italic variants.
+To get a full list of supported fonts use the `kitty list-fonts` command.
 By default they are derived automatically, by the OSes font system. Setting
 them manually is useful for font families that have many weight variants like
 Book, Medium, Thick, etc. For example::
@@ -222,7 +224,11 @@ o('font_size', 11.0, long_text=_('Font size (in pts)'), option_type=to_font_size
 
 def adjust_line_height(x):
     if x.endswith('%'):
-        return float(x[:-1].strip()) / 100.0
+        ans = float(x[:-1].strip()) / 100.0
+        if ans < 0:
+            log_error('Percentage adjustments of cell sizes must be positive numbers')
+            return 0
+        return ans
     return int(x)
 
 
@@ -249,6 +255,25 @@ Syntax is::
 
     symbol_map codepoints Font Family Name
 
+'''))
+
+
+def disable_ligatures(x):
+    cmap = {'never': 0, 'cursor': 1, 'always': 2}
+    return cmap.get(x.lower(), 0)
+
+
+o('disable_ligatures', 'never', option_type=disable_ligatures, long_text=_('''
+Choose how you want to handle multi-character ligatures. The default is to
+always render them.  You can tell kitty to not render them when the cursor is
+over them by using :code:`cursor` to make editing easier, or have kitty never
+render them at all by using :code:`always`, if you don't like them. The ligature
+strategy can be set per-window either using the kitty remote control facility
+or by defining shortcuts for it in kitty.conf, for example::
+
+    map alt+1 disable_ligatures_in active always
+    map alt+2 disable_ligatures_in all never
+    map alt+3 disable_ligatures_in tab cursor
 '''))
 
 
@@ -304,13 +329,15 @@ Choose the color of text under the cursor. If you want it rendered with the
 background color of the cell underneath instead, use the special keyword: background'''))
 o('cursor_shape', 'block', option_type=to_cursor_shape, long_text=_(
     'The cursor shape can be one of (block, beam, underline)'))
-o('cursor_blink_interval', 0.5, option_type=positive_float, long_text=_('''
+o('cursor_blink_interval', -1, option_type=float, long_text=_('''
 The interval (in seconds) at which to blink the cursor. Set to zero to disable
-blinking. Note that numbers smaller than :opt:`repaint_delay` will be limited
-to :opt:`repaint_delay`. Stop blinking cursor after the specified number of
-seconds of keyboard inactivity. Set to zero to never stop blinking.
+blinking. Negative values mean use system default. Note that numbers smaller
+than :opt:`repaint_delay` will be limited to :opt:`repaint_delay`.
 '''))
-o('cursor_stop_blinking_after', 15.0, option_type=positive_float)
+o('cursor_stop_blinking_after', 15.0, option_type=positive_float, long_text=_('''
+Stop blinking cursor after the specified number of seconds of keyboard
+inactivity.  Set to zero to never stop blinking.
+'''))
 
 # }}}
 
@@ -362,11 +389,14 @@ Use negative numbers to change scroll direction.'''))
 
 # }}}
 
-# }}}
-
 g('mouse')  # {{{
 
-o('url_color', '#0087BD', option_type=to_color, long_text=_('''
+o('mouse_hide_wait', 3.0, option_type=float, long_text=_('''
+Hide mouse cursor after the specified number of seconds
+of the mouse not being used. Set to zero to disable mouse cursor hiding.
+Set to a negative value to hide the mouse cursor immediately when typing text.'''))
+
+o('url_color', '#0087bd', option_type=to_color, long_text=_('''
 The color and style for highlighting URLs on mouse-over.
 :code:`url_style` can be one of: none, single, double, curly'''))
 
@@ -391,16 +421,43 @@ The program with which to open URLs that are clicked on.
 The special value :code:`default` means to use the
 operating system's default URL handler.'''))
 
-o('copy_on_select', False, long_text=_('''
-Copy to clipboard on select. With this enabled, simply selecting text with
-the mouse will cause the text to be copied to clipboard. Useful on platforms
-such as macOS that do not have the concept of primary selections. Note
-that this is a security risk, as all programs, including websites open in your
-browser can read the contents of the clipboard.'''))
+
+def copy_on_select(raw):
+    q = raw.lower()
+    # boolean values special cased for backwards compat
+    if q in ('y', 'yes', 'true', 'clipboard'):
+        return 'clipboard'
+    if q in ('n', 'no', 'false', ''):
+        return ''
+    return raw
+
+
+o('copy_on_select', 'no', option_type=copy_on_select, long_text=_('''
+Copy to clipboard or a private buffer on select. With this set to
+:code:`clipboard`, simply selecting text with the mouse will cause the text to
+be copied to clipboard. Useful on platforms such as macOS that do not have the
+concept of primary selections. You can instead specify a name such as :code:`a1` to
+copy to a private kitty buffer instead. Map a shortcut with the
+:code:`paste_from_buffer` action to paste from this private buffer.
+For example::
+
+    map cmd+shift+v paste_from_buffer a1
+
+Note that copying to the clipboard is a security risk, as all programs,
+including websites open in your browser can read the contents of the
+system clipboard.'''))
+
+o('strip_trailing_spaces', 'never', option_type=choices('never', 'smart', 'always'), long_text=_('''
+Remove spaces at the end of lines when copying to clipboard.
+A value of :code:`smart` will do it when using normal selections, but not rectangle
+selections. :code:`always` will always do it.'''))
 
 o('rectangle_select_modifiers', 'ctrl+alt', option_type=to_modifiers, long_text=_('''
 The modifiers to use rectangular selection (i.e. to select text in a
 rectangular block with the mouse)'''))
+
+o('terminal_select_modifiers', 'shift', option_type=to_modifiers, long_text=_('''
+The modifiers to override mouse selection even when a terminal application has grabbed the mouse'''))
 
 o('select_by_word_characters', ':@-./_~?&=%+#', long_text=_('''
 Characters considered part of a word when double clicking. In addition to these characters
@@ -411,13 +468,13 @@ o('click_interval', -1.0, option_type=float, long_text=_('''
 The interval between successive clicks to detect double/triple clicks (in seconds).
 Negative numbers will use the system default instead, if available, or fallback to 0.5.'''))
 
-o('mouse_hide_wait', 3.0, option_type=positive_float, long_text=_('''
-Hide mouse cursor after the specified number of seconds
-of the mouse not being used. Set to zero to disable mouse cursor hiding.'''))
-
 o('focus_follows_mouse', False, long_text=_('''
 Set the active window to the window under the mouse when
 moving the mouse around'''))
+
+o('pointer_shape_when_grabbed', 'arrow', option_type=choices('arrow', 'beam', 'hand'), long_text=('''
+The shape of the mouse pointer when the program running in the terminal grabs the mouse.
+'''))
 
 # }}}
 
@@ -428,7 +485,8 @@ Delay (in milliseconds) between screen updates. Decreasing it, increases
 frames-per-second (FPS) at the cost of more CPU usage. The default value
 yields ~100 FPS which is more than sufficient for most uses. Note that to
 actually achieve 100 FPS you have to either set :opt:`sync_to_monitor` to no
-or use a monitor with a high refresh rate.'''))
+or use a monitor with a high refresh rate. Also, to minimize latency
+when there is pending input to be processed, repaint_delay is ignored.'''))
 
 o('input_delay', 3, option_type=positive_int, long_text=_('''
 Delay (in milliseconds) before input from the program running in the terminal
@@ -463,6 +521,9 @@ o('bell_on_tab', True, long_text=_('''
 Show a bell symbol on the tab if a bell occurs in one of the windows in the
 tab and the window is not the currently focused window'''))
 
+o('command_on_bell', 'none', option_type=to_cmdline, long_text=_('''
+Program to run when a bell occurs.
+'''))
 # }}}
 
 g('window')  # {{{
@@ -533,8 +594,17 @@ Negative values will cause the value of :opt:`window_margin_width` to be used in
 o('window_padding_width', 0.0, option_type=positive_float, long_text=_('''
 The window padding (in pts) (blank area between the text and the window border)'''))
 
-o('active_border_color', '#00ff00', option_type=to_color, long_text=_('''
-The color for the border of the active window'''))
+o('placement_strategy', 'center', option_type=choices('center', 'top-left'), long_text=_('''
+When the window size is not an exact multiple of the cell size, the cell area of the terminal
+window will have some extra padding on the sides. You can control how that padding is
+distributed with this option. Using a value of :code:`center` means the cell area will
+be placed centrally. A value of :code:`top-left` means the padding will be on only
+the bottom and right edges.
+'''))
+
+o('active_border_color', '#00ff00', option_type=to_color_or_none, long_text=_('''
+The color for the border of the active window. Set this to none to not draw borders
+around the active window.'''))
 
 o('inactive_border_color', '#cccccc', option_type=to_color, long_text=_('''
 The color for the border of inactive windows'''))
@@ -552,6 +622,27 @@ Hide the window decorations (title-bar and window borders).
 Whether this works and exactly what effect it has depends on the
 window manager/operating system.
 '''))
+
+o('resize_debounce_time', 0.1, option_type=positive_float, long_text=_('''
+The time (in seconds) to wait before redrawing the screen when a
+resize event is received. On platforms such as macOS, where the
+operating system sends events corresponding to the start and end
+of a resize, this number is ignored.'''))
+
+
+def resize_draw_strategy(x):
+    cmap = {'static': 0, 'scale': 1, 'blank': 2, 'size': 3}
+    return cmap.get(x.lower(), 0)
+
+
+o('resize_draw_strategy', 'static', option_type=resize_draw_strategy, long_text=_('''
+Choose how kitty draws a window while a resize is in progress.
+A value of :code:`static` means draw the current window contents, mostly unchanged.
+A value of :code:`scale` means draw the current window contents scaled.
+A value of :code:`blank` means draw a blank window.
+A value of :code:`size` means show the window size in cells.
+'''))
+
 # }}}
 
 g('tabbar')   # {{{
@@ -590,6 +681,17 @@ o('tab_bar_style', 'fade', option_type=choices('fade', 'separator', 'hidden'), l
 The tab bar style, can be one of: :code:`fade`, :code:`separator` or :code:`hidden`. In the fade style,
 each tab's edges fade into the background color, in the separator style, tabs are
 separated by a configurable separator.
+'''))
+
+o('tab_bar_min_tabs', 2, option_type=lambda x: max(1, positive_int(x)), long_text=_('''
+The minimum number of tabs that must exist before the tab bar is shown
+'''))
+
+o('tab_switch_strategy', 'previous', option_type=choices('previous', 'left', 'last'), long_text=_('''
+The algorithm to use when switching to a tab when the current tab is closed.
+The default of :code:`previous` will switch to the last used tab. A value of
+:code:`left` will switch to the tab to the left of the closed tab. A value
+of :code:`last` will switch to the right-most tab.
 '''))
 
 
@@ -643,18 +745,30 @@ kitty config and not use a background color in the editor color scheme. Or use
 the escape codes to set the terminals default colors in a shell script to
 launch your editor.  Be aware that using a value less than 1.0 is a (possibly
 significant) performance hit.  If you want to dynamically change transparency
-of windows set dynamic_background_opacity to yes (this is off by default as it
-has a performance cost)
+of windows set :opt:`dynamic_background_opacity` to :code:`yes` (this is off by
+default as it has a performance cost)
 '''))
-o('dynamic_background_opacity', False)
+
+o('dynamic_background_opacity', False, long_text=_('''
+Allow changing of the :opt:`background_opacity` dynamically, using either keyboard
+shortcuts (:sc:`increase_background_opacity` and :sc:`decrease_background_opacity`)
+or the remote control facility.
+'''))
 
 o('dim_opacity', 0.75, option_type=unit_float, long_text=_('''
 How much to dim text that has the DIM/FAINT attribute set. One means no dimming and
 zero means fully dimmed (i.e. invisible).'''))
 
-o('selection_foreground', '#000000', option_type=to_color, long_text=_('''
-The foreground and background for text selected with the mouse'''))
-o('selection_background', '#FFFACD', option_type=to_color)
+
+def selection_foreground(x):
+    if x.lower() != 'none':
+        return to_color(x)
+
+
+o('selection_foreground', '#000000', option_type=selection_foreground, long_text=_('''
+The foreground for text selected with the mouse. A value of none means to leave the color unchanged.'''))
+o('selection_background', '#fffacd', option_type=to_color, long_text=_('''
+The background for text selected with the mouse.'''))
 
 g('colors.table')
 o('color0', '#000000', long_text=_('black'), option_type=to_color)
@@ -730,6 +844,12 @@ environment variables are expanded recursively, so if you use::
 The value of MYVAR2 will be :code:`a/<path to home directory>/b`.
 '''))
 
+o('update_check_interval', 24, option_type=float, long_text=_('''
+Periodically check if an update to kitty is available. If an update is found
+a system notification is displayed informing you of the available update.
+The default is to check every 24 hrs, set to zero to disable.
+'''))
+
 
 def startup_session(x):
     if x.lower() == 'none':
@@ -752,8 +872,10 @@ Environment variables in the path are expanded.
 o('clipboard_control', 'write-clipboard write-primary', option_type=lambda x: frozenset(x.lower().split()), long_text=_('''
 Allow programs running in kitty to read and write from the clipboard. You can
 control exactly which actions are allowed. The set of possible actions is:
-write-clipboard read-clipboard write-primary read-primary
-The default is to allow writing to the clipboard and primary selection. Note
+write-clipboard read-clipboard write-primary read-primary. You can
+additionally specify no-append to disable kitty's protocol extension
+for clipboard concatenation. The default is to allow writing to the
+clipboard and primary selection with concatenation enabled. Note
 that enabling the read functionality is a security risk as it means that any
 program, even one running on a remote server via SSH can read your clipboard.
 '''))
@@ -761,7 +883,7 @@ program, even one running on a remote server via SSH can read your clipboard.
 o('term', 'xterm-kitty', long_text=_('''
 The value of the TERM environment variable to set. Changing this can break many
 terminal programs, only change it if you know what you are doing, not because
-you read some advice on Stack Overflow to change it. The TERM variable if used
+you read some advice on Stack Overflow to change it. The TERM variable is used
 by various programs to get information about the capabilities and behavior of
 the terminal. If you change it, depending on what programs you run, and how
 different the terminal you are changing it to is, various things from
@@ -793,11 +915,27 @@ incompatible with :opt:`background_opacity`. If you want to use both, you are
 probably better off just hiding the titlebar with :opt:`hide_window_decorations`.
 '''))
 
-o('macos_option_as_alt', True, long_text=_('''
-Use the option key as an alt key. With this set to no, kitty will use
+
+def macos_option_as_alt(x):
+    x = x.lower()
+    if x == 'both':
+        return 0b11
+    if x == 'left':
+        return 0b10
+    if x == 'right':
+        return 0b01
+    if to_bool(x):
+        return 0b11
+    return 0
+
+
+o('macos_option_as_alt', 'no', option_type=macos_option_as_alt, long_text=_('''
+Use the option key as an alt key. With this set to :code:`no`, kitty will use
 the macOS native :kbd:`Option+Key` = unicode character behavior. This will
 break any :kbd:`Alt+key` keyboard shortcuts in your terminal programs, but you
-can use the macOS unicode input technique.
+can use the macOS unicode input technique. You can use the values:
+:code:`left`, :code:`right`, or :code:`both` to use only the left, right or
+both Option keys as Alt, instead.
 '''))
 
 o('macos_hide_from_tasks', False, long_text=_('''
@@ -826,11 +964,21 @@ o('macos_traditional_fullscreen', False, long_text=_('''
 Use the traditional full-screen transition, that is faster, but less pretty.
 '''))
 
+o('macos_show_window_title_in_menubar', True, long_text=_('''
+Show the title of the currently active window in the macOS
+menu-bar, making use of otherwise wasted space.'''))
+
 # Disabled by default because of https://github.com/kovidgoyal/kitty/issues/794
 o('macos_custom_beam_cursor', False, long_text=_('''
 Enable/disable custom mouse cursor for macOS that is easier to see on both
 light and dark backgrounds. WARNING: this might make your mouse cursor
 invisible on dual GPU machines.'''))
+
+o('linux_display_server', 'auto', option_type=choices('auto', 'x11', 'wayland'), long_text=_('''
+Choose between Wayland and X11 backends. By default, an
+appropriate backend based on the system state is chosen
+automatically. Set it to :code:`x11` or :code:`wayland`
+to force the choice.'''))
 # }}}
 
 g('shortcuts')  # {{{
@@ -845,19 +993,21 @@ You can have kitty remove all shortcut definition seen up to this point. Useful,
 instance, to remove the default shortcuts.'''))
 
 g('shortcuts.clipboard')  # {{{
-if is_macos:
-    k('copy_to_clipboard', 'cmd+c', 'copy_to_clipboard', _('Copy to clipboard'), add_to_docs=False)
-    k('paste_from_clipboard', 'cmd+v', 'paste_from_clipboard', _('Paste from clipboard'), add_to_docs=False)
 k('copy_to_clipboard', 'kitty_mod+c', 'copy_to_clipboard', _('Copy to clipboard'), long_text=_('''
 There is also a :code:`copy_or_interrupt` action that can be optionally mapped to :kbd:`Ctrl+c`.
 It will copy only if there is a selection and send an interrupt otherwise.'''))
+if is_macos:
+    k('copy_to_clipboard', 'cmd+c', 'copy_to_clipboard', _('Copy to clipboard'), add_to_docs=False)
 k('paste_from_clipboard', 'kitty_mod+v', 'paste_from_clipboard', _('Paste from clipboard'))
+if is_macos:
+    k('paste_from_clipboard', 'cmd+v', 'paste_from_clipboard', _('Paste from clipboard'), add_to_docs=False)
 k('paste_from_selection', 'kitty_mod+s', 'paste_from_selection', _('Paste from selection'))
 k('paste_from_selection', 'shift+insert', 'paste_from_selection', _('Paste from selection'))
 k('pass_selection_to_program', 'kitty_mod+o', 'pass_selection_to_program', _('Pass selection to program'), long_text=_('''
 You can also pass the contents of the current selection to any program using
 :code:`pass_selection_to_program`. By default, the system's open program is used, but
-you can specify your own, for example::
+you can specify your own, the selection will be passed as a command line argument to the program,
+for example::
 
     map kitty_mod+o pass_selection_to_program firefox
 
@@ -871,13 +1021,27 @@ window, by using the @selection placeholder::
 
 g('shortcuts.scrolling')  # {{{
 k('scroll_line_up', 'kitty_mod+up', 'scroll_line_up', _('Scroll line up'))
+if is_macos:
+    k('scroll_line_up', 'alt+cmd+page_up', 'scroll_line_up', _('Scroll line up'), add_to_docs=False)
+    k('scroll_line_up', 'cmd+up', 'scroll_line_up', _('Scroll line up'), add_to_docs=False)
 k('scroll_line_up', 'kitty_mod+k', 'scroll_line_up')
 k('scroll_line_down', 'kitty_mod+down', 'scroll_line_down', _('Scroll line down'))
 k('scroll_line_down', 'kitty_mod+j', 'scroll_line_down')
+if is_macos:
+    k('scroll_line_down', 'alt+cmd+page_down', 'scroll_line_down', _('Scroll line down'), add_to_docs=False)
+    k('scroll_line_down', 'cmd+down', 'scroll_line_down', _('Scroll line down'), add_to_docs=False)
 k('scroll_page_up', 'kitty_mod+page_up', 'scroll_page_up', _('Scroll page up'))
+if is_macos:
+    k('scroll_page_up', 'cmd+page_up', 'scroll_page_up', _('Scroll page up'), add_to_docs=False)
 k('scroll_page_down', 'kitty_mod+page_down', 'scroll_page_down', _('Scroll page down'))
+if is_macos:
+    k('scroll_page_down', 'cmd+page_down', 'scroll_page_down', _('Scroll page down'), add_to_docs=False)
 k('scroll_home', 'kitty_mod+home', 'scroll_home', _('Scroll to top'))
+if is_macos:
+    k('scroll_home', 'cmd+home', 'scroll_home', _('Scroll to top'), add_to_docs=False)
 k('scroll_end', 'kitty_mod+end', 'scroll_end', _('Scroll to bottom'))
+if is_macos:
+    k('scroll_end', 'cmd+end', 'scroll_end', _('Scroll to bottom'), add_to_docs=False)
 k('show_scrollback', 'kitty_mod+h', 'show_scrollback', _('Browse scrollback buffer in less'), long_text=_('''
 
 You can pipe the contents of the current screen + history buffer as
@@ -910,19 +1074,30 @@ Any programs running in that window will be allowed to control kitty.
 For example::
 
     map ctrl+enter new_window @ some_program
+
+You can open a new window next to the currently active window or as the first window,
+with::
+
+    map ctrl+n new_window !neighbor some_program
+    map ctrl+f new_window !first some_program
+
 '''))
 if is_macos:
-    k('new_os_window', 'cmd+n', 'new_os_window', _('New OS window'))
+    k('new_window', 'cmd+enter', 'new_window', _('New window'), add_to_docs=False)
 k('new_os_window', 'kitty_mod+n', 'new_os_window', _('New OS window'))
+if is_macos:
+    k('new_os_window', 'cmd+n', 'new_os_window', _('New OS window'), add_to_docs=False)
 k('close_window', 'kitty_mod+w', 'close_window', _('Close window'))
 if is_macos:
-    k('close_window', 'cmd+w', 'close_window', _('Close window'), add_to_docs=False)
+    k('close_window', 'shift+cmd+d', 'close_window', _('Close window'), add_to_docs=False)
 k('next_window', 'kitty_mod+]', 'next_window', _('Next window'))
 k('previous_window', 'kitty_mod+[', 'previous_window', _('Previous window'))
 k('move_window_forward', 'kitty_mod+f', 'move_window_forward', _('Move window forward'))
 k('move_window_backward', 'kitty_mod+b', 'move_window_backward', _('Move window backward'))
 k('move_window_to_top', 'kitty_mod+`', 'move_window_to_top', _('Move window to top'))
 k('start_resizing_window', 'kitty_mod+r', 'start_resizing_window', _('Start resizing window'))
+if is_macos:
+    k('start_resizing_window', 'cmd+r', 'start_resizing_window', _('Start resizing window'), add_to_docs=False)
 k('first_window', 'kitty_mod+1', 'first_window', _('First window'))
 k('second_window', 'kitty_mod+2', 'second_window', _('Second window'))
 k('third_window', 'kitty_mod+3', 'third_window', _('Third window'))
@@ -933,22 +1108,40 @@ k('seventh_window', 'kitty_mod+7', 'seventh_window', _('Seventh window'))
 k('eighth_window', 'kitty_mod+8', 'eighth_window', _('Eight window'))
 k('ninth_window', 'kitty_mod+9', 'ninth_window', _('Ninth window'))
 k('tenth_window', 'kitty_mod+0', 'tenth_window', _('Tenth window'))
+if is_macos:
+    k('first_window', 'cmd+1', 'first_window', _('First window'), add_to_docs=False)
+    k('second_window', 'cmd+2', 'second_window', _('Second window'), add_to_docs=False)
+    k('third_window', 'cmd+3', 'third_window', _('Third window'), add_to_docs=False)
+    k('fourth_window', 'cmd+4', 'fourth_window', _('Fourth window'), add_to_docs=False)
+    k('fifth_window', 'cmd+5', 'fifth_window', _('Fifth window'), add_to_docs=False)
+    k('sixth_window', 'cmd+6', 'sixth_window', _('Sixth window'), add_to_docs=False)
+    k('seventh_window', 'cmd+7', 'seventh_window', _('Seventh window'), add_to_docs=False)
+    k('eighth_window', 'cmd+8', 'eighth_window', _('Eight window'), add_to_docs=False)
+    k('ninth_window', 'cmd+9', 'ninth_window', _('Ninth window'), add_to_docs=False)
 # }}}
 
 g('shortcuts.tab')  # {{{
-if is_macos:
-    k('next_tab', 'ctrl+tab', 'next_tab', _('Next tab'), add_to_docs=False)
 k('next_tab', 'kitty_mod+right', 'next_tab', _('Next tab'))
 if is_macos:
-    k('previous_tab', 'ctrl+shift+tab', 'previous_tab', _('Previous tab'), add_to_docs=False)
+    k('next_tab', 'ctrl+tab', 'next_tab', _('Next tab'), add_to_docs=False)
+    k('next_tab', 'shift+cmd+]', 'next_tab', _('Next tab'), add_to_docs=False)
 k('previous_tab', 'kitty_mod+left', 'previous_tab', _('Previous tab'))
+if is_macos:
+    k('previous_tab', 'shift+ctrl+tab', 'previous_tab', _('Previous tab'), add_to_docs=False)
+    k('previous_tab', 'shift+cmd+[', 'previous_tab', _('Previous tab'), add_to_docs=False)
 k('new_tab', 'kitty_mod+t', 'new_tab', _('New tab'))
 if is_macos:
     k('new_tab', 'cmd+t', 'new_tab', _('New tab'), add_to_docs=False)
 k('close_tab', 'kitty_mod+q', 'close_tab', _('Close tab'))
+if is_macos:
+    k('close_tab', 'cmd+w', 'close_tab', _('Close tab'), add_to_docs=False)
+    #  Not yet implemented
+    #  k('close_os_window', 'shift+cmd+w', 'close_os_window', _('Close os window'), add_to_docs=False)
 k('move_tab_forward', 'kitty_mod+.', 'move_tab_forward', _('Move tab forward'))
 k('move_tab_backward', 'kitty_mod+,', 'move_tab_backward', _('Move tab backward'))
 k('set_tab_title', 'kitty_mod+alt+t', 'set_tab_title', _('Set tab title'))
+if is_macos:
+    k('set_tab_title', 'shift+cmd+i', 'set_tab_title', _('Set tab title'), add_to_docs=False)
 # }}}
 
 g('shortcuts.layout')  # {{{
@@ -957,8 +1150,14 @@ k('next_layout', 'kitty_mod+l', 'next_layout', _('Next layout'))
 
 g('shortcuts.fonts')  # {{{
 k('increase_font_size', 'kitty_mod+equal', 'change_font_size all +2.0', _('Increase font size'))
+if is_macos:
+    k('increase_font_size', 'cmd+plus', 'change_font_size all +2.0', _('Increase font size'), add_to_docs=False)
 k('decrease_font_size', 'kitty_mod+minus', 'change_font_size all -2.0', _('Decrease font size'))
+if is_macos:
+    k('decrease_font_size', 'cmd+minus', 'change_font_size all -2.0', _('Decrease font size'), add_to_docs=False)
 k('reset_font_size', 'kitty_mod+backspace', 'change_font_size all 0', _('Reset font size'))
+if is_macos:
+    k('reset_font_size', 'cmd+0', 'change_font_size all 0', _('Reset font size'), add_to_docs=False)
 # }}}
 
 g('shortcuts.selection')   # {{{
@@ -988,6 +1187,7 @@ Useful with git, which uses sha1 hashes to identify commits'''))
 
 g('shortcuts.misc')  # {{{
 k('toggle_fullscreen', 'kitty_mod+f11', 'toggle_fullscreen', _('Toggle fullscreen'))
+k('toggle_maximized', 'kitty_mod+f10', 'toggle_maximized', _('Toggle maximized'))
 k('input_unicode_character', 'kitty_mod+u', 'kitten unicode_input', _('Unicode input'))
 k('edit_config_file', 'kitty_mod+f2', 'edit_config_file', _('Edit config file'))
 k('kitty_shell', 'kitty_mod+escape', 'kitty_shell window', _('Open the kitty command shell'), long_text=_('''
@@ -1009,12 +1209,12 @@ You can create shortcuts to clear/reset the terminal. For example::
     # Scroll the contents of the screen into the scrollback
     map kitty_mod+f12 clear_terminal scroll active
 
-If you want to operate on all windows instead of just the current one, use :italic:`all` instead of :italic`active`.
+If you want to operate on all windows instead of just the current one, use :italic:`all` instead of :italic:`active`.
 
 It is also possible to remap Ctrl+L to both scroll the current screen contents into the scrollback buffer
 and clear the screen, instead of just clearing the screen::
 
-    map ctrl+l combine : clear_terminal scroll active : send_text normal,application \x0c
+    map ctrl+l combine : clear_terminal scroll active : send_text normal,application \\x0c
 '''))
 k('send_text', 'ctrl+shift+alt+h', 'send_text all Hello World', _('Send arbitrary text on key presses'),
   add_to_default=False, long_text=_('''

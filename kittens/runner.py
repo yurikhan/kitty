@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -6,6 +6,7 @@
 import importlib
 import os
 import sys
+from contextlib import suppress
 from functools import partial
 
 aliases = {'url_hints': 'hints'}
@@ -15,13 +16,18 @@ def resolved_kitten(k):
     return aliases.get(k, k).replace('-', '_')
 
 
+def path_to_custom_kitten(config_dir, kitten):
+    path = os.path.expanduser(kitten)
+    if not os.path.isabs(path):
+        path = os.path.join(config_dir, path)
+    path = os.path.abspath(path)
+    return path
+
+
 def import_kitten_main_module(config_dir, kitten):
     if kitten.endswith('.py'):
         path_modified = False
-        path = os.path.expanduser(kitten)
-        if not os.path.isabs(path):
-            path = os.path.join(config_dir, path)
-        path = os.path.abspath(path)
+        path = path_to_custom_kitten(config_dir, kitten)
         if os.path.dirname(path):
             sys.path.insert(0, os.path.dirname(path))
             path_modified = True
@@ -90,12 +96,24 @@ def deserialize(output):
 
 def run_kitten(kitten, run_name='__main__'):
     import runpy
+    original_kitten_name = kitten
     kitten = resolved_kitten(kitten)
     set_debug(kitten)
-    try:
+    with suppress(ImportError):
         runpy.run_module('kittens.{}.main'.format(kitten), run_name=run_name)
-    except ImportError:
-        raise SystemExit('No kitten named {}'.format(kitten))
+        return
+    # Look for a custom kitten
+    if not kitten.endswith('.py'):
+        kitten += '.py'
+    from kitty.constants import config_dir
+    path = path_to_custom_kitten(config_dir, kitten)
+    if not os.path.exists(path):
+        print('Available builtin kittens:', file=sys.stderr)
+        for kitten in all_kitten_names():
+            print(kitten, file=sys.stderr)
+        raise SystemExit('No kitten named {}'.format(original_kitten_name))
+    m = runpy.run_path(path, init_globals={'sys': sys, 'os': os}, run_name='__run_kitten__')
+    m['main'](sys.argv)
 
 
 def all_kitten_names():

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -17,6 +17,8 @@ cell_width = cell_height = 20
 all_borders = True, True, True, True
 no_borders = False, False, False, False
 draw_minimal_borders = False
+draw_active_borders = True
+align_top_left = False
 
 
 def idx_for_id(win_id, windows):
@@ -25,9 +27,11 @@ def idx_for_id(win_id, windows):
             return i
 
 
-def set_draw_minimal_borders(opts):
-    global draw_minimal_borders
+def set_layout_options(opts):
+    global draw_minimal_borders, draw_active_borders, align_top_left
     draw_minimal_borders = opts.draw_minimal_borders and opts.window_margin_width == 0
+    draw_active_borders = opts.active_border_color is not None
+    align_top_left = opts.placement_strategy == 'top-left'
 
 
 def layout_dimension(start_at, length, cell_length, decoration_pairs, left_align=False, bias=None):
@@ -50,7 +54,7 @@ def layout_dimension(start_at, length, cell_length, decoration_pairs, left_align
         inner_length = cells_in_window * cell_length
         return inner_length + decoration_pairs[i][1]
 
-    if bias is not None and number_of_windows > 1 and len(bias) == number_of_windows and cells_per_window > 5:
+    if bias is not None and 1 < number_of_windows == len(bias) and cells_per_window > 5:
         cells_map = [int(b * number_of_cells) for b in bias]
         while min(cells_map) < 5:
             maxi, mini = map(cells_map.index, (max(cells_map), min(cells_map)))
@@ -84,9 +88,9 @@ def window_geometry(xstart, xnum, ystart, ynum):
     return WindowGeometry(left=xstart, top=ystart, xnum=xnum, ynum=ynum, right=xstart + cell_width * xnum, bottom=ystart + cell_height * ynum)
 
 
-def layout_single_window(xdecoration_pairs, ydecoration_pairs):
-    xstart, xnum = next(layout_dimension(central.left, central.width, cell_width, xdecoration_pairs))
-    ystart, ynum = next(layout_dimension(central.top, central.height, cell_height, ydecoration_pairs))
+def layout_single_window(xdecoration_pairs, ydecoration_pairs, left_align=False):
+    xstart, xnum = next(layout_dimension(central.left, central.width, cell_width, xdecoration_pairs, left_align=align_top_left))
+    ystart, ynum = next(layout_dimension(central.top, central.height, cell_height, ydecoration_pairs, left_align=align_top_left))
     return window_geometry(xstart, xnum, ystart, ynum)
 
 
@@ -263,7 +267,7 @@ class Layout:  # {{{
         self.swap_windows_in_os_window(nidx, idx)
         return self.set_active_window(all_windows, nidx)
 
-    def add_window(self, all_windows, window, current_active_window_idx):
+    def add_window(self, all_windows, window, current_active_window_idx, location=None):
         active_window_idx = None
         if window.overlay_for is not None:
             i = idx_for_id(window.overlay_for, all_windows)
@@ -274,6 +278,16 @@ class Layout:  # {{{
                 all_windows.append(all_windows[i])
                 all_windows[i] = window
                 active_window_idx = i
+        elif location is not None:
+            if location == 'neighbor' and current_active_window_idx is not None:
+                active_window_idx = current_active_window_idx + 1
+            elif location == 'first':
+                active_window_idx = 0
+            if active_window_idx is not None:
+                for i in range(len(all_windows), active_window_idx, -1):
+                    self.swap_windows_in_os_window(i, i - 1)
+                all_windows.insert(active_window_idx, window)
+
         if active_window_idx is None:
             active_window_idx = len(all_windows)
             all_windows.append(window)
@@ -366,12 +380,12 @@ class Layout:  # {{{
     def xlayout(self, num, bias=None):
         decoration = self.margin_width + self.border_width + self.padding_width
         decoration_pairs = tuple(repeat((decoration, decoration), num))
-        return layout_dimension(central.left, central.width, cell_width, decoration_pairs, bias=bias)
+        return layout_dimension(central.left, central.width, cell_width, decoration_pairs, bias=bias, left_align=align_top_left)
 
     def ylayout(self, num, left_align=True, bias=None):
         decoration = self.margin_width + self.border_width + self.padding_width
         decoration_pairs = tuple(repeat((decoration, decoration), num))
-        return layout_dimension(central.top, central.height, cell_height, decoration_pairs, bias=bias)
+        return layout_dimension(central.top, central.height, cell_height, decoration_pairs, bias=bias, left_align=align_top_left)
 
     def simple_blank_rects(self, first_window, last_window):
         br = self.blank_rects
@@ -392,14 +406,17 @@ class Layout:  # {{{
 
     def resolve_borders(self, windows, active_window):
         if draw_minimal_borders:
-            needs_borders_map = {w.id: (w is active_window or w.needs_attention) for w in windows}
+            needs_borders_map = {w.id: ((w is active_window and draw_active_borders) or w.needs_attention) for w in windows}
             yield from self.minimal_borders(windows, active_window, needs_borders_map)
         else:
             yield from Layout.minimal_borders(self, windows, active_window, None)
 
     def minimal_borders(self, windows, active_window, needs_borders_map):
         for w in windows:
-            yield all_borders
+            if w is active_window and not draw_active_borders and not w.needs_attention:
+                yield no_borders
+            else:
+                yield all_borders
 # }}}
 
 
@@ -412,7 +429,7 @@ class Stack(Layout):  # {{{
     def do_layout(self, windows, active_window_idx):
         mw = self.margin_width if self.single_window_margin_width < 0 else self.single_window_margin_width
         decoration_pairs = ((mw + self.padding_width, mw + self.padding_width),)
-        wg = layout_single_window(decoration_pairs, decoration_pairs)
+        wg = layout_single_window(decoration_pairs, decoration_pairs, left_align=align_top_left)
         for i, w in enumerate(windows):
             w.set_geometry(i, wg)
             if w.is_visible_in_layout:

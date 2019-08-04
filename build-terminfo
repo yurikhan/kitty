@@ -1,24 +1,48 @@
 #!/usr/bin/env python3
+# vim:fileencoding=utf-8
+# License: GPL v3 Copyright: 2019, Kovid Goyal <kovid at kovidgoyal.net>
 
+import glob
 import os
-import sys
+import re
 import shutil
 import subprocess
+import sys
+import tempfile
 
-base = os.path.dirname(os.path.abspath(__file__))
-os.chdir(base)
-sys.path.insert(0, base)
 
-from kitty.terminfo import generate_terminfo  # noqa
+def compile_terminfo(base):
+    with tempfile.TemporaryDirectory() as tdir:
+        proc = subprocess.run(['tic', '-x', '-o' + tdir, 'terminfo/kitty.terminfo'], check=True, stderr=subprocess.PIPE)
+        regex = '^"terminfo/kitty.terminfo", line [0-9]+, col [0-9]+, terminal \'xterm-kitty\': older tic versions may treat the description field as an alias$'
+        for error in proc.stderr.decode('utf-8').splitlines():
+            if not re.match(regex, error):
+                print(error, file=sys.stderr)
+        tfiles = glob.glob(os.path.join(tdir, '*', 'xterm-kitty'))
+        if not tfiles:
+            raise SystemExit('tic failed to output the compiled kitty terminfo file')
 
-with open('terminfo/kitty.terminfo', 'w') as f:
-    f.write(generate_terminfo())
+        tfile = tfiles[0]
+        directory, xterm_kitty = os.path.split(tfile)
+        _, directory = os.path.split(directory)
+        odir = os.path.join(base, directory)
+        os.makedirs(odir, exist_ok=True)
+        ofile = os.path.join(odir, xterm_kitty)
+        shutil.move(tfile, ofile)
 
-os.environ['TERMINFO'] = os.path.join(base, 'terminfo')
-subprocess.check_call(['tic', '-x', 'terminfo/kitty.terminfo'])
-# On OS X tic puts the compiled database into a different directory
-try:
-    os.mkdir('terminfo/78')
-except FileExistsError:
-    pass
-shutil.copy2('terminfo/x/xterm-kitty', 'terminfo/78')
+
+def generate_terminfo():
+    base = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(base)
+    sys.path.insert(0, base)
+
+    from kitty.terminfo import generate_terminfo
+
+    with open('terminfo/kitty.terminfo', 'w') as f:
+        f.write(generate_terminfo())
+
+    compile_terminfo(os.path.join(base, 'terminfo'))
+
+
+if __name__ == '__main__':
+    generate_terminfo()

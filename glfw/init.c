@@ -2,7 +2,7 @@
 // GLFW 3.3 - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2002-2006 Marcus Geelnard
-// Copyright (c) 2006-2016 Camilla Löwy <elmindreda@glfw.org>
+// Copyright (c) 2006-2018 Camilla Löwy <elmindreda@glfw.org>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -24,6 +24,8 @@
 //    distribution.
 //
 //========================================================================
+// Please use C89 style variable declarations in this file because VS 2010
+//========================================================================
 
 #include "internal.h"
 #include "mappings.h"
@@ -41,7 +43,7 @@
 
 // Global state shared between compilation units of GLFW
 //
-_GLFWlibrary _glfw = { GLFW_FALSE };
+_GLFWlibrary _glfw = { false };
 
 // These are outside of _glfw so they can be used before initialization and
 // after termination
@@ -50,12 +52,12 @@ static _GLFWerror _glfwMainThreadError;
 static GLFWerrorfun _glfwErrorCallback;
 static _GLFWinitconfig _glfwInitHints =
 {
-    GLFW_TRUE,      // hat buttons
-    GLFW_FALSE,     // debug keyboard
-    GLFW_TRUE,      // enable joystick
+    true,      // hat buttons
+    false,     // debug keyboard
+    true,      // enable joystick
     {
-        GLFW_TRUE,  // macOS menu bar
-        GLFW_TRUE   // macOS bundle chdir
+        true,  // macOS menu bar
+        true   // macOS bundle chdir
     }
 };
 
@@ -92,7 +94,7 @@ static void terminate(void)
     _glfwTerminateVulkan();
     _glfwPlatformTerminate();
 
-    _glfw.initialized = GLFW_FALSE;
+    _glfw.initialized = false;
 
     while (_glfw.errorListHead)
     {
@@ -193,6 +195,20 @@ void _glfwInputError(int code, const char* format, ...)
         _glfwErrorCallback(code, description);
 }
 
+void
+_glfwDebug(const char *format, ...) {
+    if (format)
+    {
+        va_list vl;
+
+        fprintf(stderr, "[%.4f] ", glfwGetTime());
+        va_start(vl, format);
+        vfprintf(stderr, format, vl);
+        va_end(vl);
+        fprintf(stderr, "\n");
+    }
+
+}
 
 //////////////////////////////////////////////////////////////////////////
 //////                        GLFW public API                       //////
@@ -201,7 +217,7 @@ void _glfwInputError(int code, const char* format, ...)
 GLFWAPI int glfwInit(void)
 {
     if (_glfw.initialized)
-        return GLFW_TRUE;
+        return true;
 
     memset(&_glfw, 0, sizeof(_glfw));
     _glfw.hints.init = _glfwInitHints;
@@ -209,7 +225,7 @@ GLFWAPI int glfwInit(void)
     if (!_glfwPlatformInit())
     {
         terminate();
-        return GLFW_FALSE;
+        return false;
     }
 
     if (!_glfwPlatformCreateMutex(&_glfw.errorLock) ||
@@ -217,12 +233,12 @@ GLFWAPI int glfwInit(void)
         !_glfwPlatformCreateTls(&_glfw.contextSlot))
     {
         terminate();
-        return GLFW_FALSE;
+        return false;
     }
 
     _glfwPlatformSetTls(&_glfw.errorSlot, &_glfwMainThreadError);
 
-    _glfw.initialized = GLFW_TRUE;
+    _glfw.initialized = true;
     _glfw.timer.offset = _glfwPlatformGetTimerValue();
 
     glfwDefaultWindowHints();
@@ -235,12 +251,12 @@ GLFWAPI int glfwInit(void)
             if (!glfwUpdateGamepadMappings(_glfwDefaultMappings[i]))
             {
                 terminate();
-                return GLFW_FALSE;
+                return false;
             }
         }
     }
 
-    return GLFW_TRUE;
+    return true;
 }
 
 GLFWAPI void glfwTerminate(void)
@@ -319,4 +335,31 @@ GLFWAPI GLFWerrorfun glfwSetErrorCallback(GLFWerrorfun cbfun)
 {
     _GLFW_SWAP_POINTERS(_glfwErrorCallback, cbfun);
     return cbfun;
+}
+
+
+GLFWAPI void glfwRunMainLoop(GLFWtickcallback callback, void *data)
+{
+    _GLFW_REQUIRE_INIT();
+    _glfwPlatformRunMainLoop(callback, data);
+}
+
+GLFWAPI void glfwStopMainLoop(void) {
+    _GLFW_REQUIRE_INIT();
+    _glfwPlatformStopMainLoop();
+}
+
+GLFWAPI unsigned long long glfwAddTimer(
+        double interval, bool repeats, GLFWuserdatafun callback,
+        void *callback_data, GLFWuserdatafun free_callback)
+{
+    return _glfwPlatformAddTimer(interval, repeats, callback, callback_data, free_callback);
+}
+
+GLFWAPI void glfwUpdateTimer(unsigned long long timer_id, double interval, bool enabled) {
+    _glfwPlatformUpdateTimer(timer_id, interval, enabled);
+}
+
+GLFWAPI void glfwRemoveTimer(unsigned long long timer_id) {
+    _glfwPlatformRemoveTimer(timer_id);
 }

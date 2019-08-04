@@ -44,8 +44,8 @@
 #include <mach/mach_time.h>
 static mach_timebase_info_data_t timebase = {0};
 
-static inline double monotonic_() {
-	return ((double)(mach_absolute_time() * timebase.numer) / timebase.denom)/SEC_TO_NS;
+static inline double monotonic_(void) {
+    return ((double)(mach_absolute_time() * timebase.numer) / timebase.denom)/SEC_TO_NS;
 }
 
 static PyObject*
@@ -76,20 +76,22 @@ process_group_map() {
 
 #else
 #include <time.h>
-static inline double monotonic_() {
+static inline double monotonic_(void) {
     struct timespec ts = {0};
 #ifdef CLOCK_HIGHRES
-	clock_gettime(CLOCK_HIGHRES, &ts);
+    clock_gettime(CLOCK_HIGHRES, &ts);
 #elif CLOCK_MONOTONIC_RAW
-	clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
 #else
-	clock_gettime(CLOCK_MONOTONIC, &ts);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
 #endif
-	return (((double)ts.tv_nsec) / SEC_TO_NS) + (double)ts.tv_sec;
+    return (((double)ts.tv_nsec) / SEC_TO_NS) + (double)ts.tv_sec;
 }
 #endif
 
-double monotonic() { return monotonic_(); }
+static double start_time = 0;
+
+double monotonic() { return monotonic_() - start_time; }
 
 static PyObject*
 redirect_std_streams(PyObject UNUSED *self, PyObject *args) {
@@ -179,7 +181,7 @@ close_tty(PyObject *self UNUSED, PyObject *args) {
     TTY_ARGS
     tcsetattr(fd, TCSAFLUSH, termios_p);  // deliberately ignore failure
     free(termios_p);
-    close(fd);
+    safe_close(fd);
     Py_RETURN_NONE;
 }
 
@@ -190,7 +192,7 @@ static PyMethodDef module_methods[] = {
     {"normal_tty", normal_tty, METH_VARARGS, ""},
     {"raw_tty", raw_tty, METH_VARARGS, ""},
     {"close_tty", close_tty, METH_VARARGS, ""},
-    {"set_iutf8", (PyCFunction)pyset_iutf8, METH_VARARGS, ""},
+    {"set_iutf8_fd", (PyCFunction)pyset_iutf8, METH_VARARGS, ""},
     {"thread_write", (PyCFunction)cm_thread_write, METH_VARARGS, ""},
     {"parse_bytes", (PyCFunction)parse_bytes, METH_VARARGS, ""},
     {"parse_bytes_dump", (PyCFunction)parse_bytes_dump, METH_VARARGS, ""},
@@ -254,6 +256,7 @@ PyInit_fast_data_types(void) {
 #ifdef __APPLE__
     mach_timebase_info(&timebase);
 #endif
+    start_time = monotonic_();
 
     if (m != NULL) {
         if (!init_logging(m)) return NULL;

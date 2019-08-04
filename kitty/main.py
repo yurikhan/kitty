@@ -1,11 +1,12 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import locale
 import os
+import shutil
 import sys
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 
 from .borders import load_borders_program
 from .boss import Boss
@@ -66,19 +67,15 @@ def talk_to_instance(args):
 
     data = json.dumps(data, ensure_ascii=False).encode('utf-8')
     single_instance.socket.sendall(data)
-    try:
+    with suppress(EnvironmentError):
         single_instance.socket.shutdown(socket.SHUT_RDWR)
-    except EnvironmentError:
-        pass
     single_instance.socket.close()
 
     if args.wait_for_single_instance_window_close:
         conn = notify_socket.accept()[0]
         conn.recv(1)
-        try:
+        with suppress(EnvironmentError):
             conn.shutdown(socket.SHUT_RDWR)
-        except EnvironmentError:
-            pass
         conn.close()
 
 
@@ -87,10 +84,14 @@ def load_all_shaders(semi_transparent=0):
     load_borders_program()
 
 
-def init_glfw(debug_keyboard=False):
-    glfw_module = 'cocoa' if is_macos else ('wayland' if is_wayland else 'x11')
+def init_glfw_module(glfw_module, debug_keyboard=False):
     if not glfw_init(glfw_path(glfw_module), debug_keyboard):
         raise SystemExit('GLFW initialization failed')
+
+
+def init_glfw(opts, debug_keyboard=False):
+    glfw_module = 'cocoa' if is_macos else ('wayland' if is_wayland(opts) else 'x11')
+    init_glfw_module(glfw_module, debug_keyboard)
     return glfw_module
 
 
@@ -115,13 +116,14 @@ def get_new_os_window_trigger(opts):
     return new_os_window_trigger
 
 
-def _run_app(opts, args):
+def _run_app(opts, args, bad_lines=()):
     new_os_window_trigger = get_new_os_window_trigger(opts)
     if is_macos and opts.macos_custom_beam_cursor:
         set_custom_ibeam_cursor()
-    if not is_wayland and not is_macos:  # no window icons on wayland
+    if not is_wayland() and not is_macos:  # no window icons on wayland
         with open(logo_data_file, 'rb') as f:
             set_default_window_icon(f.read(), 256, 256)
+    load_shader_programs.use_selection_fg = opts.selection_foreground is not None
     with cached_values_for(run_app.cached_values_name) as cached_values:
         with startup_notification_handler(extra_callback=run_app.first_window_callback) as pre_show_callback:
             window_id = create_os_window(
@@ -131,18 +133,20 @@ def _run_app(opts, args):
                     args.cls or appname, load_all_shaders)
         boss = Boss(window_id, opts, args, cached_values, new_os_window_trigger)
         boss.start()
+        if bad_lines:
+            boss.show_bad_config_lines(bad_lines)
         try:
             boss.child_monitor.main_loop()
         finally:
             boss.destroy()
 
 
-def run_app(opts, args):
+def run_app(opts, args, bad_lines=()):
     set_scale(opts.box_drawing_scale)
-    set_options(opts, is_wayland, args.debug_gl, args.debug_font_fallback)
+    set_options(opts, is_wayland(), args.debug_gl, args.debug_font_fallback)
     set_font_family(opts, debug_font_matching=args.debug_font_fallback)
     try:
-        _run_app(opts, args)
+        _run_app(opts, args, bad_lines)
     finally:
         free_font_data()  # must free font data before glfw/freetype/fontconfig/opengl etc are finalized
 
@@ -152,7 +156,7 @@ run_app.first_window_callback = lambda window_handle: None
 run_app.initial_window_size_func = initial_window_size_func
 
 
-def ensure_osx_locale():
+def ensure_macos_locale():
     # Ensure the LANG env var is set. See
     # https://github.com/kovidgoyal/kitty/issues/90
     from .fast_data_types import cocoa_get_lang
@@ -174,7 +178,7 @@ def setup_profiling(args):
     if stop_profiler is not None:
         import subprocess
         stop_profiler()
-        exe = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'kitty-profile')
+        exe = kitty_exe()
         cg = '/tmp/kitty-profile.callgrind'
         print('Post processing profile data for', exe, '...')
         subprocess.call(['pprof', '--callgrind', exe, '/tmp/kitty-profile.log'], stdout=open(cg, 'wb'))
@@ -199,9 +203,42 @@ def macos_cmdline(argv_args):
     return ans
 
 
+def read_shell_environment(opts):
+    if not hasattr(read_shell_environment, 'ans'):
+        import subprocess
+        from .session import resolved_shell
+        shell = resolved_shell(opts)
+        p = subprocess.Popen(shell + ['-l', '-c', 'env'], stdout=subprocess.PIPE)
+        raw = p.stdout.read()
+        if p.wait() == 0:
+            raw = raw.decode('utf-8', 'replace')
+            ans = read_shell_environment.ans = {}
+            for line in raw.splitlines():
+                k, v = line.partition('=')[::2]
+                if k and v:
+                    ans[k] = v
+    return read_shell_environment.ans
+
+
 def setup_environment(opts, args):
     extra_env = opts.env.copy()
-    if opts.editor != '.':
+    if opts.editor == '.':
+        if 'EDITOR' not in os.environ:
+            shell_env = read_shell_environment(opts)
+            if 'EDITOR' in shell_env:
+                editor = shell_env['EDITOR']
+                if 'PATH' in shell_env:
+                    import shlex
+                    editor_cmd = shlex.split(editor)
+                    if not os.path.isabs(editor_cmd[0]):
+                        editor_cmd[0] = shutil.which(editor_cmd[0], path=shell_env['PATH'])
+                        if editor_cmd[0]:
+                            editor = ' '.join(map(shlex.quote, editor_cmd))
+                        else:
+                            editor = None
+                if editor:
+                    os.environ['EDITOR'] = editor
+    else:
         os.environ['EDITOR'] = opts.editor
     if args.listen_on:
         os.environ['KITTY_LISTEN_ON'] = args.listen_on
@@ -209,12 +246,10 @@ def setup_environment(opts, args):
 
 
 def _main():
-    try:
+    with suppress(AttributeError):  # python compiled without threading
         sys.setswitchinterval(1000.0)  # we have only a single python thread
-    except AttributeError:
-        pass  # python compiled without threading
     if is_macos:
-        ensure_osx_locale()
+        ensure_macos_locale()
     try:
         locale.setlocale(locale.LC_ALL, '')
     except Exception:
@@ -227,11 +262,14 @@ def _main():
         except Exception:
             log_error('Failed to set locale with no LANG, ignoring')
 
-    # Ensure kitty is in PATH
-    rpath = os.path.dirname(kitty_exe())
-    items = frozenset(os.environ['PATH'].split(os.pathsep))
-    if rpath and rpath not in items:
-        os.environ['PATH'] = rpath + os.pathsep + os.environ.get('PATH', '')
+    # Ensure the correct kitty is in PATH
+    rpath = sys._xoptions.get('bundle_exe_dir')
+    if rpath:
+        modify_path = is_macos or getattr(sys, 'frozen', False) or sys._xoptions.get('kitty_from_source') == '1'
+        if modify_path or not shutil.which('kitty'):
+            existing_paths = list(filter(None, os.environ.get('PATH', '').split(os.pathsep)))
+            existing_paths.insert(0, rpath)
+            os.environ['PATH'] = os.pathsep.join(existing_paths)
 
     args = sys.argv[1:]
     if is_macos and os.environ.pop('KITTY_LAUNCHED_BY_LAUNCH_SERVICES', None) == '1':
@@ -246,7 +284,6 @@ def _main():
     args, rest = parse_args(args=args)
     args.args = rest
     if args.debug_config:
-        init_glfw(args.debug_keyboard)  # needed for parsing native keysyms
         create_opts(args, debug_config=True)
         return
     if getattr(args, 'detach', False):
@@ -260,13 +297,14 @@ def _main():
         if not is_first:
             talk_to_instance(args)
             return
-    init_glfw(args.debug_keyboard)  # needed for parsing native keysyms
-    opts = create_opts(args)
+    bad_lines = []
+    opts = create_opts(args, accumulate_bad_lines=bad_lines)
+    init_glfw(opts, args.debug_keyboard)
     setup_environment(opts, args)
     try:
         with setup_profiling(args):
             # Avoid needing to launch threads to reap zombies
-            run_app(opts, args)
+            run_app(opts, args, bad_lines)
     finally:
         glfw_terminate()
 

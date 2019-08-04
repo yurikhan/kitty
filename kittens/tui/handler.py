@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -82,6 +82,9 @@ class Handler:
         pass
 
     def on_clipboard_response(self, text, from_primary=False):
+        pass
+
+    def on_capability_response(self, name, val):
         pass
 
     def write(self, data):

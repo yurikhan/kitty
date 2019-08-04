@@ -1,7 +1,7 @@
 //========================================================================
 // GLFW 3.3 macOS - www.glfw.org
 //------------------------------------------------------------------------
-// Copyright (c) 2009-2016 Camilla Löwy <elmindreda@glfw.org>
+// Copyright (c) 2009-2019 Camilla Löwy <elmindreda@glfw.org>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -23,6 +23,8 @@
 //    distribution.
 //
 //========================================================================
+// It is fine to use C99 in this file because it will not be built with VS
+//========================================================================
 
 #include "internal.h"
 
@@ -31,29 +33,6 @@
 
 // Needed for _NSGetProgname
 #include <crt_externs.h>
-
-// HACK: The 10.12 SDK adds new symbols and immediately deprecates the old ones
-#if MAC_OS_X_VERSION_MAX_ALLOWED < 101200
- #define NSWindowStyleMaskBorderless NSBorderlessWindowMask
- #define NSWindowStyleMaskClosable NSClosableWindowMask
- #define NSWindowStyleMaskMiniaturizable NSMiniaturizableWindowMask
- #define NSWindowStyleMaskResizable NSResizableWindowMask
- #define NSWindowStyleMaskTitled NSTitledWindowMask
- #define NSEventModifierFlagCommand NSCommandKeyMask
- #define NSEventModifierFlagControl NSControlKeyMask
- #define NSEventModifierFlagOption NSAlternateKeyMask
- #define NSEventModifierFlagShift NSShiftKeyMask
- #define NSEventModifierFlagCapsLock NSAlphaShiftKeyMask
- #define NSEventModifierFlagDeviceIndependentFlagsMask NSDeviceIndependentModifierFlagsMask
- #define NSEventMaskAny NSAnyEventMask
- #define NSEventTypeApplicationDefined NSApplicationDefined
-#endif
-
-#if (MAC_OS_X_VERSION_MAX_ALLOWED < 101400)
- #define NSPasteboardTypeFileURL NSFilenamesPboardType
- #define NSBitmapFormatAlphaNonpremultiplied NSAlphaNonpremultipliedBitmapFormat
- #define NSPasteboardTypeString NSStringPboardType
-#endif
 
 // Returns the style mask corresponding to the window settings
 //
@@ -76,18 +55,69 @@ static NSUInteger getStyleMask(_GLFWwindow* window)
     return styleMask;
 }
 
-// Center the cursor in the view of the window
-//
-static void centerCursor(_GLFWwindow *window)
-{
-    int width, height;
-    _glfwPlatformGetWindowSize(window, &width, &height);
-    _glfwPlatformSetCursorPos(window, width / 2.0, height / 2.0);
+
+CGDirectDisplayID displayIDForWindow(_GLFWwindow *w) {
+    NSWindow *nw = w->ns.object;
+    NSDictionary *dict = [nw.screen deviceDescription];
+    NSNumber *displayIDns = dict[@"NSScreenNumber"];
+    if (displayIDns) return [displayIDns unsignedIntValue];
+    return (CGDirectDisplayID)-1;
 }
 
-// Returns whether the cursor is in the client area of the specified window
+static unsigned long long display_link_shutdown_timer = 0;
+#define DISPLAY_LINK_SHUTDOWN_CHECK_INTERVAL 30
+
+void
+_glfwShutdownCVDisplayLink(unsigned long long timer_id UNUSED, void *user_data UNUSED) {
+    display_link_shutdown_timer = 0;
+    for (size_t i = 0; i < _glfw.ns.displayLinks.count; i++) {
+        _GLFWDisplayLinkNS *dl = &_glfw.ns.displayLinks.entries[i];
+        if (dl->displayLink) CVDisplayLinkStop(dl->displayLink);
+        dl->lastRenderFrameRequestedAt = 0;
+    }
+}
+
+static inline void
+requestRenderFrame(_GLFWwindow *w, GLFWcocoarenderframefun callback) {
+    if (!callback) {
+        w->ns.renderFrameRequested = false;
+        w->ns.renderFrameCallback = NULL;
+        return;
+    }
+    w->ns.renderFrameCallback = callback;
+    w->ns.renderFrameRequested = true;
+    CGDirectDisplayID displayID = displayIDForWindow(w);
+    if (display_link_shutdown_timer) {
+        _glfwPlatformUpdateTimer(display_link_shutdown_timer, DISPLAY_LINK_SHUTDOWN_CHECK_INTERVAL, true);
+    } else {
+        display_link_shutdown_timer = _glfwPlatformAddTimer(DISPLAY_LINK_SHUTDOWN_CHECK_INTERVAL, false, _glfwShutdownCVDisplayLink, NULL, NULL);
+    }
+    double now = glfwGetTime();
+    for (size_t i = 0; i < _glfw.ns.displayLinks.count; i++) {
+        _GLFWDisplayLinkNS *dl = &_glfw.ns.displayLinks.entries[i];
+        if (dl->displayID == displayID) {
+            dl->lastRenderFrameRequestedAt = now;
+            if (!CVDisplayLinkIsRunning(dl->displayLink)) CVDisplayLinkStart(dl->displayLink);
+        } else if (dl->displayLink && dl->lastRenderFrameRequestedAt && now - dl->lastRenderFrameRequestedAt >= DISPLAY_LINK_SHUTDOWN_CHECK_INTERVAL) {
+            CVDisplayLinkStop(dl->displayLink);
+            dl->lastRenderFrameRequestedAt = 0;
+        }
+    }
+}
+
+void
+_glfwRestartDisplayLinks(void) {
+    _GLFWwindow* window;
+    for (window = _glfw.windowListHead;  window;  window = window->next) {
+        if (window->ns.renderFrameRequested && window->ns.renderFrameCallback) {
+            requestRenderFrame(window, window->ns.renderFrameCallback);
+        }
+    }
+}
+
+// Returns whether the cursor is in the content area of the specified window
 //
-static GLFWbool cursorInClientArea(_GLFWwindow* window)
+static bool cursorInContentArea(_GLFWwindow* window)
 {
     const NSPoint pos = [window->ns.object mouseLocationOutsideOfEventStream];
     return [window->ns.view mouse:pos inRect:[window->ns.view frame]];
@@ -95,23 +125,23 @@ static GLFWbool cursorInClientArea(_GLFWwindow* window)
 
 // Hides the cursor if not already hidden
 //
-static void hideCursor(_GLFWwindow* window)
+static void hideCursor(_GLFWwindow* window UNUSED)
 {
     if (!_glfw.ns.cursorHidden)
     {
         [NSCursor hide];
-        _glfw.ns.cursorHidden = GLFW_TRUE;
+        _glfw.ns.cursorHidden = true;
     }
 }
 
 // Shows the cursor if not already shown
 //
-static void showCursor(_GLFWwindow* window)
+static void showCursor(_GLFWwindow* window UNUSED)
 {
     if (_glfw.ns.cursorHidden)
     {
         [NSCursor unhide];
-        _glfw.ns.cursorHidden = GLFW_FALSE;
+        _glfw.ns.cursorHidden = false;
     }
 }
 
@@ -142,7 +172,7 @@ static void updateCursorMode(_GLFWwindow* window)
         _glfwPlatformGetCursorPos(window,
                                   &_glfw.ns.restoreCursorPosX,
                                   &_glfw.ns.restoreCursorPosY);
-        centerCursor(window);
+        _glfwCenterCursorInContentArea(window);
         CGAssociateMouseAndMouseCursorPosition(false);
     }
     else if (_glfw.ns.disabledCursorWindow == window)
@@ -154,16 +184,8 @@ static void updateCursorMode(_GLFWwindow* window)
                                   _glfw.ns.restoreCursorPosY);
     }
 
-    if (cursorInClientArea(window))
+    if (cursorInContentArea(window))
         updateCursorImage(window);
-}
-
-// Transforms the specified y-coordinate between the CG display and NS screen
-// coordinate systems
-//
-static float transformY(float y)
-{
-    return CGDisplayBounds(CGMainDisplayID()).size.height - y;
 }
 
 // Make the specified window and its video mode active on its monitor
@@ -173,7 +195,7 @@ static void acquireMonitor(_GLFWwindow* window)
     _glfwSetVideoModeNS(window->monitor, &window->videoMode);
     const CGRect bounds = CGDisplayBounds(window->monitor->ns.displayID);
     const NSRect frame = NSMakeRect(bounds.origin.x,
-                                    transformY(bounds.origin.y + bounds.size.height),
+                                    _glfwTransformYNS(bounds.origin.y + bounds.size.height - 1),
                                     bounds.size.width,
                                     bounds.size.height);
 
@@ -241,7 +263,7 @@ format_text(const char *src) {
     char *p = buf;
     if (!src[0]) return "<none>";
     while (*src) {
-        p += snprintf(p, sizeof(buf) - (p - buf), "%x ", (unsigned char)*(src++));
+        p += snprintf(p, sizeof(buf) - (p - buf), "0x%x ", (unsigned char)*(src++));
     }
     if (p != buf) *(--p) = 0;
     return buf;
@@ -258,7 +280,7 @@ safe_name_for_scancode(unsigned int scancode) {
 
 // Translates a macOS keycode to a GLFW keycode
 //
-static int translateKey(unsigned int key, GLFWbool apply_keymap)
+static int translateKey(unsigned int key, bool apply_keymap)
 {
     if (apply_keymap) {
         // Look for the effective key name after applying any keyboard layouts/mappings
@@ -312,6 +334,7 @@ static int translateKey(unsigned int key, GLFWbool apply_keymap)
                 K('[', LEFT_BRACKET);
                 K(']', RIGHT_BRACKET);
                 K('+', PLUS);
+                K('_', UNDERSCORE);
                 K('`', GRAVE_ACCENT);
                 K('\\', BACKSLASH);
 #undef K
@@ -324,6 +347,17 @@ static int translateKey(unsigned int key, GLFWbool apply_keymap)
         return GLFW_KEY_UNKNOWN;
 
     return _glfw.ns.keycodes[key];
+}
+
+static void
+display_reconfigured(CGDirectDisplayID display UNUSED, CGDisplayChangeSummaryFlags flags, void *userInfo UNUSED)
+{
+    if (flags & kCGDisplayBeginConfigurationFlag) {
+        return;
+    }
+    if (flags & kCGDisplaySetModeFlag) {
+        // GPU possibly changed
+    }
 }
 
 // Translate a GLFW keycode to a Cocoa modifier flag
@@ -356,9 +390,7 @@ static NSUInteger translateKeyToModifierFlag(int key)
 static const NSRange kEmptyRange = { NSNotFound, 0 };
 
 
-//------------------------------------------------------------------------
-// Delegate for window related notifications
-//------------------------------------------------------------------------
+// Delegate for window related notifications {{{
 
 @interface GLFWWindowDelegate : NSObject
 {
@@ -382,17 +414,19 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
 
 - (BOOL)windowShouldClose:(id)sender
 {
+    (void)sender;
     _glfwInputWindowCloseRequest(window);
     return NO;
 }
 
 - (void)windowDidResize:(NSNotification *)notification
 {
+    (void)notification;
     if (window->context.client != GLFW_NO_API)
         [window->context.nsgl.object update];
 
     if (_glfw.ns.disabledCursorWindow == window)
-        centerCursor(window);
+        _glfwCenterCursorInContentArea(window);
 
     const int maximized = [window->ns.object isZoomed];
     if (window->ns.maximized != maximized)
@@ -423,41 +457,52 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
 
 - (void)windowDidMove:(NSNotification *)notification
 {
+    (void)notification;
     if (window->context.client != GLFW_NO_API)
         [window->context.nsgl.object update];
 
     if (_glfw.ns.disabledCursorWindow == window)
-        centerCursor(window);
+        _glfwCenterCursorInContentArea(window);
 
     int x, y;
     _glfwPlatformGetWindowPos(window, &x, &y);
     _glfwInputWindowPos(window, x, y);
 }
 
+- (void)windowDidChangeOcclusionState:(NSNotification *)notification
+{
+    (void)notification;
+    _glfwInputWindowOcclusion(window, !([window->ns.object occlusionState] & NSWindowOcclusionStateVisible));
+}
+
 - (void)windowDidMiniaturize:(NSNotification *)notification
 {
+    (void)notification;
     if (window->monitor)
         releaseMonitor(window);
 
-    _glfwInputWindowIconify(window, GLFW_TRUE);
+    _glfwInputWindowIconify(window, true);
 }
 
 - (void)windowDidDeminiaturize:(NSNotification *)notification
 {
+    (void)notification;
     if (window->monitor)
         acquireMonitor(window);
 
-    _glfwInputWindowIconify(window, GLFW_FALSE);
+    _glfwInputWindowIconify(window, false);
 }
 
 - (void)windowDidBecomeKey:(NSNotification *)notification
 {
+    (void)notification;
     if (_glfw.ns.disabledCursorWindow == window)
-        centerCursor(window);
+        _glfwCenterCursorInContentArea(window);
 
-    _glfwInputWindowFocus(window, GLFW_TRUE);
+    _glfwInputWindowFocus(window, true);
     updateCursorMode(window);
-    if (_glfw.ns.disabledCursorWindow != window && cursorInClientArea(window))
+    if (window->cursorMode == GLFW_CURSOR_HIDDEN) hideCursor(window);
+    if (_glfw.ns.disabledCursorWindow != window && cursorInContentArea(window))
     {
         double x = 0, y = 0;
         _glfwPlatformGetCursorPos(window, &x, &y);
@@ -467,18 +512,28 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
 
 - (void)windowDidResignKey:(NSNotification *)notification
 {
+    (void)notification;
     if (window->monitor && window->autoIconify)
         _glfwPlatformIconifyWindow(window);
+    showCursor(window);
 
-    _glfwInputWindowFocus(window, GLFW_FALSE);
+    _glfwInputWindowFocus(window, false);
 }
 
-@end
+- (void)windowDidChangeScreen:(NSNotification *)notification
+{
+    (void)notification;
+    if (window->ns.renderFrameRequested && window->ns.renderFrameCallback) {
+        // Ensure that if the window changed its monitor, CVDisplayLink
+        // is running for the new monitor
+        requestRenderFrame(window, window->ns.renderFrameCallback);
+    }
+}
 
 
-//------------------------------------------------------------------------
-// Delegate for application related notifications
-//------------------------------------------------------------------------
+@end // }}}
+
+// Delegate for application related notifications {{{
 
 @interface GLFWApplicationDelegate : NSObject
 @end
@@ -487,6 +542,7 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender
 {
+    (void)sender;
     _GLFWwindow* window;
 
     for (window = _glfw.windowListHead;  window;  window = window->next)
@@ -499,6 +555,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag
 {
+    (void)sender;
     if (!handle_reopen_callback) return YES;
     if (handle_reopen_callback(flag)) return YES;
     return NO;
@@ -506,6 +563,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
 
 - (void)applicationDidChangeScreenParameters:(NSNotification *) notification
 {
+    (void)notification;
     _GLFWwindow* window;
 
     for (window = _glfw.windowListHead;  window;  window = window->next)
@@ -519,13 +577,22 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
 {
+    (void)notification;
     [NSApp stop:nil];
 
-    _glfwPlatformPostEmptyEvent();
+    CGDisplayRegisterReconfigurationCallback(display_reconfigured, NULL);
+    _glfwCocoaPostEmptyEvent();
+}
+
+- (void)applicationWillTerminate:(NSNotification *)aNotification
+{
+    (void)aNotification;
+    CGDisplayRemoveReconfigurationCallback(display_reconfigured, NULL);
 }
 
 - (void)applicationDidHide:(NSNotification *)notification
 {
+    (void)notification;
     int i;
 
     for (i = 0;  i < _glfw.monitorCount;  i++)
@@ -533,19 +600,19 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
 }
 
 @end
+// }}}
 
-
-//------------------------------------------------------------------------
-// Content view class for the GLFW window
-//------------------------------------------------------------------------
+// Content view class for the GLFW window {{{
 
 @interface GLFWContentView : NSView <NSTextInputClient>
 {
     _GLFWwindow* window;
     NSTrackingArea* trackingArea;
     NSMutableAttributedString* markedText;
+    NSRect markedRect;
 }
 
+- (void) removeGLFWWindow;
 - (instancetype)initWithGlfwWindow:(_GLFWwindow *)initWindow;
 
 @end
@@ -560,6 +627,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
         window = initWindow;
         trackingArea = nil;
         markedText = [[NSMutableAttributedString alloc] init];
+        markedRect = NSMakeRect(0.0, 0.0, 0.0, 0.0);
 
         [self updateTrackingAreas];
         [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
@@ -575,13 +643,18 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
     [super dealloc];
 }
 
+- (void) removeGLFWWindow
+{
+    window = NULL;
+}
+
 - (_GLFWwindow*)glfwWindow {
     return window;
 }
 
 - (BOOL)isOpaque
 {
-    return [window->ns.object isOpaque];
+    return window && [window->ns.object isOpaque];
 }
 
 - (BOOL)canBecomeKeyView
@@ -594,6 +667,18 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
     return YES;
 }
 
+- (void) viewWillStartLiveResize
+{
+    if (!window) return;
+    _glfwInputLiveResize(window, true);
+}
+
+- (void)viewDidEndLiveResize
+{
+    if (!window) return;
+    _glfwInputLiveResize(window, false);
+}
+
 - (BOOL)wantsUpdateLayer
 {
     return YES;
@@ -601,6 +686,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
 
 - (void)updateLayer
 {
+    if (!window) return;
     if (window->context.client != GLFW_NO_API) {
         @try {
             [window->context.nsgl.object update];
@@ -614,26 +700,21 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
     _glfwInputWindowDamage(window);
 }
 
-- (id)makeBackingLayer
-{
-    if (window->ns.layer)
-        return window->ns.layer;
-
-    return [super makeBackingLayer];
-}
-
 - (void)cursorUpdate:(NSEvent *)event
 {
-    updateCursorImage(window);
+    (void)event;
+    if (window) updateCursorImage(window);
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent *)event
 {
+    (void)event;
     return NO;  // changed by Kovid, to follow cocoa platform conventions
 }
 
 - (void)mouseDown:(NSEvent *)event
 {
+    if (!window) return;
     _glfwInputMouseClick(window,
                          GLFW_MOUSE_BUTTON_LEFT,
                          GLFW_PRESS,
@@ -647,6 +728,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
 
 - (void)mouseUp:(NSEvent *)event
 {
+    if (!window) return;
     _glfwInputMouseClick(window,
                          GLFW_MOUSE_BUTTON_LEFT,
                          GLFW_RELEASE,
@@ -655,6 +737,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
 
 - (void)mouseMoved:(NSEvent *)event
 {
+    if (!window) return;
     if (window->cursorMode == GLFW_CURSOR_DISABLED)
     {
         const double dx = [event deltaX] - window->ns.cursorWarpDeltaX;
@@ -667,6 +750,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
     else
     {
         const NSRect contentRect = [window->ns.view frame];
+        // NOTE: The returned location uses base 0,1 not 0,0
         const NSPoint pos = [event locationInWindow];
 
         _glfwInputCursorPos(window, pos.x, contentRect.size.height - pos.y);
@@ -678,6 +762,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
 
 - (void)rightMouseDown:(NSEvent *)event
 {
+    if (!window) return;
     _glfwInputMouseClick(window,
                          GLFW_MOUSE_BUTTON_RIGHT,
                          GLFW_PRESS,
@@ -691,6 +776,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
 
 - (void)rightMouseUp:(NSEvent *)event
 {
+    if (!window) return;
     _glfwInputMouseClick(window,
                          GLFW_MOUSE_BUTTON_RIGHT,
                          GLFW_RELEASE,
@@ -699,6 +785,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
 
 - (void)otherMouseDown:(NSEvent *)event
 {
+    if (!window) return;
     _glfwInputMouseClick(window,
                          (int) [event buttonNumber],
                          GLFW_PRESS,
@@ -712,6 +799,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
 
 - (void)otherMouseUp:(NSEvent *)event
 {
+    if (!window) return;
     _glfwInputMouseClick(window,
                          (int) [event buttonNumber],
                          GLFW_RELEASE,
@@ -720,22 +808,21 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
 
 - (void)mouseExited:(NSEvent *)event
 {
-    if (window->cursorMode == GLFW_CURSOR_HIDDEN)
-        showCursor(window);
-
-    _glfwInputCursorEnter(window, GLFW_FALSE);
+    (void)event;
+    if (!window) return;
+    _glfwInputCursorEnter(window, false);
 }
 
 - (void)mouseEntered:(NSEvent *)event
 {
-    if (window->cursorMode == GLFW_CURSOR_HIDDEN)
-        hideCursor(window);
-
-    _glfwInputCursorEnter(window, GLFW_TRUE);
+    (void)event;
+    if (!window) return;
+    _glfwInputCursorEnter(window, true);
 }
 
 - (void)viewDidChangeBackingProperties
 {
+    if (!window) return;
     const NSRect contentRect = [window->ns.view frame];
     const NSRect fbRect = [window->ns.view convertRectToBacking:contentRect];
 
@@ -756,13 +843,15 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
         window->ns.yscale = yscale;
         _glfwInputWindowContentScale(window, xscale, yscale);
 
-        if (window->ns.layer)
+        if (window->ns.retina && window->ns.layer)
             [window->ns.layer setContentsScale:[window->ns.object backingScaleFactor]];
     }
 }
 
 - (void)drawRect:(NSRect)rect
 {
+    (void)rect;
+    if (!window) return;
     _glfwInputWindowDamage(window);
 }
 
@@ -820,7 +909,7 @@ convert_utf16_to_utf8(UniChar *src, UniCharCount src_length, char *dest, size_t 
     CFRelease(string);
 }
 
-static inline GLFWbool
+static inline bool
 is_ascii_control_char(char x) {
     return x == 0 || (1 <= x && x <= 31) || x == 127;
 }
@@ -830,8 +919,10 @@ is_ascii_control_char(char x) {
     const unsigned int scancode = [event keyCode];
     const NSUInteger flags = [event modifierFlags];
     const int mods = translateFlags(flags);
-    const int key = translateKey(scancode, GLFW_TRUE);
-    const GLFWbool process_text = !window->ns.textInputFilterCallback || window->ns.textInputFilterCallback(key, mods, scancode) != 1;
+    const int key = translateKey(scancode, true);
+    const bool process_text = !window->ns.textInputFilterCallback || window->ns.textInputFilterCallback(key, mods, scancode, flags) != 1;
+    const bool previous_has_marked_text = [self hasMarkedText];
+    [self unmarkText];
     _glfw.ns.text[0] = 0;
     if (!_glfw.ns.unicodeData) {
         // Using the cocoa API for key handling is disabled, as there is no
@@ -844,6 +935,7 @@ is_ascii_control_char(char x) {
     } else {
         static UniChar text[256];
         UniCharCount char_count = 0;
+        const bool in_compose_sequence = window->ns.deadKeyState != 0;
         if (UCKeyTranslate(
                     [(NSData*) _glfw.ns.unicodeData bytes],
                     scancode,
@@ -856,11 +948,13 @@ is_ascii_control_char(char x) {
                     &char_count,
                     text
                     ) != noErr) {
-            debug_key(@"UCKeyTranslate failed for scancode: 0x%x (%s) %s\n", scancode, safe_name_for_scancode(scancode), format_mods(mods));
+            debug_key(@"UCKeyTranslate failed for scancode: 0x%x (%s) %s\n",
+                    scancode, safe_name_for_scancode(scancode), format_mods(mods));
             window->ns.deadKeyState = 0;
             return;
         }
-        debug_key(@"scancode: 0x%x (%s) %schar_count: %lu deadKeyState: %u ", scancode, safe_name_for_scancode(scancode), format_mods(mods), char_count, window->ns.deadKeyState);
+        debug_key(@"scancode: 0x%x (%s) %schar_count: %lu deadKeyState: %u repeat: %d",
+                scancode, safe_name_for_scancode(scancode), format_mods(mods), char_count, window->ns.deadKeyState, event.ARepeat);
         if (process_text) {
             // this will call insertText which will fill up _glfw.ns.text
             [self interpretKeyEvents:[NSArray arrayWithObject:event]];
@@ -869,13 +963,33 @@ is_ascii_control_char(char x) {
         }
         if (window->ns.deadKeyState && (char_count == 0 || scancode == 0x75)) {
             // 0x75 is the delete key which needs to be ignored during a compose sequence
-            debug_key(@"Ignoring dead key.\n");
+            debug_key(@"Sending pre-edit text for dead key (text: %s markedText: %@).\n", format_text(_glfw.ns.text), markedText);
+            _glfwInputKeyboard(window, key, scancode, GLFW_PRESS, mods,
+                               [[markedText string] UTF8String], 1); // update pre-edit text
             return;
+        }
+        if (in_compose_sequence) {
+            debug_key(@"Clearing pre-edit text at end of compose sequence\n");
+            _glfwInputKeyboard(window, key, scancode, GLFW_PRESS, mods,
+                               NULL, 1); // clear pre-edit text
         }
     }
     if (is_ascii_control_char(_glfw.ns.text[0])) _glfw.ns.text[0] = 0;  // don't send text for ascii control codes
-    debug_key(@"text: %s glfw_key: %s\n",
-            format_text(_glfw.ns.text), _glfwGetKeyName(key));
+    debug_key(@"text: %s glfw_key: %s marked_text: %@\n",
+            format_text(_glfw.ns.text), _glfwGetKeyName(key), markedText);
+    if (!window->ns.deadKeyState) {
+        if ([self hasMarkedText]) {
+            _glfwInputKeyboard(window, key, scancode, GLFW_PRESS, mods,
+                               [[markedText string] UTF8String], 1); // update pre-edit text
+        } else if (previous_has_marked_text) {
+            _glfwInputKeyboard(window, key, scancode, GLFW_PRESS, mods,
+                               NULL, 1); // clear pre-edit text
+        }
+        if (([self hasMarkedText] || previous_has_marked_text) && !_glfw.ns.text[0]) {
+            // do not pass keys like BACKSPACE while there's pre-edit text, let IME handle it
+            return;
+        }
+    }
     _glfwInputKeyboard(window, key, scancode, GLFW_PRESS, mods, _glfw.ns.text, 0);
 }
 
@@ -884,7 +998,7 @@ is_ascii_control_char(char x) {
     int action;
     const unsigned int modifierFlags =
         [event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
-    const int key = translateKey([event keyCode], GLFW_FALSE);
+    const int key = translateKey([event keyCode], false);
     const int mods = translateFlags(modifierFlags);
     const NSUInteger keyFlag = translateKeyToModifierFlag(key);
 
@@ -903,17 +1017,16 @@ is_ascii_control_char(char x) {
 
 - (void)keyUp:(NSEvent *)event
 {
-    const int key = translateKey([event keyCode], GLFW_TRUE);
+    const int key = translateKey([event keyCode], true);
     const int mods = translateFlags([event modifierFlags]);
     _glfwInputKeyboard(window, key, [event keyCode], GLFW_RELEASE, mods, "", 0);
 }
 
 - (void)scrollWheel:(NSEvent *)event
 {
-    double deltaX, deltaY;
+    double deltaX = [event scrollingDeltaX];
+    double deltaY = [event scrollingDeltaY];
 
-    deltaX = [event scrollingDeltaX];
-    deltaY = [event scrollingDeltaY];
     int flags = [event hasPreciseScrollingDeltas] ? 1 : 0;
     if (flags) {
         float xscale = 1, yscale = 1;
@@ -945,30 +1058,31 @@ is_ascii_control_char(char x) {
 
 - (NSDragOperation)draggingEntered:(id <NSDraggingInfo>)sender
 {
+    (void)sender;
     // HACK: We don't know what to say here because we don't know what the
-    // application wants to do with the paths
+    //       application wants to do with the paths
     return NSDragOperationGeneric;
 }
 
 - (BOOL)performDragOperation:(id <NSDraggingInfo>)sender
 {
     const NSRect contentRect = [window->ns.view frame];
-    _glfwInputCursorPos(window,
-                        [sender draggingLocation].x,
-                        contentRect.size.height - [sender draggingLocation].y);
+    // NOTE: The returned location uses base 0,1 not 0,0
+    const NSPoint pos = [sender draggingLocation];
+    _glfwInputCursorPos(window, pos.x, contentRect.size.height - pos.y);
+
     NSPasteboard* pasteboard = [sender draggingPasteboard];
     NSDictionary* options = @{NSPasteboardURLReadingFileURLsOnlyKey:@YES};
     NSArray* urls = [pasteboard readObjectsForClasses:@[[NSURL class]]
                                               options:options];
     if (!urls) return NO;
     const NSUInteger count = [urls count];
-
     if (count)
     {
         char** paths = calloc(count, sizeof(char*));
 
         for (NSUInteger i = 0;  i < count;  i++)
-            paths[i] = _glfw_strdup([[urls objectAtIndex:i] fileSystemRepresentation]);
+            paths[i] = _glfw_strdup([urls[i] fileSystemRepresentation]);
 
         _glfwInputDrop(window, (int) count, (const char**) paths);
 
@@ -1002,6 +1116,7 @@ is_ascii_control_char(char x) {
         selectedRange:(NSRange)selectedRange
      replacementRange:(NSRange)replacementRange
 {
+    (void)selectedRange; (void)replacementRange;
     [markedText release];
     if ([string isKindOfClass:[NSAttributedString class]])
         markedText = [[NSMutableAttributedString alloc] initWithAttributedString:string];
@@ -1014,6 +1129,29 @@ is_ascii_control_char(char x) {
     [[markedText mutableString] setString:@""];
 }
 
+void _glfwPlatformUpdateIMEState(_GLFWwindow *w, int which, int a, int b, int c, int d) {
+    [w->ns.view updateIMEStateFor: which left:(CGFloat)a top:(CGFloat)b cellWidth:(CGFloat)c cellHeight:(CGFloat)d];
+}
+
+- (void)updateIMEStateFor:(int)which
+                     left:(CGFloat)left
+                      top:(CGFloat)top
+                cellWidth:(CGFloat)cellWidth
+               cellHeight:(CGFloat)cellHeight
+{
+    (void) which;
+    left /= window->ns.xscale;
+    top /= window->ns.yscale;
+    cellWidth /= window->ns.xscale;
+    cellHeight /= window->ns.yscale;
+    debug_key(@"updateIMEState: %f, %f, %f, %f\n", left, top, cellWidth, cellHeight);
+    const NSRect frame = [window->ns.view frame];
+    const NSRect rectInView = NSMakeRect(left,
+                                         frame.size.height - top - cellHeight,
+                                         cellWidth, cellHeight);
+    markedRect = [window->ns.object convertRectToScreen: rectInView];
+}
+
 - (NSArray*)validAttributesForMarkedText
 {
     return [NSArray array];
@@ -1022,49 +1160,76 @@ is_ascii_control_char(char x) {
 - (NSAttributedString*)attributedSubstringForProposedRange:(NSRange)range
                                                actualRange:(NSRangePointer)actualRange
 {
+    (void)range; (void)actualRange;
     return nil;
 }
 
 - (NSUInteger)characterIndexForPoint:(NSPoint)point
 {
+    (void)point;
     return 0;
 }
 
 - (NSRect)firstRectForCharacterRange:(NSRange)range
                          actualRange:(NSRangePointer)actualRange
 {
-    int xpos, ypos;
-    _glfwPlatformGetWindowPos(window, &xpos, &ypos);
-    const NSRect contentRect = [window->ns.view frame];
-    return NSMakeRect(xpos, transformY(ypos + contentRect.size.height), 0.0, 0.0);
+    (void)range; (void)actualRange;
+    return markedRect;
 }
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange
 {
+    (void)replacementRange;
     NSString* characters;
     if ([string isKindOfClass:[NSAttributedString class]])
         characters = [string string];
     else
         characters = (NSString*) string;
-    snprintf(_glfw.ns.text, sizeof(_glfw.ns.text), "%s", [characters UTF8String]);
+    // insertText can be called multiple times for a single key event
+    char *s = _glfw.ns.text + strnlen(_glfw.ns.text, sizeof(_glfw.ns.text));
+    snprintf(s, sizeof(_glfw.ns.text) - (s - _glfw.ns.text), "%s", [characters UTF8String]);
     _glfw.ns.text[sizeof(_glfw.ns.text) - 1] = 0;
 }
 
 - (void)doCommandBySelector:(SEL)selector
 {
+    (void)selector;
 }
 
 @end
+// }}}
 
+// GLFW Window class {{{
 
-//------------------------------------------------------------------------
-// GLFW window class
-//------------------------------------------------------------------------
+@interface GLFWWindow : NSWindow {
+    _GLFWwindow* glfw_window;
+}
 
-@interface GLFWWindow : NSWindow {}
+- (instancetype)initWithGlfwWindow:(NSRect)contentRect
+                         styleMask:(NSWindowStyleMask)style
+                           backing:(NSBackingStoreType)backingStoreType
+                        initWindow:(_GLFWwindow *)initWindow;
+
+- (void) removeGLFWWindow;
 @end
 
 @implementation GLFWWindow
+
+- (instancetype)initWithGlfwWindow:(NSRect)contentRect
+                         styleMask:(NSWindowStyleMask)style
+                           backing:(NSBackingStoreType)backingStoreType
+                        initWindow:(_GLFWwindow *)initWindow
+{
+    self = [super initWithContentRect:contentRect styleMask:style backing:backingStoreType defer:NO];
+    if (self != nil) glfw_window = initWindow;
+    return self;
+}
+
+- (void) removeGLFWWindow
+{
+    glfw_window = NULL;
+}
+
 
 - (BOOL)canBecomeKeyWindow
 {
@@ -1079,18 +1244,13 @@ is_ascii_control_char(char x) {
 
 - (void)toggleFullScreen:(nullable id)sender
 {
-    GLFWContentView *view = [self contentView];
-    if (view)
-    {
-        _GLFWwindow *window = [view glfwWindow];
-        if (window && window->ns.toggleFullscreenCallback && window->ns.toggleFullscreenCallback((GLFWwindow*)window) == 1)
+    if (glfw_window && glfw_window->ns.toggleFullscreenCallback && glfw_window->ns.toggleFullscreenCallback((GLFWwindow*)glfw_window) == 1)
             return;
-    }
     [super toggleFullScreen:sender];
 }
 
 @end
-
+// }}}
 
 // Set up the menu bar (manually)
 // This is nasty, nasty stuff -- calls to undocumented semi-private APIs that
@@ -1113,7 +1273,7 @@ static void createMenuBar(void)
 
     for (i = 0;  i < sizeof(nameKeys) / sizeof(nameKeys[0]);  i++)
     {
-        id name = [bundleInfo objectForKey:nameKeys[i]];
+        id name = bundleInfo[nameKeys[i]];
         if (name &&
             [name isKindOfClass:[NSString class]] &&
             ![name isEqualToString:@""])
@@ -1127,7 +1287,7 @@ static void createMenuBar(void)
     {
         char** progname = _NSGetProgname();
         if (progname && *progname)
-            appName = [NSString stringWithUTF8String:*progname];
+            appName = @(*progname);
         else
             appName = @"GLFW Application";
     }
@@ -1199,10 +1359,10 @@ static void createMenuBar(void)
 
 // Initialize the Cocoa Application Kit
 //
-static GLFWbool initializeAppKit(void)
+static bool initializeAppKit(void)
 {
     if (_glfw.ns.delegate)
-        return GLFW_TRUE;
+        return true;
 
     // There can only be one application delegate, but we allocate it the
     // first time a window is created to keep all window code in this file
@@ -1211,7 +1371,7 @@ static GLFWbool initializeAppKit(void)
     {
         _glfwInputError(GLFW_PLATFORM_ERROR,
                         "Cocoa: Failed to create application delegate");
-        return GLFW_FALSE;
+        return false;
     }
     [NSApp setDelegate:_glfw.ns.delegate];
 
@@ -1238,12 +1398,12 @@ static GLFWbool initializeAppKit(void)
 
     [[NSUserDefaults standardUserDefaults] registerDefaults:defaults];
 
-    return GLFW_TRUE;
+    return true;
 }
 
 // Create the Cocoa window
 //
-static GLFWbool createNativeWindow(_GLFWwindow* window,
+static bool createNativeWindow(_GLFWwindow* window,
                                    const _GLFWwndconfig* wndconfig,
                                    const _GLFWfbconfig* fbconfig)
 {
@@ -1252,7 +1412,7 @@ static GLFWbool createNativeWindow(_GLFWwindow* window,
     {
         _glfwInputError(GLFW_PLATFORM_ERROR,
                         "Cocoa: Failed to create window delegate");
-        return GLFW_FALSE;
+        return false;
     }
 
     NSRect contentRect;
@@ -1271,22 +1431,23 @@ static GLFWbool createNativeWindow(_GLFWwindow* window,
         contentRect = NSMakeRect(0, 0, wndconfig->width, wndconfig->height);
 
     window->ns.object = [[GLFWWindow alloc]
-        initWithContentRect:contentRect
+        initWithGlfwWindow:contentRect
                   styleMask:getStyleMask(window)
                     backing:NSBackingStoreBuffered
-                      defer:NO];
+                 initWindow:window
+    ];
 
     if (window->ns.object == nil)
     {
         _glfwInputError(GLFW_PLATFORM_ERROR, "Cocoa: Failed to create window");
-        return GLFW_FALSE;
+        return false;
     }
 
     if (window->monitor)
         [window->ns.object setLevel:NSMainMenuWindowLevel + 1];
     else
     {
-        [window->ns.object center];
+        [(NSWindow*)window->ns.object center];
         _glfw.ns.cascadePoint =
             NSPointToCGPoint([window->ns.object cascadeTopLeftFromPoint:
                               NSPointFromCGPoint(_glfw.ns.cascadePoint)]);
@@ -1307,22 +1468,21 @@ static GLFWbool createNativeWindow(_GLFWwindow* window,
     }
 
     if (strlen(wndconfig->ns.frameName))
-        [window->ns.object setFrameAutosaveName:[NSString stringWithUTF8String:wndconfig->ns.frameName]];
+        [window->ns.object setFrameAutosaveName:@(wndconfig->ns.frameName)];
 
     window->ns.view = [[GLFWContentView alloc] initWithGlfwWindow:window];
-
-    if (wndconfig->ns.retina)
-        [window->ns.view setWantsBestResolutionOpenGLSurface:YES];
+    window->ns.retina = wndconfig->ns.retina;
 
     if (fbconfig->transparent)
     {
         [window->ns.object setOpaque:NO];
+        [window->ns.object setHasShadow:NO];
         [window->ns.object setBackgroundColor:[NSColor clearColor]];
     }
 
     [window->ns.object setContentView:window->ns.view];
     [window->ns.object makeFirstResponder:window->ns.view];
-    [window->ns.object setTitle:[NSString stringWithUTF8String:wndconfig->title]];
+    [window->ns.object setTitle:@(wndconfig->title)];
     [window->ns.object setDelegate:window->ns.delegate];
     [window->ns.object setAcceptsMouseMovedEvents:YES];
     [window->ns.object setRestorable:NO];
@@ -1330,7 +1490,7 @@ static GLFWbool createNativeWindow(_GLFWwindow* window,
     _glfwPlatformGetWindowSize(window, &window->ns.width, &window->ns.height);
     _glfwPlatformGetFramebufferSize(window, &window->ns.fbWidth, &window->ns.fbHeight);
 
-    return GLFW_TRUE;
+    return true;
 }
 
 
@@ -1345,33 +1505,33 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window,
 {
     window->ns.deadKeyState = 0;
     if (!initializeAppKit())
-        return GLFW_FALSE;
+        return false;
 
     if (!createNativeWindow(window, wndconfig, fbconfig))
-        return GLFW_FALSE;
+        return false;
 
     if (ctxconfig->client != GLFW_NO_API)
     {
         if (ctxconfig->source == GLFW_NATIVE_CONTEXT_API)
         {
             if (!_glfwInitNSGL())
-                return GLFW_FALSE;
+                return false;
             if (!_glfwCreateContextNSGL(window, ctxconfig, fbconfig))
-                return GLFW_FALSE;
+                return false;
         }
         else if (ctxconfig->source == GLFW_EGL_CONTEXT_API)
         {
             if (!_glfwInitEGL())
-                return GLFW_FALSE;
+                return false;
             if (!_glfwCreateContextEGL(window, ctxconfig, fbconfig))
-                return GLFW_FALSE;
+                return false;
         }
         else if (ctxconfig->source == GLFW_OSMESA_CONTEXT_API)
         {
             if (!_glfwInitOSMesa())
-                return GLFW_FALSE;
+                return false;
             if (!_glfwCreateContextOSMesa(window, ctxconfig, fbconfig))
-                return GLFW_FALSE;
+                return false;
         }
     }
 
@@ -1382,7 +1542,7 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window,
         acquireMonitor(window);
     }
 
-    return GLFW_TRUE;
+    return true;
 }
 
 void _glfwPlatformDestroyWindow(_GLFWwindow* window)
@@ -1402,27 +1562,26 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window)
     [window->ns.delegate release];
     window->ns.delegate = nil;
 
+    [window->ns.view removeGLFWWindow];
     [window->ns.view release];
     window->ns.view = nil;
 
+    [window->ns.object removeGLFWWindow];
     [window->ns.object close];
     window->ns.object = nil;
-
-    [_glfw.ns.autoreleasePool drain];
-    _glfw.ns.autoreleasePool = [[NSAutoreleasePool alloc] init];
 }
 
-void _glfwPlatformSetWindowTitle(_GLFWwindow* window, const char *title)
+void _glfwPlatformSetWindowTitle(_GLFWwindow* window UNUSED, const char *title)
 {
-    NSString* string = [NSString stringWithUTF8String:title];
+    NSString* string = @(title);
     [window->ns.object setTitle:string];
     // HACK: Set the miniwindow title explicitly as setTitle: doesn't update it
     //       if the window lacks NSWindowStyleMaskTitled
     [window->ns.object setMiniwindowTitle:string];
 }
 
-void _glfwPlatformSetWindowIcon(_GLFWwindow* window,
-                                int count, const GLFWimage* images)
+void _glfwPlatformSetWindowIcon(_GLFWwindow* window UNUSED,
+                                int count UNUSED, const GLFWimage* images UNUSED)
 {
     // Regular windows do not have icons
 }
@@ -1435,13 +1594,13 @@ void _glfwPlatformGetWindowPos(_GLFWwindow* window, int* xpos, int* ypos)
     if (xpos)
         *xpos = contentRect.origin.x;
     if (ypos)
-        *ypos = transformY(contentRect.origin.y + contentRect.size.height);
+        *ypos = _glfwTransformYNS(contentRect.origin.y + contentRect.size.height - 1);
 }
 
 void _glfwPlatformSetWindowPos(_GLFWwindow* window, int x, int y)
 {
     const NSRect contentRect = [window->ns.view frame];
-    const NSRect dummyRect = NSMakeRect(x, transformY(y + contentRect.size.height), 0, 0);
+    const NSRect dummyRect = NSMakeRect(x, _glfwTransformYNS(y + contentRect.size.height - 1), 0, 0);
     const NSRect frameRect = [window->ns.object frameRectForContentRect:dummyRect];
     [window->ns.object setFrameOrigin:frameRect.origin];
 }
@@ -1532,7 +1691,7 @@ void _glfwPlatformGetWindowContentScale(_GLFWwindow* window,
         *yscale = (float) (pixels.size.height / points.size.height);
 }
 
-double _glfwPlatformGetDoubleClickInterval(_GLFWwindow* window)
+double _glfwPlatformGetDoubleClickInterval(_GLFWwindow* window UNUSED)
 {
     return [NSEvent doubleClickInterval];
 }
@@ -1566,25 +1725,24 @@ void _glfwPlatformHideWindow(_GLFWwindow* window)
     [window->ns.object orderOut:nil];
 }
 
-void _glfwPlatformRequestWindowAttention(_GLFWwindow* window)
+void _glfwPlatformRequestWindowAttention(_GLFWwindow* window UNUSED)
 {
     [NSApp requestUserAttention:NSInformationalRequest];
 }
 
-int _glfwPlatformWindowBell(_GLFWwindow* window)
+int _glfwPlatformWindowBell(_GLFWwindow* window UNUSED)
 {
     NSBeep();
-    return GLFW_TRUE;
+    return true;
 }
 
 void _glfwPlatformFocusWindow(_GLFWwindow* window)
 {
     // Make us the active application
-    // HACK: This has been moved here from initializeAppKit to prevent
-    //       applications using only hidden windows from being activated, but
-    //       should probably not be done every time any window is shown
+    // HACK: This is here to prevent applications using only hidden windows from
+    //       being activated, but should probably not be done every time any
+    //       window is shown
     [NSApp activateIgnoringOtherApps:YES];
-
     [window->ns.object makeKeyAndOrderFront:nil];
 }
 
@@ -1592,7 +1750,7 @@ void _glfwPlatformSetWindowMonitor(_GLFWwindow* window,
                                    _GLFWmonitor* monitor,
                                    int xpos, int ypos,
                                    int width, int height,
-                                   int refreshRate)
+                                   int refreshRate UNUSED)
 {
     if (window->monitor == monitor)
     {
@@ -1604,7 +1762,7 @@ void _glfwPlatformSetWindowMonitor(_GLFWwindow* window,
         else
         {
             const NSRect contentRect =
-                NSMakeRect(xpos, transformY(ypos + height), width, height);
+                NSMakeRect(xpos, _glfwTransformYNS(ypos + height - 1), width, height);
             const NSRect frameRect =
                 [window->ns.object frameRectForContentRect:contentRect
                                                  styleMask:getStyleMask(window)];
@@ -1620,16 +1778,12 @@ void _glfwPlatformSetWindowMonitor(_GLFWwindow* window,
 
     _glfwInputWindowMonitor(window, monitor);
 
-    // HACK: Allow the state cached in Cocoa to catch up to reality
-    // TODO: Solve this in a less terrible way
-    _glfwPlatformPollEvents();
-
     const NSUInteger styleMask = getStyleMask(window);
     [window->ns.object setStyleMask:styleMask];
     // HACK: Changing the style mask can cause the first responder to be cleared
     [window->ns.object makeFirstResponder:window->ns.view];
 
-    if (monitor)
+    if (window->monitor)
     {
         [window->ns.object setLevel:NSMainMenuWindowLevel + 1];
         [window->ns.object setHasShadow:NO];
@@ -1638,7 +1792,7 @@ void _glfwPlatformSetWindowMonitor(_GLFWwindow* window,
     }
     else
     {
-        NSRect contentRect = NSMakeRect(xpos, transformY(ypos + height),
+        NSRect contentRect = NSMakeRect(xpos, _glfwTransformYNS(ypos + height - 1),
                                         width, height);
         NSRect frameRect = [window->ns.object frameRectForContentRect:contentRect
                                                             styleMask:styleMask];
@@ -1682,6 +1836,11 @@ int _glfwPlatformWindowFocused(_GLFWwindow* window)
     return [window->ns.object isKeyWindow];
 }
 
+int _glfwPlatformWindowOccluded(_GLFWwindow* window)
+{
+    return !([window->ns.object occlusionState] & NSWindowOcclusionStateVisible);
+}
+
 int _glfwPlatformWindowIconified(_GLFWwindow* window)
 {
     return [window->ns.object isMiniaturized];
@@ -1704,11 +1863,11 @@ int _glfwPlatformWindowHovered(_GLFWwindow* window)
     if ([NSWindow windowNumberAtPoint:point belowWindowWithWindowNumber:0] !=
         [window->ns.object windowNumber])
     {
-        return GLFW_FALSE;
+        return false;
     }
 
-    return NSPointInRect(point,
-        [window->ns.object convertRectToScreen:[window->ns.view bounds]]);
+    return NSMouseInRect(point,
+        [window->ns.object convertRectToScreen:[window->ns.view frame]], NO);
 }
 
 int _glfwPlatformFramebufferTransparent(_GLFWwindow* window)
@@ -1716,18 +1875,18 @@ int _glfwPlatformFramebufferTransparent(_GLFWwindow* window)
     return ![window->ns.object isOpaque] && ![window->ns.view isOpaque];
 }
 
-void _glfwPlatformSetWindowResizable(_GLFWwindow* window, GLFWbool enabled)
+void _glfwPlatformSetWindowResizable(_GLFWwindow* window, bool enabled UNUSED)
 {
     [window->ns.object setStyleMask:getStyleMask(window)];
 }
 
-void _glfwPlatformSetWindowDecorated(_GLFWwindow* window, GLFWbool enabled)
+void _glfwPlatformSetWindowDecorated(_GLFWwindow* window, bool enabled UNUSED)
 {
     [window->ns.object setStyleMask:getStyleMask(window)];
     [window->ns.object makeFirstResponder:window->ns.view];
 }
 
-void _glfwPlatformSetWindowFloating(_GLFWwindow* window, GLFWbool enabled)
+void _glfwPlatformSetWindowFloating(_GLFWwindow* window, bool enabled)
 {
     if (enabled)
         [window->ns.object setLevel:NSFloatingWindowLevel];
@@ -1745,75 +1904,28 @@ void _glfwPlatformSetWindowOpacity(_GLFWwindow* window, float opacity)
     [window->ns.object setAlphaValue:opacity];
 }
 
-void _glfwPlatformPollEvents(void)
-{
-    for (;;)
-    {
-        NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                            untilDate:[NSDate distantPast]
-                                               inMode:NSDefaultRunLoopMode
-                                              dequeue:YES];
-        if (event == nil)
-            break;
-
-        if ([event type] != NSEventTypeApplicationDefined) [NSApp sendEvent:event];
+void
+_glfwDispatchRenderFrame(CGDirectDisplayID displayID) {
+    _GLFWwindow *w = _glfw.windowListHead;
+    while (w) {
+        if (w->ns.renderFrameRequested && displayID == displayIDForWindow(w)) {
+            w->ns.renderFrameRequested = false;
+            w->ns.renderFrameCallback((GLFWwindow*)w);
+        }
+        w = w->next;
     }
-
-    [_glfw.ns.autoreleasePool drain];
-    _glfw.ns.autoreleasePool = [[NSAutoreleasePool alloc] init];
-}
-
-void _glfwPlatformWaitEvents(void)
-{
-    // I wanted to pass NO to dequeue:, and rely on PollEvents to
-    // dequeue and send.  For reasons not at all clear to me, passing
-    // NO to dequeue: causes this method never to return.
-    NSEvent *event = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                        untilDate:[NSDate distantFuture]
-                                           inMode:NSDefaultRunLoopMode
-                                          dequeue:YES];
-    if ([event type] != NSEventTypeApplicationDefined) [NSApp sendEvent:event];
-
-    _glfwPlatformPollEvents();
-}
-
-void _glfwPlatformWaitEventsTimeout(double timeout)
-{
-    NSDate* date = [NSDate dateWithTimeIntervalSinceNow:timeout];
-    NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                        untilDate:date
-                                           inMode:NSDefaultRunLoopMode
-                                          dequeue:YES];
-    if (event && [event type] != NSEventTypeApplicationDefined) [NSApp sendEvent:event];
-
-    _glfwPlatformPollEvents();
-}
-
-void _glfwPlatformPostEmptyEvent(void)
-{
-    NSAutoreleasePool* pool = [[NSAutoreleasePool alloc] init];
-    NSEvent* event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
-                                        location:NSMakePoint(0, 0)
-                                   modifierFlags:0
-                                       timestamp:0
-                                    windowNumber:0
-                                         context:nil
-                                         subtype:0
-                                           data1:0
-                                           data2:0];
-    [NSApp postEvent:event atStart:YES];
-    [pool drain];
 }
 
 void _glfwPlatformGetCursorPos(_GLFWwindow* window, double* xpos, double* ypos)
 {
     const NSRect contentRect = [window->ns.view frame];
+    // NOTE: The returned location uses base 0,1 not 0,0
     const NSPoint pos = [window->ns.object mouseLocationOutsideOfEventStream];
 
     if (xpos)
         *xpos = pos.x;
     if (ypos)
-        *ypos = contentRect.size.height - pos.y - 1;
+        *ypos = contentRect.size.height - pos.y;
 }
 
 void _glfwPlatformSetCursorPos(_GLFWwindow* window, double x, double y)
@@ -1821,6 +1933,7 @@ void _glfwPlatformSetCursorPos(_GLFWwindow* window, double x, double y)
     updateCursorImage(window);
 
     const NSRect contentRect = [window->ns.view frame];
+    // NOTE: The returned location uses base 0,1 not 0,0
     const NSPoint pos = [window->ns.object mouseLocationOutsideOfEventStream];
 
     window->ns.cursorWarpDeltaX += x - pos.x;
@@ -1838,11 +1951,11 @@ void _glfwPlatformSetCursorPos(_GLFWwindow* window, double x, double y)
         const NSPoint globalPoint = globalRect.origin;
 
         CGWarpMouseCursorPosition(CGPointMake(globalPoint.x,
-                                              transformY(globalPoint.y)));
+                                              _glfwTransformYNS(globalPoint.y)));
     }
 }
 
-void _glfwPlatformSetCursorMode(_GLFWwindow* window, int mode)
+void _glfwPlatformSetCursorMode(_GLFWwindow* window, int mode UNUSED)
 {
     if (_glfwPlatformWindowFocused(window))
         updateCursorMode(window);
@@ -1889,7 +2002,7 @@ int _glfwPlatformCreateCursor(_GLFWcursor* cursor,
 
     native = [[NSImage alloc] initWithSize:NSMakeSize(image->width, image->height)];
     if (native == nil)
-        return GLFW_FALSE;
+        return false;
 
     for (int i = 0; i < count; i++) {
         const GLFWimage *src = image + i;
@@ -1906,7 +2019,7 @@ int _glfwPlatformCreateCursor(_GLFWcursor* cursor,
                         bytesPerRow:src->width * 4
                         bitsPerPixel:32];
         if (rep == nil)
-            return GLFW_FALSE;
+            return false;
 
         memcpy([rep bitmapData], src->pixels, src->width * src->height * 4);
         [native addRepresentation:rep];
@@ -1915,37 +2028,43 @@ int _glfwPlatformCreateCursor(_GLFWcursor* cursor,
 
     cursor->ns.object = [[NSCursor alloc] initWithImage:native
                                                 hotSpot:NSMakePoint(xhot, yhot)];
+
     [native release];
     if (cursor->ns.object == nil)
-        return GLFW_FALSE;
-    return GLFW_TRUE;
+        return false;
+    return true;
 }
 
-int _glfwPlatformCreateStandardCursor(_GLFWcursor* cursor, int shape)
+int _glfwPlatformCreateStandardCursor(_GLFWcursor* cursor, GLFWCursorShape shape)
 {
-
-    if (shape == GLFW_ARROW_CURSOR)
-        cursor->ns.object = [NSCursor arrowCursor];
-    else if (shape == GLFW_IBEAM_CURSOR)
-        cursor->ns.object = [NSCursor IBeamCursor];
-    else if (shape == GLFW_CROSSHAIR_CURSOR)
-        cursor->ns.object = [NSCursor crosshairCursor];
-    else if (shape == GLFW_HAND_CURSOR)
-        cursor->ns.object = [NSCursor pointingHandCursor];
-    else if (shape == GLFW_HRESIZE_CURSOR)
-        cursor->ns.object = [NSCursor resizeLeftRightCursor];
-    else if (shape == GLFW_VRESIZE_CURSOR)
-        cursor->ns.object = [NSCursor resizeUpDownCursor];
+#define C(name, val) case name: cursor->ns.object = [NSCursor val]; break;
+#define U(name, val) case name: cursor->ns.object = [[NSCursor class] performSelector:@selector(val)]; break;
+    switch(shape) {
+        C(GLFW_ARROW_CURSOR, arrowCursor);
+        C(GLFW_IBEAM_CURSOR, IBeamCursor);
+        C(GLFW_CROSSHAIR_CURSOR, crosshairCursor);
+        C(GLFW_HAND_CURSOR, pointingHandCursor);
+        C(GLFW_HRESIZE_CURSOR, resizeLeftRightCursor);
+        C(GLFW_VRESIZE_CURSOR, resizeUpDownCursor);
+        U(GLFW_NW_RESIZE_CURSOR, _windowResizeNorthWestSouthEastCursor);
+        U(GLFW_NE_RESIZE_CURSOR, _windowResizeNorthEastSouthWestCursor);
+        U(GLFW_SW_RESIZE_CURSOR, _windowResizeNorthEastSouthWestCursor);
+        U(GLFW_SE_RESIZE_CURSOR, _windowResizeNorthWestSouthEastCursor);
+        case GLFW_INVALID_CURSOR:
+            return false;
+    }
+#undef C
+#undef U
 
     if (!cursor->ns.object)
     {
         _glfwInputError(GLFW_PLATFORM_ERROR,
                         "Cocoa: Failed to retrieve standard cursor");
-        return GLFW_FALSE;
+        return false;
     }
 
     [cursor->ns.object retain];
-    return GLFW_TRUE;
+    return true;
 }
 
 void _glfwPlatformDestroyCursor(_GLFWcursor* cursor)
@@ -1954,18 +2073,40 @@ void _glfwPlatformDestroyCursor(_GLFWcursor* cursor)
         [(NSCursor*) cursor->ns.object release];
 }
 
-void _glfwPlatformSetCursor(_GLFWwindow* window, _GLFWcursor* cursor)
+void _glfwPlatformSetCursor(_GLFWwindow* window, _GLFWcursor* cursor UNUSED)
 {
-    if (cursorInClientArea(window))
+    if (cursorInContentArea(window))
         updateCursorImage(window);
+}
+
+bool _glfwPlatformToggleFullscreen(_GLFWwindow* w, unsigned int flags) {
+    NSWindow *window = w->ns.object;
+    bool made_fullscreen = true;
+    bool traditional = !(flags & 1);
+    NSWindowStyleMask sm = [window styleMask];
+    bool in_fullscreen = sm & NSWindowStyleMaskFullScreen;
+    if (traditional) {
+        if (!(in_fullscreen)) {
+            sm |= NSWindowStyleMaskBorderless | NSWindowStyleMaskFullScreen;
+            [[NSApplication sharedApplication] setPresentationOptions: NSApplicationPresentationAutoHideMenuBar | NSApplicationPresentationAutoHideDock];
+        } else {
+            made_fullscreen = false;
+            sm &= ~(NSWindowStyleMaskBorderless | NSWindowStyleMaskFullScreen);
+            [[NSApplication sharedApplication] setPresentationOptions: NSApplicationPresentationDefault];
+        }
+        [window setStyleMask: sm];
+    } else {
+        if (in_fullscreen) made_fullscreen = false;
+        [window toggleFullScreen: nil];
+    }
+    return made_fullscreen;
 }
 
 void _glfwPlatformSetClipboardString(const char* string)
 {
     NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
     [pasteboard declareTypes:@[NSPasteboardTypeString] owner:nil];
-    [pasteboard setString:[NSString stringWithUTF8String:string]
-                  forType:NSPasteboardTypeString];
+    [pasteboard setString:@(string) forType:NSPasteboardTypeString];
 }
 
 const char* _glfwPlatformGetClipboardString(void)
@@ -2002,11 +2143,11 @@ void _glfwPlatformGetRequiredInstanceExtensions(char** extensions)
     extensions[1] = "VK_MVK_macos_surface";
 }
 
-int _glfwPlatformGetPhysicalDevicePresentationSupport(VkInstance instance,
-                                                      VkPhysicalDevice device,
-                                                      uint32_t queuefamily)
+int _glfwPlatformGetPhysicalDevicePresentationSupport(VkInstance instance UNUSED,
+                                                      VkPhysicalDevice device UNUSED,
+                                                      uint32_t queuefamily UNUSED)
 {
-    return GLFW_TRUE;
+    return true;
 }
 
 VkResult _glfwPlatformCreateWindowSurface(VkInstance instance,
@@ -2047,7 +2188,10 @@ VkResult _glfwPlatformCreateWindowSurface(VkInstance instance,
         return VK_ERROR_EXTENSION_NOT_PRESENT;
     }
 
-    [window->ns.layer setContentsScale:[window->ns.object backingScaleFactor]];
+    if (window->ns.retina)
+        [window->ns.layer setContentsScale:[window->ns.object backingScaleFactor]];
+
+    [window->ns.view setLayer:window->ns.layer];
     [window->ns.view setWantsLayer:YES];
 
     memset(&sci, 0, sizeof(sci));
@@ -2102,6 +2246,10 @@ GLFWAPI GLFWapplicationshouldhandlereopenfun glfwSetApplicationShouldHandleReope
     return previous;
 }
 
+GLFWAPI void glfwCocoaRequestRenderFrame(GLFWwindow *w, GLFWcocoarenderframefun callback) {
+    requestRenderFrame((_GLFWwindow*)w, callback);
+}
+
 GLFWAPI void glfwGetCocoaKeyEquivalent(int glfw_key, int glfw_mods, unsigned short *cocoa_key, int *cocoa_mods) {
     *cocoa_key = 0;
     *cocoa_mods = 0;
@@ -2117,6 +2265,7 @@ GLFWAPI void glfwGetCocoaKeyEquivalent(int glfw_key, int glfw_mods, unsigned sho
     if (glfw_mods & GLFW_MOD_CAPS_LOCK)
         *cocoa_mods |= NSEventModifierFlagCapsLock;
 
+START_ALLOW_CASE_RANGE
     switch(glfw_key) {
 #define K(ch, name) case GLFW_KEY_##name: *cocoa_key = ch; break;
         K('a', A);
@@ -2164,6 +2313,7 @@ GLFWAPI void glfwGetCocoaKeyEquivalent(int glfw_key, int glfw_mods, unsigned sho
         K('[', LEFT_BRACKET);
         K(']', RIGHT_BRACKET);
         K('+', PLUS);
+        K('_', UNDERSCORE);
         K('`', GRAVE_ACCENT);
         K('\\', BACKSLASH);
 
@@ -2193,5 +2343,31 @@ GLFWAPI void glfwGetCocoaKeyEquivalent(int glfw_key, int glfw_mods, unsigned sho
         K((unichar)(0x4E|NSEventModifierFlagNumericPad), KP_SUBTRACT);
         K((unichar)(0x51|NSEventModifierFlagNumericPad), KP_EQUAL);
 #undef K
+END_ALLOW_CASE_RANGE
     }
+}
+
+
+//////////////////////////////////////////////////////////////////////////
+//////                       GLFW internal API                      //////
+//////////////////////////////////////////////////////////////////////////
+
+// Transforms a y-coordinate between the CG display and NS screen spaces
+//
+float _glfwTransformYNS(float y)
+{
+    return CGDisplayBounds(CGMainDisplayID()).size.height - y - 1;
+}
+
+void _glfwCocoaPostEmptyEvent(void) {
+    NSEvent* event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                        location:NSMakePoint(0, 0)
+                                   modifierFlags:0
+                                       timestamp:0
+                                    windowNumber:0
+                                         context:nil
+                                         subtype:0
+                                           data1:0
+                                           data2:0];
+    [NSApp postEvent:event atStart:YES];
 }

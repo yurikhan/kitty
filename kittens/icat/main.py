@@ -89,6 +89,11 @@ choices=detect,yes,no
 default=detect
 Read image data from stdin. The default is to do it automatically, when STDIN is not a terminal,
 but you can turn it off or on explicitly, if needed.
+
+
+--silent
+type=bool-set
+Do not print out anything to stdout during operation.
 '''
 
 
@@ -259,8 +264,49 @@ help_text = (
         ' You can specify multiple image files and/or directories.'
         ' Directories are scanned recursively for image files. If STDIN'
         ' is not a terminal, image data will be read from it as well.'
+        ' You can also specify HTTP(S) or FTP URLs which will be'
+        ' automatically downloaded and displayed.'
 )
-usage = 'image-file ...'
+usage = 'image-file-or-url-or-directory ...'
+
+
+def process_single_item(item, args, url_pat=None, maybe_dir=True):
+    is_tempfile = False
+    try:
+        if isinstance(item, bytes):
+            tf = NamedTemporaryFile(prefix='stdin-image-data-', delete=False)
+            tf.write(item), tf.close()
+            item = tf.name
+            is_tempfile = True
+        if url_pat is not None and url_pat.match(item) is not None:
+            from urllib.request import urlretrieve
+            with NamedTemporaryFile(prefix='url-image-data-', delete=False) as tf:
+                try:
+                    urlretrieve(item, filename=tf.name)
+                except Exception as e:
+                    raise SystemExit('Failed to download image at URL: {} with error: {}'.format(item, e))
+                item = tf.name
+            is_tempfile = True
+            process(item, args, is_tempfile)
+        elif item.lower().startswith('file://'):
+            from urllib.parse import urlparse
+            from urllib.request import url2pathname
+            item = urlparse(item)
+            if os.sep == '\\':
+                item = item.netloc + item.path
+            else:
+                item = item.path
+            item = url2pathname(item)
+            process(item, args, is_tempfile)
+        else:
+            if maybe_dir and os.path.isdir(item):
+                for (x, mt) in scan(item):
+                    process_single_item(x, args, url_pat=None, maybe_dir=False)
+            else:
+                process(item, args, is_tempfile)
+    finally:
+        if is_tempfile:
+            os.remove(item)
 
 
 def main(args=sys.argv):
@@ -303,7 +349,7 @@ def main(args=sys.argv):
         print('file' if detect_support.has_files else 'stream', end='', file=sys.stderr)
         return
     if args.transfer_mode == 'detect':
-        if not detect_support(wait_for=args.detection_timeout):
+        if not detect_support(wait_for=args.detection_timeout, silent=args.silent):
             raise SystemExit('This terminal emulator does not support the graphics protocol, use a terminal emulator such as kitty that does support it')
     else:
         detect_support.has_files = args.transfer_mode == 'file'
@@ -318,19 +364,10 @@ def main(args=sys.argv):
         if len(items) > 1 or (isinstance(items[0], str) and os.path.isdir(items[0])):
             raise SystemExit(f'The --place option can only be used with a single image, not {items}')
         sys.stdout.buffer.write(b'\0337')  # save cursor
+    url_pat = re.compile(r'(?:https?|ftp)://', flags=re.I)
     for item in items:
-        is_tempfile = False
         try:
-            if isinstance(item, bytes):
-                tf = NamedTemporaryFile(prefix='stdin-image-data-', delete=False)
-                tf.write(item), tf.close()
-                item = tf.name
-                is_tempfile = True
-            if os.path.isdir(item):
-                for x in scan(item):
-                    process(item, args)
-            else:
-                process(item, args, is_tempfile)
+            process_single_item(item, args, url_pat)
         except NoImageMagick as e:
             raise SystemExit(str(e))
         except ConvertFailed as e:

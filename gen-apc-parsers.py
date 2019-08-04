@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPLv3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -93,7 +93,7 @@ def generate(function_name, callback_name, report_name, keymap, command_class, i
     report_cmd = cmd_for_report(report_name, keymap, type_map, payload_allowed)
     if payload_allowed:
         payload_after_value = "case ';': state = PAYLOAD; break;"
-        payload = payload = ', PAYLOAD'
+        payload = ', PAYLOAD'
         parr = 'static uint8_t payload[4096];'
         payload_case = f'''
             case PAYLOAD: {{

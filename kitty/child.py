@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -6,6 +6,7 @@ import fcntl
 import os
 from collections import defaultdict
 from contextlib import contextmanager
+from contextlib import suppress
 
 import kitty.fast_data_types as fast_data_types
 
@@ -55,6 +56,13 @@ else:
                 continue
             ans[q].append(pid)
         return ans
+
+
+def checked_terminfo_dir():
+    ans = getattr(checked_terminfo_dir, 'ans', None)
+    if ans is None:
+        ans = checked_terminfo_dir.ans = terminfo_dir if os.path.isdir(terminfo_dir) else None
+    return ans
 
 
 def processes_in_group(grp):
@@ -149,13 +157,30 @@ class Child:
         self.stdin = stdin
         self.env = env or {}
 
+    @property
+    def final_env(self):
+        env = getattr(self, '_final_env', None)
+        if env is None:
+            env = self._final_env = default_env().copy()
+            env.update(self.env)
+            env['TERM'] = self.opts.term
+            env['COLORTERM'] = 'truecolor'
+            if self.cwd:
+                # needed incase cwd is a symlink, in which case shells
+                # can use it to display the current directory name rather
+                # than the resolved path
+                env['PWD'] = self.cwd
+            if checked_terminfo_dir():
+                env['TERMINFO'] = checked_terminfo_dir()
+        return env
+
     def fork(self):
         if self.forked:
             return
         self.forked = True
         master, slave = os.openpty()  # Note that master and slave are in blocking mode
         remove_cloexec(slave)
-        fast_data_types.set_iutf8(master, True)
+        fast_data_types.set_iutf8_fd(master, True)
         stdin, self.stdin = self.stdin, None
         ready_read_fd, ready_write_fd = os.pipe()
         remove_cloexec(ready_read_fd)
@@ -164,12 +189,7 @@ class Child:
             remove_cloexec(stdin_read_fd)
         else:
             stdin_read_fd = stdin_write_fd = -1
-        env = default_env().copy()
-        env.update(self.env)
-        env['TERM'] = self.opts.term
-        env['COLORTERM'] = 'truecolor'
-        if os.path.isdir(terminfo_dir):
-            env['TERMINFO'] = terminfo_dir
+        env = self.final_env
         env = tuple('{}={}'.format(k, v) for k, v in env.items())
         argv = list(self.argv)
         exe = argv[0]
@@ -201,14 +221,10 @@ class Child:
 
             def process_desc(pid):
                 ans = {'pid': pid}
-                try:
+                with suppress(Exception):
                     ans['cmdline'] = cmdline_of_process(pid)
-                except Exception:
-                    pass
-                try:
+                with suppress(Exception):
                     ans['cwd'] = cwd_of_process(pid) or None
-                except Exception:
-                    pass
                 return ans
 
             return list(map(process_desc, foreground_processes))
@@ -231,25 +247,19 @@ class Child:
 
     @property
     def current_cwd(self):
-        try:
+        with suppress(Exception):
             return cwd_of_process(self.pid)
-        except Exception:
-            pass
 
     @property
     def pid_for_cwd(self):
-        try:
+        with suppress(Exception):
             pgrp = os.tcgetpgrp(self.child_fd)
             foreground_processes = processes_in_group(pgrp) if pgrp >= 0 else []
             if len(foreground_processes) == 1:
                 return foreground_processes[0]
-        except Exception:
-            pass
         return self.pid
 
     @property
     def foreground_cwd(self):
-        try:
+        with suppress(Exception):
             return cwd_of_process(self.pid_for_cwd) or None
-        except Exception:
-            pass

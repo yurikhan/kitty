@@ -2,7 +2,7 @@
 // GLFW 3.3 POSIX - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2002-2006 Marcus Geelnard
-// Copyright (c) 2006-2016 Camilla Löwy <elmindreda@glfw.org>
+// Copyright (c) 2006-2017 Camilla Löwy <elmindreda@glfw.org>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -24,6 +24,8 @@
 //    distribution.
 //
 //========================================================================
+// It is fine to use C99 in this file because it will not be built with VS
+//========================================================================
 
 #include "internal.h"
 
@@ -44,13 +46,13 @@ void _glfwInitTimerPOSIX(void)
 
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0)
     {
-        _glfw.timer.posix.monotonic = GLFW_TRUE;
+        _glfw.timer.posix.monotonic = true;
         _glfw.timer.posix.frequency = 1000000000;
     }
     else
 #endif
     {
-        _glfw.timer.posix.monotonic = GLFW_FALSE;
+        _glfw.timer.posix.monotonic = false;
         _glfw.timer.posix.frequency = 1000000;
     }
 }

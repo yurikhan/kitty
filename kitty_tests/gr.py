@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -6,6 +6,7 @@ import os
 import sys
 import zlib
 from base64 import standard_b64encode
+from contextlib import suppress
 
 write = getattr(sys.stdout, 'buffer', sys.stdout).write
 
@@ -62,10 +63,8 @@ def main():
     move_cursor(0, 21)
     print('Photo...')
     display_png_file(photo)
-    try:
+    with suppress(EOFError, KeyboardInterrupt):
         input()
-    except (EOFError, KeyboardInterrupt):
-        pass
 
 
 if __name__ == '__main__':

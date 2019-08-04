@@ -2,7 +2,7 @@
 // GLFW 3.3 - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2002-2006 Marcus Geelnard
-// Copyright (c) 2006-2016 Camilla Löwy <elmindreda@glfw.org>
+// Copyright (c) 2006-2019 Camilla Löwy <elmindreda@glfw.org>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -23,6 +23,8 @@
 // 3. This notice may not be removed or altered from any source
 //    distribution.
 //
+//========================================================================
+// Please use C89 style variable declarations in this file because VS 2010
 //========================================================================
 
 #include "internal.h"
@@ -60,25 +62,25 @@ static int compareVideoModes(const void* fp, const void* sp)
 
 // Retrieves the available modes for the specified monitor
 //
-static GLFWbool refreshVideoModes(_GLFWmonitor* monitor)
+static bool refreshVideoModes(_GLFWmonitor* monitor)
 {
     int modeCount;
     GLFWvidmode* modes;
 
     if (monitor->modes)
-        return GLFW_TRUE;
+        return true;
 
     modes = _glfwPlatformGetVideoModes(monitor, &modeCount);
     if (!modes)
-        return GLFW_FALSE;
+        return false;
 
-    qsort(modes, modeCount, sizeof(GLFWvidmode), compareVideoModes);
+    qsort(modes, modeCount, sizeof(modes[0]), compareVideoModes);
 
     free(monitor->modes);
     monitor->modes = modes;
     monitor->modeCount = modeCount;
 
-    return GLFW_TRUE;
+    return true;
 }
 
 
@@ -100,7 +102,7 @@ void _glfwInputMonitor(_GLFWmonitor* monitor, int action, int placement)
         {
             memmove(_glfw.monitors + 1,
                     _glfw.monitors,
-                    (_glfw.monitorCount - 1) * sizeof(_GLFWmonitor*));
+                    ((size_t) _glfw.monitorCount - 1) * sizeof(_GLFWmonitor*));
             _glfw.monitors[0] = monitor;
         }
         else
@@ -127,10 +129,7 @@ void _glfwInputMonitor(_GLFWmonitor* monitor, int action, int placement)
         {
             if (_glfw.monitors[i] == monitor)
             {
-                _glfw.monitorCount--;
-                memmove(_glfw.monitors + i,
-                        _glfw.monitors + i + 1,
-                        (_glfw.monitorCount - i) * sizeof(_GLFWmonitor*));
+                remove_i_from_array(_glfw.monitors, i, _glfw.monitorCount);
                 break;
             }
         }
@@ -330,6 +329,27 @@ GLFWAPI void glfwGetMonitorPos(GLFWmonitor* handle, int* xpos, int* ypos)
     _glfwPlatformGetMonitorPos(monitor, xpos, ypos);
 }
 
+GLFWAPI void glfwGetMonitorWorkarea(GLFWmonitor* handle,
+                                    int* xpos, int* ypos,
+                                    int* width, int* height)
+{
+    _GLFWmonitor* monitor = (_GLFWmonitor*) handle;
+    assert(monitor != NULL);
+
+    if (xpos)
+        *xpos = 0;
+    if (ypos)
+        *ypos = 0;
+    if (width)
+        *width = 0;
+    if (height)
+        *height = 0;
+
+    _GLFW_REQUIRE_INIT();
+
+    _glfwPlatformGetMonitorWorkarea(monitor, xpos, ypos, width, height);
+}
+
 GLFWAPI void glfwGetMonitorPhysicalSize(GLFWmonitor* handle, int* widthMM, int* heightMM)
 {
     _GLFWmonitor* monitor = (_GLFWmonitor*) handle;
@@ -432,7 +452,7 @@ GLFWAPI void glfwSetGamma(GLFWmonitor* handle, float gamma)
     GLFWgammaramp ramp;
     const GLFWgammaramp* original;
     assert(handle != NULL);
-    assert(gamma >= 0.f);
+    assert(gamma > 0.f);
     assert(gamma <= FLT_MAX);
 
     _GLFW_REQUIRE_INIT();
@@ -442,6 +462,7 @@ GLFWAPI void glfwSetGamma(GLFWmonitor* handle, float gamma)
         _glfwInputError(GLFW_INVALID_VALUE, "Invalid gamma value %f", gamma);
         return;
     }
+
     original = glfwGetGammaRamp(handle);
     if (!original)
         return;
@@ -456,10 +477,8 @@ GLFWAPI void glfwSetGamma(GLFWmonitor* handle, float gamma)
         value = i / (float) (original->size - 1);
         // Apply gamma curve
         value = powf(value, 1.f / gamma) * 65535.f + 0.5f;
-
         // Clamp to value range
-        if (value > 65535.f)
-            value = 65535.f;
+        value = fminf(value, 65535.f);
 
         values[i] = (unsigned short) value;
     }

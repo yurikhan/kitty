@@ -2,7 +2,7 @@
 // GLFW 3.3 POSIX - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2002-2006 Marcus Geelnard
-// Copyright (c) 2006-2016 Camilla Löwy <elmindreda@glfw.org>
+// Copyright (c) 2006-2017 Camilla Löwy <elmindreda@glfw.org>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -24,6 +24,8 @@
 //    distribution.
 //
 //========================================================================
+// It is fine to use C99 in this file because it will not be built with VS
+//========================================================================
 
 #include "internal.h"
 
@@ -35,19 +37,19 @@
 //////                       GLFW platform API                      //////
 //////////////////////////////////////////////////////////////////////////
 
-GLFWbool _glfwPlatformCreateTls(_GLFWtls* tls)
+bool _glfwPlatformCreateTls(_GLFWtls* tls)
 {
-    assert(tls->posix.allocated == GLFW_FALSE);
+    assert(tls->posix.allocated == false);
 
     if (pthread_key_create(&tls->posix.key, NULL) != 0)
     {
         _glfwInputError(GLFW_PLATFORM_ERROR,
                         "POSIX: Failed to create context TLS");
-        return GLFW_FALSE;
+        return false;
     }
 
-    tls->posix.allocated = GLFW_TRUE;
-    return GLFW_TRUE;
+    tls->posix.allocated = true;
+    return true;
 }
 
 void _glfwPlatformDestroyTls(_GLFWtls* tls)
@@ -59,27 +61,27 @@ void _glfwPlatformDestroyTls(_GLFWtls* tls)
 
 void* _glfwPlatformGetTls(_GLFWtls* tls)
 {
-    assert(tls->posix.allocated == GLFW_TRUE);
+    assert(tls->posix.allocated == true);
     return pthread_getspecific(tls->posix.key);
 }
 
 void _glfwPlatformSetTls(_GLFWtls* tls, void* value)
 {
-    assert(tls->posix.allocated == GLFW_TRUE);
+    assert(tls->posix.allocated == true);
     pthread_setspecific(tls->posix.key, value);
 }
 
-GLFWbool _glfwPlatformCreateMutex(_GLFWmutex* mutex)
+bool _glfwPlatformCreateMutex(_GLFWmutex* mutex)
 {
-    assert(mutex->posix.allocated == GLFW_FALSE);
+    assert(mutex->posix.allocated == false);
 
     if (pthread_mutex_init(&mutex->posix.handle, NULL) != 0)
     {
         _glfwInputError(GLFW_PLATFORM_ERROR, "POSIX: Failed to create mutex");
-        return GLFW_FALSE;
+        return false;
     }
 
-    return mutex->posix.allocated = GLFW_TRUE;
+    return mutex->posix.allocated = true;
 }
 
 void _glfwPlatformDestroyMutex(_GLFWmutex* mutex)
@@ -91,13 +93,13 @@ void _glfwPlatformDestroyMutex(_GLFWmutex* mutex)
 
 void _glfwPlatformLockMutex(_GLFWmutex* mutex)
 {
-    assert(mutex->posix.allocated == GLFW_TRUE);
+    assert(mutex->posix.allocated == true);
     pthread_mutex_lock(&mutex->posix.handle);
 }
 
 void _glfwPlatformUnlockMutex(_GLFWmutex* mutex)
 {
-    assert(mutex->posix.allocated == GLFW_TRUE);
+    assert(mutex->posix.allocated == true);
     pthread_mutex_unlock(&mutex->posix.handle);
 }
 

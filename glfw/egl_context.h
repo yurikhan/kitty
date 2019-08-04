@@ -2,7 +2,7 @@
 // GLFW 3.3 EGL - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2002-2006 Marcus Geelnard
-// Copyright (c) 2006-2016 Camilla Löwy <elmindreda@glfw.org>
+// Copyright (c) 2006-2017 Camilla Löwy <elmindreda@glfw.org>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -47,26 +47,26 @@ typedef struct wl_egl_window* EGLNativeWindowType;
  #error "No supported EGL platform selected"
 #endif
 
-#define EGL_SUCCESS	0x3000
-#define EGL_NOT_INITIALIZED	0x3001
+#define EGL_SUCCESS 0x3000
+#define EGL_NOT_INITIALIZED 0x3001
 #define EGL_BAD_ACCESS 0x3002
 #define EGL_BAD_ALLOC 0x3003
 #define EGL_BAD_ATTRIBUTE 0x3004
 #define EGL_BAD_CONFIG 0x3005
-#define EGL_BAD_CONTEXT	0x3006
-#define EGL_BAD_CURRENT_SURFACE	0x3007
-#define EGL_BAD_DISPLAY	0x3008
+#define EGL_BAD_CONTEXT 0x3006
+#define EGL_BAD_CURRENT_SURFACE 0x3007
+#define EGL_BAD_DISPLAY 0x3008
 #define EGL_BAD_MATCH 0x3009
 #define EGL_BAD_NATIVE_PIXMAP 0x300a
 #define EGL_BAD_NATIVE_WINDOW 0x300b
 #define EGL_BAD_PARAMETER 0x300c
-#define EGL_BAD_SURFACE	0x300d
+#define EGL_BAD_SURFACE 0x300d
 #define EGL_CONTEXT_LOST 0x300e
 #define EGL_COLOR_BUFFER_TYPE 0x303f
 #define EGL_RGB_BUFFER 0x308e
 #define EGL_SURFACE_TYPE 0x3033
 #define EGL_WINDOW_BIT 0x0004
-#define EGL_RENDERABLE_TYPE	0x3040
+#define EGL_RENDERABLE_TYPE 0x3040
 #define EGL_OPENGL_ES_BIT 0x0001
 #define EGL_OPENGL_ES2_BIT 0x0004
 #define EGL_OPENGL_BIT 0x0008
@@ -76,7 +76,7 @@ typedef struct wl_egl_window* EGLNativeWindowType;
 #define EGL_RED_SIZE 0x3024
 #define EGL_DEPTH_SIZE 0x3025
 #define EGL_STENCIL_SIZE 0x3026
-#define EGL_SAMPLES	0x3031
+#define EGL_SAMPLES 0x3031
 #define EGL_OPENGL_ES_API 0x30a0
 #define EGL_OPENGL_API 0x30a2
 #define EGL_NONE 0x3038
@@ -87,6 +87,8 @@ typedef struct wl_egl_window* EGLNativeWindowType;
 #define EGL_NO_DISPLAY ((EGLDisplay) 0)
 #define EGL_NO_CONTEXT ((EGLContext) 0)
 #define EGL_DEFAULT_DISPLAY ((EGLNativeDisplayType) 0)
+#define EGL_MIN_SWAP_INTERVAL             0x303B
+#define EGL_MAX_SWAP_INTERVAL             0x303C
 
 #define EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR 0x00000002
 #define EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR 0x00000001
@@ -171,13 +173,13 @@ typedef struct _GLFWlibraryEGL
 {
     EGLDisplay      display;
     EGLint          major, minor;
-    GLFWbool        prefix;
+    bool            prefix;
 
-    GLFWbool        KHR_create_context;
-    GLFWbool        KHR_create_context_no_error;
-    GLFWbool        KHR_gl_colorspace;
-    GLFWbool        KHR_get_all_proc_addresses;
-    GLFWbool        KHR_context_flush_control;
+    bool            KHR_create_context;
+    bool            KHR_create_context_no_error;
+    bool            KHR_gl_colorspace;
+    bool            KHR_get_all_proc_addresses;
+    bool            KHR_context_flush_control;
 
     void*           handle;
 
@@ -201,13 +203,13 @@ typedef struct _GLFWlibraryEGL
 } _GLFWlibraryEGL;
 
 
-GLFWbool _glfwInitEGL(void);
+bool _glfwInitEGL(void);
 void _glfwTerminateEGL(void);
-GLFWbool _glfwCreateContextEGL(_GLFWwindow* window,
+bool _glfwCreateContextEGL(_GLFWwindow* window,
                                const _GLFWctxconfig* ctxconfig,
                                const _GLFWfbconfig* fbconfig);
 #if defined(_GLFW_X11)
-GLFWbool _glfwChooseVisualEGL(const _GLFWwndconfig* wndconfig,
+bool _glfwChooseVisualEGL(const _GLFWwndconfig* wndconfig,
                               const _GLFWctxconfig* ctxconfig,
                               const _GLFWfbconfig* fbconfig,
                               Visual** visual, int* depth);

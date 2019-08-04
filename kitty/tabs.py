@@ -1,16 +1,17 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import weakref
 from collections import deque, namedtuple
 from functools import partial
+from contextlib import suppress
 
 from .borders import Borders
 from .child import Child
 from .constants import appname, get_boss, is_macos, is_wayland
 from .fast_data_types import (
-    add_tab, glfw_post_empty_event, mark_tab_bar_dirty, next_window_id,
+    add_tab, mark_tab_bar_dirty, next_window_id,
     pt_to_px, remove_tab, remove_window, ring_bell, set_active_tab, swap_tabs,
     x11_window_id
 )
@@ -28,10 +29,8 @@ def SpecialWindow(cmd, stdin=None, override_title=None, cwd_from=None, cwd=None,
 
 
 def add_active_id_to_history(items, item_id, maxlen=64):
-    try:
+    with suppress(ValueError):
         items.remove(item_id)
-    except ValueError:
-        pass
     items.append(item_id)
     if len(items) > maxlen:
         items.popleft()
@@ -223,7 +222,7 @@ class Tab:  # {{{
         if env:
             fenv.update(env)
         fenv['KITTY_WINDOW_ID'] = str(next_window_id())
-        if not is_macos and not is_wayland:
+        if not is_macos and not is_wayland():
             try:
                 fenv['WINDOWID'] = str(x11_window_id(self.os_window_id))
             except Exception:
@@ -233,7 +232,7 @@ class Tab:  # {{{
         ans.fork()
         return ans
 
-    def new_window(self, use_shell=True, cmd=None, stdin=None, override_title=None, cwd_from=None, cwd=None, overlay_for=None, env=None):
+    def new_window(self, use_shell=True, cmd=None, stdin=None, override_title=None, cwd_from=None, cwd=None, overlay_for=None, env=None, location=None):
         child = self.launch_child(use_shell=use_shell, cmd=cmd, stdin=stdin, cwd_from=cwd_from, cwd=cwd, env=env)
         window = Window(self, child, self.opts, self.args, override_title=override_title)
         if overlay_for is not None:
@@ -242,29 +241,59 @@ class Tab:  # {{{
             overlaid.overlay_window_id = window.id
         # Must add child before laying out so that resize_pty succeeds
         get_boss().add_child(window)
-        self.active_window_idx = self.current_layout.add_window(self.windows, window, self.active_window_idx)
+        self.active_window_idx = self.current_layout.add_window(self.windows, window, self.active_window_idx, location)
         self.relayout_borders()
-        glfw_post_empty_event()
         return window
 
-    def new_special_window(self, special_window):
-        return self.new_window(False, *special_window)
+    def new_special_window(self, special_window, location=None):
+        return self.new_window(False, *special_window, location=location)
 
     def close_window(self):
         if self.windows:
             self.remove_window(self.windows[self.active_window_idx])
 
+    def previous_active_window_idx(self, num):
+        try:
+            old_window_id = self.active_window_history[-num]
+        except IndexError:
+            return
+        for idx, w in enumerate(self.windows):
+            if w.id == old_window_id:
+                return idx
+
     def remove_window(self, window):
-        self.active_window_idx = self.current_layout.remove_window(self.windows, window, self.active_window_idx)
+        idx = self.previous_active_window_idx(1)
+        next_window_id = None
+        if idx is not None:
+            next_window_id = self.windows[idx].id
+        active_window_idx = self.current_layout.remove_window(self.windows, window, self.active_window_idx)
         remove_window(self.os_window_id, self.id, window.id)
+        if window.overlay_for is not None:
+            for idx, q in enumerate(self.windows):
+                if q.id == window.overlay_for:
+                    active_window_idx = idx
+                    next_window_id = q.id
+                    break
+        if next_window_id is None and active_window_idx is not None and len(self.windows) > active_window_idx:
+            next_window_id = self.windows[active_window_idx].id
+        if next_window_id is not None:
+            for idx, window in enumerate(self.windows):
+                if window.id == next_window_id:
+                    self.active_window_idx = self.current_layout.set_active_window(self.windows, idx)
+                    break
+            else:
+                self.active_window_idx = active_window_idx
+        else:
+            self.active_window_idx = active_window_idx
         self.relayout_borders()
-        glfw_post_empty_event()
+        active_window = self.active_window
+        if active_window:
+            self.title_changed(active_window)
 
     def set_active_window_idx(self, idx):
         if idx != self.active_window_idx:
             self.active_window_idx = self.current_layout.set_active_window(self.windows, idx)
             self.relayout_borders()
-            glfw_post_empty_event()
 
     def set_active_window(self, window):
         try:
@@ -280,26 +309,18 @@ class Tab:  # {{{
     def nth_window(self, num=0):
         if self.windows:
             if num < 0:
-                try:
-                    old_window_id = self.active_window_history[num]
-                except IndexError:
+                idx = self.previous_active_window_idx(-num)
+                if idx is None:
                     return
-                for idx, w in enumerate(self.windows):
-                    if w.id == old_window_id:
-                        self.active_window_idx = self.current_layout.set_active_window(self.windows, idx)
-                        break
-                else:
-                    return
+                self.active_window_idx = self.current_layout.set_active_window(self.windows, idx)
             else:
                 self.active_window_idx = self.current_layout.nth_window(self.windows, num)
             self.relayout_borders()
-            glfw_post_empty_event()
 
     def _next_window(self, delta=1):
         if len(self.windows) > 1:
             self.active_window_idx = self.current_layout.next_window(self.windows, self.active_window_idx, delta)
             self.relayout_borders()
-            glfw_post_empty_event()
 
     def next_window(self):
         self._next_window()
@@ -315,12 +336,10 @@ class Tab:  # {{{
         if candidates:
             self.active_window_idx = self.current_layout.set_active_window(self.windows, candidates[0])
             self.relayout_borders()
-            glfw_post_empty_event()
 
     def move_window(self, delta=1):
         self.active_window_idx = self.current_layout.move_window(self.windows, self.active_window_idx, delta)
         self.relayout()
-        glfw_post_empty_event()
 
     def move_window_to_top(self):
         self.move_window(-self.active_window_idx)
@@ -409,17 +428,21 @@ class TabManager:  # {{{
         if not self.tab_bar_hidden:
             self.tab_bar.screen.refresh_sprite_positions()
 
+    @property
+    def tab_bar_should_be_visible(self):
+        return len(self.tabs) >= self.opts.tab_bar_min_tabs
+
     def _add_tab(self, tab):
-        before = len(self.tabs)
+        visible_before = self.tab_bar_should_be_visible
         self.tabs.append(tab)
-        if len(self.tabs) > 1 and before < 2:
+        if not visible_before and self.tab_bar_should_be_visible:
             self.tabbar_visibility_changed()
 
     def _remove_tab(self, tab):
-        before = len(self.tabs)
+        visible_before = self.tab_bar_should_be_visible
         remove_tab(self.os_window_id, tab.id)
         self.tabs.remove(tab)
-        if len(self.tabs) < 2 and before > 1:
+        if visible_before and not self.tab_bar_should_be_visible:
             self.tabbar_visibility_changed()
 
     def _set_active_tab(self, idx):
@@ -430,10 +453,9 @@ class TabManager:  # {{{
         if not self.tab_bar_hidden:
             self.tab_bar.layout()
             self.resize(only_tabs=True)
-            glfw_post_empty_event()
 
     def mark_tab_bar_dirty(self):
-        if len(self.tabs) > 1 and not self.tab_bar_hidden:
+        if self.tab_bar_should_be_visible and not self.tab_bar_hidden:
             mark_tab_bar_dirty(self.os_window_id)
 
     def update_tab_bar_data(self):
@@ -456,15 +478,16 @@ class TabManager:  # {{{
         try:
             idx = self.tabs.index(tab)
         except Exception:
-            return
+            return False
         self.set_active_tab_idx(idx)
+        return True
 
     def next_tab(self, delta=1):
         if len(self.tabs) > 1:
             self.set_active_tab_idx((self.active_tab_idx + len(self.tabs) + delta) % len(self.tabs))
 
     def goto_tab(self, tab_num):
-        if tab_num < len(self.tabs) and 0 <= tab_num:
+        if 0 <= tab_num < len(self.tabs):
             self.set_active_tab_idx(tab_num)
         elif tab_num < 0:
             try:
@@ -535,16 +558,25 @@ class TabManager:  # {{{
     def remove(self, tab):
         self._remove_tab(tab)
         next_active_tab = -1
-        while self.active_tab_history and next_active_tab < 0:
-            tab_id = self.active_tab_history.pop()
-            if tab_id == tab.id:
-                continue
-            for idx, qtab in enumerate(self.tabs):
-                if qtab.id == tab_id:
-                    next_active_tab = idx
-                    break
+        while True:
+            try:
+                self.active_tab_history.remove(tab.id)
+            except ValueError:
+                break
+
+        if self.opts.tab_switch_strategy == 'previous':
+            while self.active_tab_history and next_active_tab < 0:
+                tab_id = self.active_tab_history.pop()
+                for idx, qtab in enumerate(self.tabs):
+                    if qtab.id == tab_id:
+                        next_active_tab = idx
+                        break
+        elif self.opts.tab_switch_strategy == 'left':
+            next_active_tab = max(0, self.active_tab_idx - 1)
+
         if next_active_tab < 0:
             next_active_tab = max(0, min(self.active_tab_idx, len(self.tabs) - 1))
+
         self._set_active_tab(next_active_tab)
         self.mark_tab_bar_dirty()
         tab.destroy()
@@ -570,7 +602,7 @@ class TabManager:  # {{{
 
     @property
     def blank_rects(self):
-        return self.tab_bar.blank_rects if len(self.tabs) > 1 else ()
+        return self.tab_bar.blank_rects if self.tab_bar_should_be_visible else ()
 
     def destroy(self):
         for t in self:

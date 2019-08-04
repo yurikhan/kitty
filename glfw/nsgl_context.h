@@ -1,7 +1,7 @@
 //========================================================================
 // GLFW 3.3 macOS - www.glfw.org
 //------------------------------------------------------------------------
-// Copyright (c) 2009-2016 Camilla Löwy <elmindreda@glfw.org>
+// Copyright (c) 2009-2019 Camilla Löwy <elmindreda@glfw.org>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -24,8 +24,8 @@
 //
 //========================================================================
 
-#define _GLFW_PLATFORM_CONTEXT_STATE            _GLFWcontextNSGL nsgl
-#define _GLFW_PLATFORM_LIBRARY_CONTEXT_STATE    _GLFWlibraryNSGL nsgl
+#define _GLFW_PLATFORM_CONTEXT_STATE            _GLFWcontextNSGL nsgl;
+#define _GLFW_PLATFORM_LIBRARY_CONTEXT_STATE    _GLFWlibraryNSGL nsgl;
 
 
 // NSGL-specific per-context data
@@ -33,7 +33,7 @@
 typedef struct _GLFWcontextNSGL
 {
     id           pixelFormat;
-    id	         object;
+    id           object;
 
 } _GLFWcontextNSGL;
 
@@ -47,10 +47,9 @@ typedef struct _GLFWlibraryNSGL
 } _GLFWlibraryNSGL;
 
 
-GLFWbool _glfwInitNSGL(void);
+bool _glfwInitNSGL(void);
 void _glfwTerminateNSGL(void);
-GLFWbool _glfwCreateContextNSGL(_GLFWwindow* window,
+bool _glfwCreateContextNSGL(_GLFWwindow* window,
                                 const _GLFWctxconfig* ctxconfig,
                                 const _GLFWfbconfig* fbconfig);
 void _glfwDestroyContextNSGL(_GLFWwindow* window);
-

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -8,6 +8,7 @@ import sys
 from base64 import standard_b64encode
 from collections import defaultdict, deque
 from itertools import count
+from contextlib import suppress
 
 from kitty.utils import fit_image
 
@@ -61,7 +62,7 @@ def run_imagemagick(path, cmd, keep_stdout=True):
 
 
 def identify(path):
-    p = run_imagemagick(path, ['identify', '-format', '%m %w %h %A', path])
+    p = run_imagemagick(path, ['identify', '-format', '%m %w %h %A', '--', path])
     parts = tuple(filter(None, p.stdout.decode('utf-8').split()))
     mode = 'rgb' if parts[3].lower() == 'false' else 'rgba'
     return ImageData(parts[0].lower(), int(parts[1]), int(parts[2]), mode)
@@ -70,7 +71,7 @@ def identify(path):
 def convert(path, m, available_width, available_height, scale_up, tdir=None):
     from tempfile import NamedTemporaryFile
     width, height = m.width, m.height
-    cmd = ['convert', '-background', 'none', path]
+    cmd = ['convert', '-background', 'none', '--', path]
     scaled = False
     if scale_up:
         if width < available_width:
@@ -172,10 +173,8 @@ class ImageManager:
             if in_flight:
                 pl = in_flight.popleft()
                 if payload.startswith('ENOENT:'):
-                    try:
+                    with suppress(Exception):
                         self.resend_image(image_id, pl)
-                    except Exception:
-                        pass
                 if not in_flight:
                     self.placements_in_flight.pop(image_id, None)
 

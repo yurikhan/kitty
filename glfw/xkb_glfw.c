@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include "internal.h"
 #include "xkb_glfw.h"
+START_ALLOW_CASE_RANGE
 
 #define debug(...) if (_glfw.hints.init.debugKeyboard) printf(__VA_ARGS__);
 
@@ -47,6 +48,7 @@
         S(backslash, BACKSLASH); \
         S(bracketright, RIGHT_BRACKET); \
         S(plus, PLUS); \
+        S(underscore, UNDERSCORE); \
         S(grave, GRAVE_ACCENT); \
         S(Escape, ESCAPE); \
         S(Return, ENTER); \
@@ -100,7 +102,7 @@ glfw_key_for_sym(xkb_keysym_t key) {
 #define S(f, t) case XKB_KEY_##f: return GLFW_KEY_##t
 #define F(f, t) S(f, t)
 #define R(s, e, gs, ...) case XKB_KEY_##s ... XKB_KEY_##e: return GLFW_KEY_##gs + key - XKB_KEY_##s
-#define D(s, e, gs, ...) R(s, e, gs)
+#define D(s, e, gs, ...) R(s, e, gs, __VA_ARGS__)
     map_key(key)
         S(KP_Up, UP);
         S(KP_Down, DOWN);
@@ -114,7 +116,7 @@ glfw_key_for_sym(xkb_keysym_t key) {
 #undef D
 #undef R
 #undef S
-};
+}
 
 xkb_keysym_t
 glfw_xkb_sym_for_key(int key) {
@@ -132,33 +134,34 @@ glfw_xkb_sym_for_key(int key) {
 #undef R
 #undef S
 }
+END_ALLOW_CASE_RANGE
 
 #ifdef _GLFW_X11
 
-GLFWbool
+bool
 glfw_xkb_set_x11_events_mask(void) {
     if (!XkbSelectEvents(_glfw.x11.display, XkbUseCoreKbd, XkbNewKeyboardNotifyMask | XkbMapNotifyMask | XkbStateNotifyMask, XkbNewKeyboardNotifyMask | XkbMapNotifyMask | XkbStateNotifyMask)) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "Failed to set XKB events mask");
-        return GLFW_FALSE;
+        return false;
     }
-    return GLFW_TRUE;
+    return true;
 }
 
-GLFWbool
+bool
 glfw_xkb_update_x11_keyboard_id(_GLFWXKBData *xkb) {
     xkb->keyboard_device_id = -1;
     xcb_connection_t* conn = XGetXCBConnection(_glfw.x11.display);
     if (!conn) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "X11: Failed to retrieve XCB connection");
-        return GLFW_FALSE;
+        return false;
     }
 
     xkb->keyboard_device_id = xkb_x11_get_core_keyboard_device_id(conn);
     if (xkb->keyboard_device_id == -1) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "X11: Failed to retrieve core keyboard device id");
-        return GLFW_FALSE;
+        return false;
     }
-    return GLFW_TRUE;
+    return true;
 }
 
 #define xkb_glfw_load_keymap(keymap, ...) {\
@@ -166,7 +169,7 @@ glfw_xkb_update_x11_keyboard_id(_GLFWXKBData *xkb) {
     if (conn) keymap = xkb_x11_keymap_new_from_device(xkb->context, conn, xkb->keyboard_device_id, XKB_KEYMAP_COMPILE_NO_FLAGS); \
 }
 
-#define xkb_glfw_load_state(keymap, state, ...) {\
+#define xkb_glfw_load_state(keymap, state) {\
     xcb_connection_t* conn = XGetXCBConnection(_glfw.x11.display); \
     if (conn) state = xkb_x11_state_new_from_device(keymap, conn, xkb->keyboard_device_id); \
 }
@@ -174,7 +177,7 @@ glfw_xkb_update_x11_keyboard_id(_GLFWXKBData *xkb) {
 #else
 
 #define xkb_glfw_load_keymap(keymap, map_str) keymap = xkb_keymap_new_from_string(xkb->context, map_str, XKB_KEYMAP_FORMAT_TEXT_V1, 0);
-#define xkb_glfw_load_state(keymap, state, ...) state = xkb_state_new(keymap);
+#define xkb_glfw_load_state(keymap, state) state = xkb_state_new(keymap);
 
 #endif
 
@@ -203,17 +206,17 @@ glfw_xkb_release(_GLFWXKBData *xkb) {
     glfw_ibus_terminate(&xkb->ibus);
 }
 
-GLFWbool
+bool
 glfw_xkb_create_context(_GLFWXKBData *xkb) {
     xkb->context = xkb_context_new(0);
     if (!xkb->context)
     {
         _glfwInputError(GLFW_PLATFORM_ERROR,
                         "Failed to initialize XKB context");
-        return GLFW_FALSE;
+        return false;
     }
     glfw_connect_to_ibus(&xkb->ibus);
-    return GLFW_TRUE;
+    return true;
 }
 
 static const char*
@@ -259,7 +262,7 @@ load_compose_tables(_GLFWXKBData *xkb) {
     xkb_compose_table_unref(compose_table);
 }
 
-GLFWbool
+bool
 glfw_xkb_compile_keymap(_GLFWXKBData *xkb, const char *map_str) {
     const char *err;
     release_keyboard_data(xkb);
@@ -267,13 +270,13 @@ glfw_xkb_compile_keymap(_GLFWXKBData *xkb, const char *map_str) {
     if (err) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "%s", err);
         release_keyboard_data(xkb);
-        return GLFW_FALSE;
+        return false;
     }
     err = load_states(xkb);
     if (err) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "%s", err);
         release_keyboard_data(xkb);
-        return GLFW_FALSE;
+        return false;
     }
     load_compose_tables(xkb);
 #define S(a, n) xkb->a##Idx = xkb_keymap_mod_get_index(xkb->keymap, n); xkb->a##Mask = 1 << xkb->a##Idx;
@@ -291,7 +294,7 @@ glfw_xkb_compile_keymap(_GLFWXKBData *xkb, const char *map_str) {
     }
     xkb->states.modifiers = 0;
     xkb->states.activeUnknownModifiers = 0;
-    return GLFW_TRUE;
+    return true;
 }
 
 static inline xkb_mod_mask_t
@@ -325,7 +328,7 @@ glfw_xkb_update_modifiers(_GLFWXKBData *xkb, xkb_mod_mask_t depressed, xkb_mod_m
     update_modifiers(xkb, &xkb->states);
 }
 
-GLFWbool
+bool
 glfw_xkb_should_repeat(_GLFWXKBData *xkb, xkb_keycode_t scancode) {
 #ifdef _GLFW_WAYLAND
     scancode += 8;
@@ -334,7 +337,7 @@ glfw_xkb_should_repeat(_GLFWXKBData *xkb, xkb_keycode_t scancode) {
 }
 
 
-static KeyEvent key_event = {};
+static KeyEvent key_event = {0};
 
 static inline xkb_keysym_t
 compose_symbol(struct xkb_compose_state *composeState, xkb_keysym_t sym, int *compose_completed) {
@@ -365,7 +368,7 @@ glfw_xkb_keysym_name(xkb_keysym_t sym) {
 }
 
 int
-glfw_xkb_keysym_from_name(const char *name, GLFWbool case_sensitive) {
+glfw_xkb_keysym_from_name(const char *name, bool case_sensitive) {
     return (int)xkb_keysym_from_name(name, case_sensitive ? XKB_KEYSYM_NO_FLAGS : XKB_KEYSYM_CASE_INSENSITIVE);
 }
 
@@ -412,7 +415,7 @@ glfw_xkb_update_ime_state(_GLFWwindow *w, _GLFWXKBData *xkb, int which, int a, i
     int x = 0, y = 0;
     switch(which) {
         case 1:
-            glfw_ibus_set_focused(&xkb->ibus, a ? GLFW_TRUE : GLFW_FALSE);
+            glfw_ibus_set_focused(&xkb->ibus, a ? true : false);
             break;
         case 2:
             _glfwPlatformGetWindowPos(w, &x, &y);
@@ -423,7 +426,7 @@ glfw_xkb_update_ime_state(_GLFWwindow *w, _GLFWXKBData *xkb, int which, int a, i
 }
 
 void
-glfw_xkb_key_from_ime(KeyEvent *ev, GLFWbool handled_by_ime, GLFWbool failed) {
+glfw_xkb_key_from_ime(KeyEvent *ev, bool handled_by_ime, bool failed) {
     _GLFWwindow *window = _glfwWindowForId(ev->window_id);
     if (failed && window && window->callbacks.keyboard) {
         // notify application to remove any existing pre-edit text
@@ -436,7 +439,7 @@ glfw_xkb_key_from_ime(KeyEvent *ev, GLFWbool handled_by_ime, GLFWbool failed) {
     // you'd need to implement a ring buffer to store pending key presses.
     xkb_keycode_t prev_handled_press = last_handled_press_keycode;
     last_handled_press_keycode = 0;
-    GLFWbool is_release = ev->action == GLFW_RELEASE;
+    bool is_release = ev->action == GLFW_RELEASE;
     debug("From IBUS: scancode: 0x%x name: %s is_release: %d\n", ev->keycode, glfw_xkb_keysym_name(ev->keysym), is_release);
     if (window && !handled_by_ime && !(is_release && ev->keycode == prev_handled_press)) {
         debug("↳ to application: glfw_keycode: 0x%x (%s) keysym: 0x%x (%s) action: %s %s text: %s\n",
@@ -499,13 +502,13 @@ glfw_xkb_handle_key_event(_GLFWwindow *window, _GLFWXKBData *xkb, xkb_keycode_t 
         if (key_event.text[0]) { debug("%s: %s ", text_type, key_event.text); }
     }
     int glfw_keycode = glfw_key_for_sym(glfw_sym);
-    GLFWbool is_fallback = GLFW_FALSE;
+    bool is_fallback = false;
     if (glfw_keycode == GLFW_KEY_UNKNOWN && !key_event.text[0]) {
         int num_default_syms = xkb_state_key_get_syms(sg->default_state, code_for_sym, &default_syms);
         if (num_default_syms > 0) {
             glfw_sym = default_syms[0];
             glfw_keycode = glfw_key_for_sym(glfw_sym);
-            is_fallback = GLFW_TRUE;
+            is_fallback = true;
         }
     }
     debug(

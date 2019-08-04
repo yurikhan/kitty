@@ -21,6 +21,16 @@
 #define NSEventModifierFlagControl NSControlKeyMask
 #endif
 
+typedef int CGSConnectionID;
+typedef int CGSWindowID;
+typedef int CGSWorkspaceID;
+typedef enum _CGSSpaceSelector {
+    kCGSSpaceCurrent = 5,
+    kCGSSpaceAll = 7
+} CGSSpaceSelector;
+extern CGSConnectionID _CGSDefaultConnection(void);
+CFArrayRef CGSCopySpacesForWindows(CGSConnectionID Connection, CGSSpaceSelector Type, CFArrayRef Windows);
+
 static NSMenuItem* title_menu = NULL;
 
 
@@ -39,7 +49,7 @@ find_app_name(void) {
 
     for (i = 0;  i < sizeof(name_keys) / sizeof(name_keys[0]);  i++)
     {
-        id name = [infoDictionary objectForKey:name_keys[i]];
+        id name = infoDictionary[name_keys[i]];
         if (name &&
             [name isKindOfClass:[NSString class]] &&
             ![name isEqualToString:@""])
@@ -50,7 +60,7 @@ find_app_name(void) {
 
     char** progname = _NSGetProgname();
     if (progname && *progname)
-        return [NSString stringWithUTF8String:*progname];
+        return @(*progname);
 
     // Really shouldn't get here
     return @"kitty";
@@ -64,12 +74,12 @@ find_app_name(void) {
 
 - (void) show_preferences              : (id)sender {
     (void)sender;
-    set_cocoa_pending_action(PREFERENCES_WINDOW);
+    set_cocoa_pending_action(PREFERENCES_WINDOW, NULL);
 }
 
 - (void) new_os_window              : (id)sender {
     (void)sender;
-    set_cocoa_pending_action(NEW_OS_WINDOW);
+    set_cocoa_pending_action(NEW_OS_WINDOW, NULL);
 }
 
 
@@ -115,8 +125,114 @@ get_dock_menu(id self UNUSED, SEL _cmd UNUSED, NSApplication *sender UNUSED) {
     return dockMenu;
 }
 
+static PyObject *notification_activated_callback = NULL;
+static PyObject*
+set_notification_activated_callback(PyObject *self UNUSED, PyObject *callback) {
+    if (notification_activated_callback) Py_DECREF(notification_activated_callback);
+    notification_activated_callback = callback;
+    Py_INCREF(callback);
+    Py_RETURN_NONE;
+}
+
+@interface NotificationDelegate : NSObject <NSUserNotificationCenterDelegate>
+@end
+
+@implementation NotificationDelegate
+    - (void)userNotificationCenter:(NSUserNotificationCenter *)center
+            didDeliverNotification:(NSUserNotification *)notification {
+        (void)(center); (void)(notification);
+    }
+
+    - (BOOL) userNotificationCenter:(NSUserNotificationCenter *)center
+            shouldPresentNotification:(NSUserNotification *)notification {
+        (void)(center); (void)(notification);
+        return YES;
+    }
+
+    - (void) userNotificationCenter:(NSUserNotificationCenter *)center
+            didActivateNotification:(NSUserNotification *)notification {
+        (void)(center); (void)(notification);
+        if (notification_activated_callback) {
+            PyObject *ret = PyObject_CallFunction(notification_activated_callback, "z",
+                    notification.userInfo[@"user_id"] ? [notification.userInfo[@"user_id"] UTF8String] : NULL);
+            if (ret == NULL) PyErr_Print();
+            else Py_DECREF(ret);
+        }
+    }
+@end
+
+static PyObject*
+cocoa_send_notification(PyObject *self UNUSED, PyObject *args) {
+    char *identifier = NULL, *title = NULL, *subtitle = NULL, *informativeText = NULL, *path_to_image = NULL;
+    if (!PyArg_ParseTuple(args, "zssz|z", &identifier, &title, &informativeText, &path_to_image, &subtitle)) return NULL;
+    NSUserNotificationCenter *center = [NSUserNotificationCenter defaultUserNotificationCenter];
+    if (!center) {PyErr_SetString(PyExc_RuntimeError, "Failed to get the user notification center"); return NULL; }
+    if (!center.delegate) center.delegate = [[NotificationDelegate alloc] init];
+    NSUserNotification *n = [NSUserNotification new];
+    NSImage *img = nil;
+    if (path_to_image) {
+        NSString *p = @(path_to_image);
+        NSURL *url = [NSURL fileURLWithPath:p];
+        img = [[NSImage alloc] initWithContentsOfURL:url];
+        [url release]; [p release];
+        if (img) {
+            [n setValue:img forKey:@"_identityImage"];
+            [n setValue:@(false) forKey:@"_identityImageHasBorder"];
+        }
+        [img release];
+    }
+#define SET(x) { \
+    if (x) { \
+        NSString *t = @(x); \
+        n.x = t; \
+        [t release]; \
+    }}
+    SET(title); SET(subtitle); SET(informativeText);
+#undef SET
+    if (identifier) {
+        n.userInfo = @{@"user_id": @(identifier)};
+    }
+    [center deliverNotification:n];
+    Py_RETURN_NONE;
+}
+
+@interface ServiceProvider : NSObject
+@end
+
+@implementation ServiceProvider
+
+- (void)openTab:(NSPasteboard*)pasteboard
+        userData:(NSString *) UNUSED userData error:(NSError **) UNUSED error {
+    [self openFilesFromPasteboard:pasteboard type:NEW_TAB_WITH_WD];
+}
+
+- (void)openOSWindow:(NSPasteboard*)pasteboard
+        userData:(NSString *) UNUSED userData  error:(NSError **) UNUSED error {
+    [self openFilesFromPasteboard:pasteboard type:NEW_OS_WINDOW_WITH_WD];
+}
+
+- (void)openFilesFromPasteboard:(NSPasteboard *)pasteboard type:(int)type {
+    NSDictionary *options = @{ NSPasteboardURLReadingFileURLsOnlyKey: @YES };
+    NSArray *filePathArray = [pasteboard readObjectsForClasses:[NSArray arrayWithObject:[NSURL class]] options:options];
+    for (NSURL *url in filePathArray) {
+        NSString *path = [url path];
+        BOOL isDirectory = NO;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDirectory]) {
+            if (!isDirectory) {
+                path = [path stringByDeletingLastPathComponent];
+            }
+            set_cocoa_pending_action(type, [path UTF8String]);
+        }
+    }
+}
+
+@end
+
+// global menu {{{
 void
 cocoa_create_global_menu(void) {
+    @autoreleasepool {
+
     NSString* app_name = find_app_name();
     NSMenu* bar = [[NSMenu alloc] init];
     GlobalMenuTarget *global_menu_target = [GlobalMenuTarget shared_instance];
@@ -205,10 +321,15 @@ cocoa_create_global_menu(void) {
             @selector(applicationDockMenu:),
             (IMP)get_dock_menu,
             "@@:@");
+
+
+    [NSApp setServicesProvider:[[[ServiceProvider alloc] init] autorelease]];
+
+    } // autoreleasepool
 }
 
 void
-cocoa_update_title(PyObject *pytitle) {
+cocoa_update_menu_bar_title(PyObject *pytitle) {
     NSString *title = [[NSString alloc] initWithUTF8String:PyUnicode_AsUTF8(pytitle)];
     NSMenu *bar = [NSApp mainMenu];
     if (title_menu != NULL) {
@@ -219,7 +340,7 @@ cocoa_update_title(PyObject *pytitle) {
     [title_menu setSubmenu:m];
     [m release];
     [title release];
-}
+} // }}}
 
 bool
 cocoa_make_window_resizable(void *w, bool resizable) {
@@ -240,37 +361,42 @@ cocoa_make_window_resizable(void *w, bool resizable) {
     return true;
 }
 
+#define NSLeftAlternateKeyMask  (0x000020 | NSEventModifierFlagOption)
+#define NSRightAlternateKeyMask (0x000040 | NSEventModifierFlagOption)
+
+bool
+cocoa_alt_option_key_pressed(NSUInteger flags) {
+    NSUInteger q = (OPT(macos_option_as_alt) == 1) ? NSRightAlternateKeyMask : NSLeftAlternateKeyMask;
+    return ((q & flags) == q) ? true : false;
+}
+
 void
 cocoa_focus_window(void *w) {
     NSWindow *window = (NSWindow*)w;
     [window makeKeyWindow];
 }
 
-bool
-cocoa_toggle_fullscreen(void *w, bool traditional) {
+size_t
+cocoa_get_workspace_ids(void *w, size_t *workspace_ids, size_t array_sz) {
     NSWindow *window = (NSWindow*)w;
-    bool made_fullscreen = true;
-    NSWindowStyleMask sm = [window styleMask];
-    bool in_fullscreen = sm & NSWindowStyleMaskFullScreen;
-    if (traditional) {
-        if (!(in_fullscreen)) {
-            sm |= NSWindowStyleMaskBorderless | NSWindowStyleMaskFullScreen;
-            [[NSApplication sharedApplication] setPresentationOptions: NSApplicationPresentationAutoHideMenuBar | NSApplicationPresentationAutoHideDock];
-        } else {
-            made_fullscreen = false;
-            sm &= ~(NSWindowStyleMaskBorderless | NSWindowStyleMaskFullScreen);
-            [[NSApplication sharedApplication] setPresentationOptions: NSApplicationPresentationDefault];
+    if (!window) return 0;
+    NSArray *window_array = @[ @([window windowNumber]) ];
+    CFArrayRef spaces = CGSCopySpacesForWindows(_CGSDefaultConnection(), kCGSSpaceAll, (__bridge CFArrayRef)window_array);
+    CFIndex ans = CFArrayGetCount(spaces);
+    if (ans > 0) {
+        for (CFIndex i = 0; i < MIN(ans, (CFIndex)array_sz); i++) {
+            NSNumber *s = (NSNumber*)CFArrayGetValueAtIndex(spaces, i);
+            workspace_ids[i] = [s intValue];
         }
-        [window setStyleMask: sm];
-    } else {
-        if (in_fullscreen) made_fullscreen = false;
-        [window toggleFullScreen: nil];
-    }
-    return made_fullscreen;
+    } else ans = 0;
+    CFRelease(spaces);
+    return ans;
 }
 
 static PyObject*
 cocoa_get_lang(PyObject UNUSED *self) {
+    @autoreleasepool {
+
     NSString* locale = nil;
     NSString* lang_code = [[NSLocale currentLocale] objectForKey:NSLocaleLanguageCode];
     NSString* country_code = [[NSLocale currentLocale] objectForKey:NSLocaleCountryCode];
@@ -281,17 +407,40 @@ cocoa_get_lang(PyObject UNUSED *self) {
     }
     if (!locale) { Py_RETURN_NONE; }
     return Py_BuildValue("s", [locale UTF8String]);
+
+    } // autoreleasepool
+}
+
+double
+cocoa_cursor_blink_interval(void) {
+    @autoreleasepool {
+
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    double on_period_ms = [defaults doubleForKey:@"NSTextInsertionPointBlinkPeriodOn"];
+    double off_period_ms = [defaults doubleForKey:@"NSTextInsertionPointBlinkPeriodOff"];
+    double period_ms = [defaults doubleForKey:@"NSTextInsertionPointBlinkPeriod"];
+    double max_value = 60 * 1000.0, ans = -1.0;
+    if (on_period_ms || off_period_ms) {
+        ans = on_period_ms + off_period_ms;
+    } else if (period_ms) {
+        ans = period_ms;
+    }
+    return ans > max_value ? 0.0 : ans;
+
+    } // autoreleasepool
 }
 
 void
-cocoa_set_hide_from_tasks(void) {
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+cocoa_set_activation_policy(bool hide_from_tasks) {
+    [NSApp setActivationPolicy:(hide_from_tasks ? NSApplicationActivationPolicyAccessory : NSApplicationActivationPolicyRegular)];
 }
 
 void
 cocoa_set_titlebar_color(void *w, color_type titlebar_color)
 {
-    NSWindow *window = (NSWindow *)w;
+    @autoreleasepool {
+
+    NSWindow *window = (NSWindow*)w;
 
     double red = ((titlebar_color >> 16) & 0xFF) / 255.0;
     double green = ((titlebar_color >> 8) & 0xFF) / 255.0;
@@ -312,17 +461,27 @@ cocoa_set_titlebar_color(void *w, color_type titlebar_color)
     } else {
         [window setAppearance:[NSAppearance appearanceNamed:NSAppearanceNameVibrantLight]];
     }
+
+    } // autoreleasepool
 }
 
 static void
 cleanup() {
+    @autoreleasepool {
+
     if (dockMenu) [dockMenu release];
     dockMenu = nil;
+    if (notification_activated_callback) Py_DECREF(notification_activated_callback);
+    notification_activated_callback = NULL;
+
+    } // autoreleasepool
 }
 
 static PyMethodDef module_methods[] = {
     {"cocoa_get_lang", (PyCFunction)cocoa_get_lang, METH_NOARGS, ""},
     {"cocoa_set_new_window_trigger", (PyCFunction)cocoa_set_new_window_trigger, METH_VARARGS, ""},
+    {"cocoa_send_notification", (PyCFunction)cocoa_send_notification, METH_VARARGS, ""},
+    {"cocoa_set_notification_activated_callback", (PyCFunction)set_notification_activated_callback, METH_O, ""},
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 

@@ -34,7 +34,7 @@ void
 set_special_key_combo(int glfw_key, int mods, bool is_native) {
     if (is_native) {
         if (native_special_keys_count >= native_special_keys_capacity) {
-            native_special_keys_capacity = MAX(128, 2 * native_special_keys_capacity);
+            native_special_keys_capacity = MAX(128u, 2 * native_special_keys_capacity);
             native_special_keys = realloc(native_special_keys, sizeof(native_special_keys[0]) * native_special_keys_capacity);
             if (native_special_keys == NULL) fatal("Out of memory");
         }
@@ -50,7 +50,7 @@ set_special_key_combo(int glfw_key, int mods, bool is_native) {
 }
 
 static inline Window*
-active_window() {
+active_window(void) {
     Tab *t = global_state.callback_os_window->tabs + global_state.callback_os_window->active_tab;
     Window *w = t->windows + t->active_window;
     if (w->render_data.screen) return w;
@@ -128,6 +128,7 @@ on_key_input(int key, int scancode, int action, int mods, const char* text, int 
             (action == GLFW_RELEASE ? "RELEASE" : (action == GLFW_PRESS ? "PRESS" : "REPEAT")),
             mods, text, state);
     if (!w) { debug("no active window, ignoring\n"); return; }
+    if (OPT(mouse_hide_wait) < 0 && !is_modifier_key(key)) hide_mouse(global_state.callback_os_window);
     Screen *screen = w->render_data.screen;
     switch(state) {
         case 1:  // update pre-edit text
@@ -142,6 +143,11 @@ on_key_input(int key, int scancode, int action, int mods, const char* text, int 
             } else debug("committed pre-edit text: (null)\n");
             return;
         case 0:
+            // for macOS, update ime position on every key input
+            // because the position is required before next input
+#if defined(__APPLE__)
+            update_ime_position(global_state.callback_os_window, w, screen);
+#endif
             break;
         default:
             debug("invalid state, ignoring\n");
@@ -217,7 +223,7 @@ PYWRAP1(key_to_bytes) {
 PYWRAP1(key_for_native_key_name) {
     const char *name;
     int case_sensitive = 0;
-    PA("s|p", &name, case_sensitive);
+    PA("s|p", &name, &case_sensitive);
 #ifndef __APPLE__
     if (glfwGetXKBScancode) {  // if this function is called before GLFW is initialized glfwGetXKBScancode will be NULL
         int scancode = glfwGetXKBScancode(name, case_sensitive);

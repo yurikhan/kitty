@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -6,35 +6,37 @@ import atexit
 import json
 import os
 import re
+from contextlib import suppress
 from functools import partial
 from gettext import gettext as _
 from weakref import WeakValueDictionary
 
-from .child import cached_process_data
+from .child import cached_process_data, cwd_of_process
 from .cli import create_opts, parse_args
 from .conf.utils import to_cmdline
 from .config import initial_window_size_func, prepare_config_file_for_editing
 from .config_data import MINIMUM_FONT_SIZE
 from .constants import (
-    appname, config_dir, kitty_exe, set_boss, supports_primary_selection
+    appname, config_dir, is_macos, kitty_exe, set_boss,
+    supports_primary_selection
 )
 from .fast_data_types import (
     ChildMonitor, background_opacity_of, change_background_opacity,
     change_os_window_state, create_os_window, current_os_window,
-    destroy_global_data, get_clipboard_string, glfw_post_empty_event,
-    global_font_size, mark_os_window_for_close, os_window_font_size,
-    patch_global_colors, set_clipboard_string, set_in_sequence_mode,
-    toggle_fullscreen
+    destroy_global_data, get_clipboard_string, global_font_size,
+    mark_os_window_for_close, os_window_font_size, patch_global_colors,
+    safe_pipe, set_clipboard_string, set_in_sequence_mode, thread_write,
+    toggle_fullscreen, toggle_maximized
 )
 from .keys import get_shortcut, shortcut_matches
-from .layout import set_draw_minimal_borders
+from .layout import set_layout_options
 from .remote_control import handle_cmd
 from .rgb import Color, color_from_int
-from .session import create_session
+from .session import create_sessions
 from .tabs import SpecialWindow, SpecialWindowInstance, TabManager
 from .utils import (
-    get_editor, get_primary_selection, is_path_in_temp_dir, log_error,
-    open_url, parse_address_spec, remove_socket_file, safe_print,
+    func_name, get_editor, get_primary_selection, is_path_in_temp_dir,
+    log_error, open_url, parse_address_spec, remove_socket_file, safe_print,
     set_primary_selection, single_instance, startup_notification_handler
 )
 
@@ -104,7 +106,9 @@ class DumpCommands:  # {{{
 class Boss:
 
     def __init__(self, os_window_id, opts, args, cached_values, new_os_window_trigger):
-        set_draw_minimal_borders(opts)
+        set_layout_options(opts)
+        self.clipboard_buffers = {}
+        self.update_check_process = None
         self.window_id_map = WeakValueDictionary()
         self.startup_colors = {k: opts[k] for k in opts if isinstance(opts[k], Color)}
         self.startup_cursor_text_color = opts.cursor_text_color
@@ -126,20 +130,25 @@ class Boss:
         )
         set_boss(self)
         self.opts, self.args = opts, args
-        startup_session = create_session(opts, args, default_session=opts.startup_session)
+        startup_sessions = create_sessions(opts, args, default_session=opts.startup_session)
         self.keymap = self.opts.keymap.copy()
         if new_os_window_trigger is not None:
             self.keymap.pop(new_os_window_trigger, None)
-        self.add_os_window(startup_session, os_window_id=os_window_id)
-        if args.start_as != 'normal':
-            if args.start_as == 'fullscreen':
-                self.toggle_fullscreen()
-            else:
-                change_os_window_state(args.start_as)
+        for startup_session in startup_sessions:
+            self.add_os_window(startup_session, os_window_id=os_window_id)
+            os_window_id = None
+            if args.start_as != 'normal':
+                if args.start_as == 'fullscreen':
+                    self.toggle_fullscreen()
+                else:
+                    change_os_window_state(args.start_as)
+        if is_macos:
+            from .fast_data_types import cocoa_set_notification_activated_callback
+            cocoa_set_notification_activated_callback(self.notification_activated)
 
     def add_os_window(self, startup_session, os_window_id=None, wclass=None, wname=None, opts_for_size=None, startup_id=None):
         if os_window_id is None:
-            opts_for_size = opts_for_size or self.opts
+            opts_for_size = opts_for_size or startup_session.os_window_size or self.opts
             cls = wclass or self.args.cls or appname
             with startup_notification_handler(do_notify=startup_id is not None, startup_id=startup_id) as pre_show_callback:
                 os_window_id = create_os_window(
@@ -241,7 +250,7 @@ class Boss:
             sw = args
         else:
             sw = self.args_to_special_window(args, cwd_from) if args else None
-        startup_session = create_session(self.opts, special_window=sw, cwd_from=cwd_from)
+        startup_session = next(create_sessions(self.opts, special_window=sw, cwd_from=cwd_from))
         return self.add_os_window(startup_session)
 
     def new_os_window(self, *args):
@@ -258,6 +267,10 @@ class Boss:
         w = self.active_window_for_cwd
         cwd_from = w.child.pid_for_cwd if w is not None else None
         self._new_os_window(args, cwd_from)
+
+    def new_os_window_with_wd(self, wd):
+        special_window = SpecialWindow(None, cwd=wd)
+        self._new_os_window(special_window)
 
     def add_child(self, window):
         self.child_monitor.add_child(window.id, window.child.pid, window.child.child_fd, window.screen)
@@ -295,10 +308,10 @@ class Boss:
                 opts = create_opts(args)
                 if not os.path.isabs(args.directory):
                     args.directory = os.path.join(msg['cwd'], args.directory)
-                session = create_session(opts, args, respect_cwd=True)
-                os_window_id = self.add_os_window(session, wclass=args.cls, wname=args.name, opts_for_size=opts, startup_id=startup_id)
-                if msg.get('notify_on_os_window_death'):
-                    self.os_window_death_actions[os_window_id] = partial(self.notify_on_os_window_death, msg['notify_on_os_window_death'])
+                for session in create_sessions(opts, args, respect_cwd=True):
+                    os_window_id = self.add_os_window(session, wclass=args.cls, wname=args.name, opts_for_size=opts, startup_id=startup_id)
+                    if msg.get('notify_on_os_window_death'):
+                        self.os_window_death_actions[os_window_id] = partial(self.notify_on_os_window_death, msg['notify_on_os_window_death'])
             else:
                 log_error('Unknown message received from peer, ignoring')
 
@@ -335,7 +348,6 @@ class Boss:
             if len(tm) == 0:
                 if not self.shutting_down:
                     mark_os_window_for_close(os_window_id)
-                    glfw_post_empty_event()
 
     def close_window(self, window=None):
         if window is None:
@@ -351,10 +363,17 @@ class Boss:
     def toggle_fullscreen(self):
         toggle_fullscreen()
 
+    def toggle_maximized(self):
+        toggle_maximized()
+
     def start(self):
         if not getattr(self, 'io_thread_started', False):
             self.child_monitor.start()
             self.io_thread_started = True
+        if self.opts.update_check_interval > 0 and not hasattr(self, 'update_check_started'):
+            from .update_check import run_update_check
+            run_update_check(self.opts.update_check_interval * 60 * 60)
+            self.update_check_started = True
 
     def activate_tab_at(self, os_window_id, x):
         tm = self.os_window_map.get(os_window_id)
@@ -563,7 +582,7 @@ class Boss:
             f = getattr(self, key_action.func, None)
             if f is not None:
                 if self.args.debug_keyboard:
-                    print('Keypress matched action:', f.__name__)
+                    print('Keypress matched action:', func_name(f))
                 passthrough = f(*key_action.args)
                 if passthrough is not True:
                     return True
@@ -578,7 +597,7 @@ class Boss:
             if f is not None:
                 passthrough = f(*key_action.args)
                 if self.args.debug_keyboard:
-                    print('Keypress matched action:', f.__name__)
+                    print('Keypress matched action:', func_name(f))
                 if passthrough is not True:
                     return True
         return False
@@ -621,16 +640,12 @@ class Boss:
     def notify_on_os_window_death(self, address):
         import socket
         s = socket.socket(family=socket.AF_UNIX)
-        try:
+        with suppress(Exception):
             s.connect(address)
             s.sendall(b'c')
-            try:
+            with suppress(EnvironmentError):
                 s.shutdown(socket.SHUT_RDWR)
-            except EnvironmentError:
-                pass
             s.close()
-        except Exception:
-            pass
 
     def display_scrollback(self, window, data, cmd):
         tab = self.active_tab
@@ -728,7 +743,7 @@ class Boss:
             self._run_kitten('ask', args)
 
     def show_error(self, title, msg):
-        self._run_kitten('show_error', ['--title', title], input_data=msg)
+        self._run_kitten('show_error', args=['--title', title], input_data=msg)
 
     def do_set_tab_title(self, title, tab_id):
         tm = self.active_tab_manager
@@ -742,10 +757,10 @@ class Boss:
     def kitty_shell(self, window_type):
         cmd = ['@', kitty_exe(), '@']
         if window_type == 'tab':
-            self._new_tab(cmd).active_window
+            self._new_tab(cmd)
         elif window_type == 'os_window':
             os_window_id = self._new_os_window(cmd)
-            self.os_window_map[os_window_id].active_window
+            self.os_window_map[os_window_id]
         elif window_type == 'overlay':
             w = self.active_window
             tab = self.active_tab
@@ -770,6 +785,8 @@ class Boss:
     def destroy(self):
         self.shutting_down = True
         self.child_monitor.shutdown_monitor()
+        self.set_update_check_process()
+        self.update_check_process = None
         del self.child_monitor
         for tm in self.os_window_map.values():
             tm.destroy()
@@ -797,7 +814,29 @@ class Boss:
             if text:
                 set_primary_selection(text)
                 if self.opts.copy_on_select:
+                    self.copy_to_buffer(self.opts.copy_on_select)
+
+    def copy_to_buffer(self, buffer_name):
+        w = self.active_window
+        if w is not None and not w.destroyed:
+            text = w.text_for_selection()
+            if text:
+                if buffer_name == 'clipboard':
                     set_clipboard_string(text)
+                elif buffer_name == 'primary':
+                    set_primary_selection(text)
+                else:
+                    self.clipboard_buffers[buffer_name] = text
+
+    def paste_from_buffer(self, buffer_name):
+        if buffer_name == 'clipboard':
+            text = get_clipboard_string()
+        elif buffer_name == 'primary':
+            text = get_primary_selection()
+        else:
+            text = self.clipboard_buffers.get(buffer_name)
+        if text:
+            self.paste_to_active_window(text)
 
     def goto_tab(self, tab_num):
         tm = self.active_tab_manager
@@ -807,7 +846,8 @@ class Boss:
     def set_active_tab(self, tab):
         tm = self.active_tab_manager
         if tm is not None:
-            tm.set_active_tab(tab)
+            return tm.set_active_tab(tab)
+        return False
 
     def next_tab(self):
         tm = self.active_tab_manager
@@ -871,14 +911,30 @@ class Boss:
                 tm.new_tab(special_window=create_window(), cwd_from=cwd_from)
         elif dest == 'os_window':
             self._new_os_window(create_window(), cwd_from=cwd_from)
+        elif dest in ('clipboard', 'primary'):
+            env, stdin = self.process_stdin_source(stdin=source, window=window)
+            if stdin:
+                func = set_clipboard_string if dest == 'clipboard' else set_primary_selection
+                func(stdin)
         else:
             import subprocess
             env, stdin = self.process_stdin_source(stdin=source, window=window)
+            cwd = None
+            if cwd_from:
+                with suppress(Exception):
+                    cwd = cwd_of_process(cwd_from)
             if stdin:
-                p = subprocess.Popen(cmd, env=env, stdin=subprocess.PIPE)
-                p.communicate(stdin)
+                r, w = safe_pipe(False)
+                try:
+                    subprocess.Popen(cmd, env=env, stdin=r, cwd=cwd)
+                except Exception:
+                    os.close(w)
+                else:
+                    thread_write(w, stdin)
+                finally:
+                    os.close(r)
             else:
-                subprocess.Popen(cmd)
+                subprocess.Popen(cmd, env=env, cwd=cwd)
 
     def args_to_special_window(self, args, cwd_from=None):
         args = list(args)
@@ -926,13 +982,21 @@ class Boss:
         cwd_from = w.child.pid_for_cwd if w is not None else None
         self._create_tab(args, cwd_from=cwd_from)
 
+    def new_tab_with_wd(self, wd):
+        special_window = SpecialWindow(None, cwd=wd)
+        self._new_tab(special_window)
+
     def _new_window(self, args, cwd_from=None):
         tab = self.active_tab
         if tab is not None:
+            location = None
+            if args and args[0].startswith('!'):
+                location = args[0][1:].lower()
+                args = args[1:]
             if args:
-                return tab.new_special_window(self.args_to_special_window(args, cwd_from=cwd_from))
+                return tab.new_special_window(self.args_to_special_window(args, cwd_from=cwd_from), location=location)
             else:
-                return tab.new_window(cwd_from=cwd_from)
+                return tab.new_window(cwd_from=cwd_from, location=location)
 
     def new_window(self, *args):
         self._new_window(args)
@@ -954,12 +1018,31 @@ class Boss:
         if tm is not None:
             tm.move_tab(-1)
 
+    def disable_ligatures_in(self, where, strategy):
+        if isinstance(where, str):
+            windows = ()
+            if where == 'active':
+                if self.active_window is not None:
+                    windows = (self.active_window,)
+            elif where == 'all':
+                windows = self.all_windows
+            elif where == 'tab':
+                if self.active_tab is not None:
+                    windows = tuple(self.active_tab)
+        else:
+            windows = where
+        for window in windows:
+            window.screen.disable_ligatures = strategy
+            window.refresh()
+
     def patch_colors(self, spec, cursor_text_color, configured=False):
         if configured:
             for k, v in spec.items():
                 if hasattr(self.opts, k):
                     setattr(self.opts, k, color_from_int(v))
             if cursor_text_color is not False:
+                if isinstance(cursor_text_color, int):
+                    cursor_text_color = color_from_int(cursor_text_color)
                 self.opts.cursor_text_color = cursor_text_color
         for tm in self.all_tab_managers:
             tm.tab_bar.patch_colors(spec)
@@ -967,7 +1050,47 @@ class Boss:
 
     def safe_delete_temp_file(self, path):
         if is_path_in_temp_dir(path):
-            try:
+            with suppress(FileNotFoundError):
                 os.remove(path)
-            except FileNotFoundError:
-                pass
+
+    def set_update_check_process(self, process=None):
+        if self.update_check_process is not None:
+            with suppress(Exception):
+                if self.update_check_process.poll() is None:
+                    self.update_check_process.kill()
+        self.update_check_process = process
+
+    def on_monitored_pid_death(self, pid, exit_status):
+        update_check_process = getattr(self, 'update_check_process', None)
+        if update_check_process is not None and pid == update_check_process.pid:
+            self.update_check_process = None
+            from .update_check import process_current_release
+            try:
+                raw = update_check_process.stdout.read().decode('utf-8')
+            except Exception as e:
+                log_error('Failed to read data from update check process, with error: {}'.format(e))
+            else:
+                try:
+                    process_current_release(raw)
+                except Exception as e:
+                    log_error('Failed to process update check data {!r}, with error: {}'.format(raw, e))
+
+    def notification_activated(self, identifier):
+        if identifier == 'new-version':
+            from .update_check import notification_activated
+            notification_activated()
+
+    def dbus_notification_callback(self, activated, *args):
+        from .notify import dbus_notification_created, dbus_notification_activated
+        if activated:
+            dbus_notification_activated(*args)
+        else:
+            dbus_notification_created(*args)
+
+    def show_bad_config_lines(self, bad_lines):
+
+        def format_bad_line(bad_line):
+            return '{}:{} in line: {}\n'.format(bad_line.number, bad_line.exception, bad_line.line)
+
+        msg = '\n'.join(map(format_bad_line, bad_lines)).rstrip()
+        self.show_error(_('Errors in kitty.conf'), msg)

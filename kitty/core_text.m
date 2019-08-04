@@ -7,6 +7,7 @@
 
 #include "state.h"
 #include "fonts.h"
+#include "unicode-data.h"
 #include <structmember.h>
 #include <stdint.h>
 #include <math.h>
@@ -134,7 +135,7 @@ font_descriptor_from_python(PyObject *src) {
 
 #define SET(x, attr) \
     t = PyDict_GetItemString(src, #x); \
-    if (t) attrs[(id)attr] = [NSString stringWithUTF8String:PyUnicode_AsUTF8(t)];
+    if (t) attrs[(id)attr] = @(PyUnicode_AsUTF8(t));
 
     SET(family, kCTFontFamilyNameAttribute);
     SET(style, kCTFontStyleNameAttribute);
@@ -144,23 +145,75 @@ font_descriptor_from_python(PyObject *src) {
     return CTFontDescriptorCreateWithAttributes((CFDictionaryRef) attrs);
 }
 
+static CTFontCollectionRef all_fonts_collection_data = NULL;
+
+static CTFontCollectionRef
+all_fonts_collection() {
+    if (all_fonts_collection_data == NULL) all_fonts_collection_data = CTFontCollectionCreateFromAvailableFonts(NULL);
+    return all_fonts_collection_data;
+}
+
 static PyObject*
 coretext_all_fonts(PyObject UNUSED *_self) {
-    static CTFontCollectionRef collection = NULL;
-    if (collection == NULL) collection = CTFontCollectionCreateFromAvailableFonts(NULL);
-    NSArray *matches = (NSArray *) CTFontCollectionCreateMatchingFontDescriptors(collection);
-    PyObject *ans = PyTuple_New([matches count]), *temp;
+    CFArrayRef matches = CTFontCollectionCreateMatchingFontDescriptors(all_fonts_collection());
+    const CFIndex count = CFArrayGetCount(matches);
+    PyObject *ans = PyTuple_New(count), *temp;
     if (ans == NULL) return PyErr_NoMemory();
-    for (unsigned int i = 0; i < [matches count]; i++) {
-        temp = font_descriptor_to_python((CTFontDescriptorRef) matches[i]);
+    for (CFIndex i = 0; i < count; i++) {
+        temp = font_descriptor_to_python((CTFontDescriptorRef) CFArrayGetValueAtIndex(matches, i));
         if (temp == NULL) { Py_DECREF(ans); return NULL; }
         PyTuple_SET_ITEM(ans, i, temp); temp = NULL;
     }
     return ans;
 }
 
+static inline unsigned int
+glyph_id_for_codepoint_ctfont(CTFontRef ct_font, char_type ch) {
+    unichar chars[2] = {0};
+    CGGlyph glyphs[2] = {0};
+    int count = CFStringGetSurrogatePairForLongCharacter(ch, chars) ? 2 : 1;
+    CTFontGetGlyphsForCharacters(ct_font, chars, glyphs, count);
+    return glyphs[0];
+}
+
+static inline bool
+is_last_resort_font(CTFontRef new_font) {
+    CFStringRef name = CTFontCopyPostScriptName(new_font);
+    CFComparisonResult cr = CFStringCompare(name, CFSTR("LastResort"), 0);
+    CFRelease(name);
+    return cr == kCFCompareEqualTo;
+}
+
 static inline CTFontRef
-find_substitute_face(CFStringRef str, CTFontRef old_font) {
+manually_search_fallback_fonts(CTFontRef current_font, CPUCell *cell) {
+    CFArrayRef fonts = CTFontCollectionCreateMatchingFontDescriptors(all_fonts_collection());
+    CTFontRef ans = NULL;
+    const CFIndex count = CFArrayGetCount(fonts);
+    for (CFIndex i = 0; i < count; i++) {
+        CTFontDescriptorRef descriptor = (CTFontDescriptorRef)CFArrayGetValueAtIndex(fonts, i);
+        CTFontRef new_font = CTFontCreateWithFontDescriptor(descriptor, CTFontGetSize(current_font), NULL);
+        if (new_font) {
+            if (!is_last_resort_font(new_font)) {
+                char_type ch = cell->ch ? cell->ch : ' ';
+                bool found = true;
+                if (!glyph_id_for_codepoint_ctfont(new_font, ch)) found = false;
+                for (unsigned i = 0; i < arraysz(cell->cc_idx) && cell->cc_idx[i] && found; i++) {
+                    ch = codepoint_for_mark(cell->cc_idx[i]);
+                    if (!glyph_id_for_codepoint_ctfont(new_font, ch)) found = false;
+                }
+                if (found) {
+                    ans = new_font;
+                    break;
+                }
+            }
+            CFRelease(new_font);
+        }
+    }
+    return ans;
+}
+
+static inline CTFontRef
+find_substitute_face(CFStringRef str, CTFontRef old_font, CPUCell *cpu_cell) {
     // CTFontCreateForString returns the original font when there are combining
     // diacritics in the font and the base character is in the original font,
     // so we have to check each character individually
@@ -171,11 +224,13 @@ find_substitute_face(CFStringRef str, CTFontRef old_font) {
         else start++;
         if (new_font == NULL) { PyErr_SetString(PyExc_ValueError, "Failed to find fallback CTFont"); return NULL; }
         if (new_font == old_font) { CFRelease(new_font); continue; }
-        CFStringRef name = CTFontCopyPostScriptName(new_font);
-        CFComparisonResult cr = CFStringCompare(name, CFSTR("LastResort"), 0);
-        CFRelease(name);
-        if (cr == kCFCompareEqualTo) {
+        if (is_last_resort_font(new_font)) {
             CFRelease(new_font);
+            if (is_private_use(cpu_cell->ch)) {
+                // CoreTexts fallback font mechanism does not work for private use characters
+                new_font = manually_search_fallback_fonts(old_font, cpu_cell);
+                if (new_font) return new_font;
+            }
             PyErr_SetString(PyExc_ValueError, "Failed to find fallback CTFont other than the LastResort font");
             return NULL;
         }
@@ -191,11 +246,11 @@ create_fallback_face(PyObject *base_face, CPUCell* cell, bool UNUSED bold, bool 
     CTFontRef new_font;
     if (emoji_presentation) new_font = CTFontCreateWithName((CFStringRef)@"AppleColorEmoji", self->scaled_point_sz, NULL);
     else {
-        char text[256] = {0};
-        cell_as_utf8(cell, true, text, ' ');
+        char text[64] = {0};
+        cell_as_utf8_for_fallback(cell, text);
         CFStringRef str = CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8);
         if (str == NULL) return PyErr_NoMemory();
-        new_font = find_substitute_face(str, self->ct_font);
+        new_font = find_substitute_face(str, self->ct_font, cell);
         CFRelease(str);
     }
     if (new_font == NULL) return NULL;
@@ -205,11 +260,7 @@ create_fallback_face(PyObject *base_face, CPUCell* cell, bool UNUSED bold, bool 
 unsigned int
 glyph_id_for_codepoint(PyObject *s, char_type ch) {
     CTFace *self = (CTFace*)s;
-    unichar chars[2] = {0};
-    CGGlyph glyphs[2] = {0};
-    int count = CFStringGetSurrogatePairForLongCharacter(ch, chars) ? 2 : 1;
-    CTFontGetGlyphsForCharacters(self->ct_font, chars, glyphs, count);
-    return glyphs[0];
+    return glyph_id_for_codepoint_ctfont(self->ct_font, ch);
 }
 
 bool
@@ -274,13 +325,15 @@ cell_metrics(PyObject *s, unsigned int* cell_width, unsigned int* cell_height, u
             if (w > width) width = w;
         }
     }
-    *cell_width = MAX(1, width);
+    *cell_width = MAX(1u, width);
     *underline_position = floor(self->ascent - self->underline_position + 0.5);
     *underline_thickness = (unsigned int)ceil(MAX(0.1, self->underline_thickness));
     *baseline = (unsigned int)self->ascent;
     // float line_height = MAX(1, floor(self->ascent + self->descent + MAX(0, self->leading) + 0.5));
     // Let CoreText's layout engine calculate the line height. Slower, but hopefully more accurate.
-    CFStringRef ts = CFSTR("test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test test");
+#define W "AQWMH_gyl "
+    CFStringRef ts = CFSTR(W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W W);
+#undef W
     CFMutableAttributedStringRef test_string = CFAttributedStringCreateMutable(kCFAllocatorDefault, CFStringGetLength(ts));
     CFAttributedStringReplaceString(test_string, CFRangeMake(0, 0), ts);
     CFAttributedStringSetAttribute(test_string, CFRangeMake(0, CFStringGetLength(ts)), kCTFontAttributeName, self->ct_font);
@@ -294,7 +347,7 @@ cell_metrics(PyObject *s, unsigned int* cell_width, unsigned int* cell_height, u
     CTFrameGetLineOrigins(test_frame, CFRangeMake(1, 1), &origin2);
     CGFloat line_height = origin1.y - origin2.y;
     CFRelease(test_frame); CFRelease(path); CFRelease(framesetter);
-    *cell_height = MAX(4, (unsigned int)ceilf(line_height));
+    *cell_height = MAX(4u, (unsigned int)ceilf(line_height));
 #undef count
 }
 
@@ -334,6 +387,7 @@ static CGPoint positions[128];
 static void
 finalize(void) {
     free(render_buf);
+    if (all_fonts_collection_data) CFRelease(all_fonts_collection_data);
 }
 
 
@@ -374,10 +428,11 @@ ensure_render_space(size_t width, size_t height) {
 
 static inline void
 render_glyphs(CTFontRef font, unsigned int width, unsigned int height, unsigned int baseline, unsigned int num_glyphs) {
-    memset(render_buf, 0, render_buf_sz);
+    memset(render_buf, 0, width * height);
     CGColorSpaceRef gray_color_space = CGColorSpaceCreateDeviceGray();
+    if (gray_color_space == NULL) fatal("Out of memory");
     CGContextRef render_ctx = CGBitmapContextCreate(render_buf, width, height, 8, width, gray_color_space, (kCGBitmapAlphaInfoMask & kCGImageAlphaNone));
-    if (render_ctx == NULL || gray_color_space == NULL) fatal("Out of memory");
+    if (render_ctx == NULL) fatal("Out of memory");
     CGContextSetShouldAntialias(render_ctx, true);
     CGContextSetShouldSmoothFonts(render_ctx, true);
     CGContextSetGrayFillColor(render_ctx, 1, 1); // white glyphs
@@ -390,6 +445,30 @@ render_glyphs(CTFontRef font, unsigned int width, unsigned int height, unsigned 
     CGContextRelease(render_ctx);
     CGColorSpaceRelease(gray_color_space);
 }
+
+StringCanvas
+render_simple_text_impl(PyObject *s, const char *text, unsigned int baseline) {
+    CTFace *self = (CTFace*)s;
+    CTFontRef font = self->ct_font;
+    size_t num_chars = strnlen(text, 32);
+    unichar chars[num_chars];
+    CGSize advances[num_chars];
+    for (size_t i = 0; i < num_chars; i++) chars[i] = text[i];
+    CTFontGetGlyphsForCharacters(font, chars, glyphs, num_chars);
+    CTFontGetAdvancesForGlyphs(font, kCTFontOrientationDefault, glyphs, advances, num_chars);
+    CGRect bounding_box = CTFontGetBoundingRectsForGlyphs(font, kCTFontOrientationDefault, glyphs, boxes, num_chars);
+    StringCanvas ans = { .width = 0, .height = 2 * bounding_box.size.height };
+    for (size_t i = 0, y = 0; i < num_chars; i++) {
+        positions[i] = CGPointMake(ans.width, y);
+        ans.width += advances[i].width; y += advances[i].height;
+    }
+    ensure_render_space(ans.width, ans.height);
+    render_glyphs(font, ans.width, ans.height, baseline, num_chars);
+    ans.canvas = malloc(ans.width * ans.height);
+    if (ans.canvas) memcpy(ans.canvas, render_buf, ans.width * ans.height);
+    return ans;
+}
+
 
 static inline bool
 do_render(CTFontRef ct_font, bool bold, bool italic, hb_glyph_info_t *info, hb_glyph_position_t *hb_positions, unsigned int num_glyphs, pixel *canvas, unsigned int cell_width, unsigned int cell_height, unsigned int num_cells, unsigned int baseline, bool *was_colored, bool allow_resize, FONTS_DATA_HANDLE fg, bool center_glyph) {

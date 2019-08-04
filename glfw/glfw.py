@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -23,10 +23,6 @@ def wayland_protocol_file_name(base, ext='c'):
 
 def init_env(env, pkg_config, at_least_version, test_compile, module='x11'):
     ans = env.copy()
-    ans.cflags = [
-        x for x in ans.cflags
-        if x not in '-Wpedantic -Wextra -pedantic-errors'.split()
-    ]
     if not is_macos:
         ans.cflags.append('-pthread')
         ans.ldpaths.append('-pthread')
@@ -88,7 +84,8 @@ def init_env(env, pkg_config, at_least_version, test_compile, module='x11'):
     return ans
 
 
-def build_wayland_protocols(env, run_tool, emphasis, newer, dest_dir):
+def build_wayland_protocols(env, Command, parallel_run, emphasis, newer, dest_dir):
+    items = []
     for protocol in env.wayland_protocols:
         src = os.path.join(env.wayland_packagedir, protocol)
         if not os.path.exists(src):
@@ -98,42 +95,12 @@ def build_wayland_protocols(env, run_tool, emphasis, newer, dest_dir):
             dest = os.path.join(dest_dir, dest)
             if newer(dest, src):
                 q = 'client-header' if ext == 'h' else env.wayland_scanner_code
-                run_tool([env.wayland_scanner, q, src, dest],
-                         desc='Generating {} ...'.format(emphasis(os.path.basename(dest))))
-
-
-def collect_source_information():
-    raw = open('src/CMakeLists.txt').read()
-    mraw = open('CMakeLists.txt').read()
-
-    def extract_sources(group, start_pos=0):
-        for which in 'HEADERS SOURCES'.split():
-            yield which.lower(), list(filter(
-                lambda x: x[0] not in '"$',
-                re.search(
-                    r'{0}_{1}\s+([^)]+?)[)]'.format(group, which),
-                    raw[start_pos:]
-                ).group(1).strip().split()
-            ))
-
-    wayland_protocols = re.search(r'WaylandProtocols\s+(\S+)\s+', mraw).group(1)
-    wayland_protocols = list(map(int, wayland_protocols.split('.')))
-    ans = {
-        'common': dict(extract_sources('common')),
-        'wayland_protocols': wayland_protocols,
-    }
-    for group in 'cocoa win32 x11 wayland osmesa'.split():
-        m = re.search('_GLFW_' + group.upper(), raw)
-        ans[group] = dict(extract_sources('glfw', m.start()))
-        if group in ('x11', 'wayland'):
-            for joystick in ('linux', 'null'):
-                ans[group]['headers'].append('{}_joystick.h'.format(joystick))
-                ans[group]['sources'].append('{}_joystick.c'.format(joystick))
-        if group == 'wayland':
-            ans[group]['protocols'] = p = []
-            for m in re.finditer(r'WAYLAND_PROTOCOLS_PKGDATADIR\}/(.+?)"?$', raw, flags=re.M):
-                p.append(m.group(1))
-    return ans
+                items.append(Command(
+                    'Generating {} ...'.format(emphasis(os.path.basename(dest))),
+                    [env.wayland_scanner, q, src, dest],
+                    lambda: True, None, None, None))
+    if items:
+        parallel_run(items)
 
 
 class Arg:
@@ -168,6 +135,8 @@ class Function:
             if a == 'void':
                 continue
             self.args.append(Arg(a))
+        if not self.args:
+            self.args = [Arg('void v')]
 
     def declaration(self):
         return 'typedef {restype} (*{name}_func)({args});\n{name}_func {name}_impl;\n#define {name} {name}_impl'.format(
@@ -206,12 +175,16 @@ def generate_wrappers(glfw_header):
     GLFWcocoatogglefullscreenfun glfwSetCocoaToggleFullscreenIntercept(GLFWwindow *window, GLFWcocoatogglefullscreenfun callback)
     GLFWapplicationshouldhandlereopenfun glfwSetApplicationShouldHandleReopen(GLFWapplicationshouldhandlereopenfun callback)
     void glfwGetCocoaKeyEquivalent(int glfw_key, int glfw_mods, void* cocoa_key, void* cocoa_mods)
+    void glfwCocoaRequestRenderFrame(GLFWwindow *w, GLFWcocoarenderframefun callback)
     void* glfwGetX11Display(void)
     int32_t glfwGetX11Window(GLFWwindow* window)
     void glfwSetPrimarySelectionString(GLFWwindow* window, const char* string)
     const char* glfwGetPrimarySelectionString(GLFWwindow* window, void)
     int glfwGetXKBScancode(const char* key_name, int case_sensitive)
     void glfwRequestWaylandFrameEvent(GLFWwindow *handle, unsigned long long id, GLFWwaylandframecallbackfunc callback)
+    unsigned long long glfwDBusUserNotify(const char *app_name, const char* icon, const char *summary, const char *body, \
+const char *action_text, int32_t timeout, GLFWDBusnotificationcreatedfun callback, void *data)
+    void glfwDBusSetUserNotificationHandler(GLFWDBusnotificationactivatedfun handler)
 '''.splitlines():
         if line:
             functions.append(Function(line.strip(), check_fail=False))
@@ -227,10 +200,13 @@ def generate_wrappers(glfw_header):
 
 {}
 
-typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int);
+typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int,unsigned long);
 typedef int (* GLFWapplicationshouldhandlereopenfun)(int);
 typedef int (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
+typedef void (* GLFWcocoarenderframefun)(GLFWwindow*);
 typedef void (*GLFWwaylandframecallbackfunc)(unsigned long long id);
+typedef void (*GLFWDBusnotificationcreatedfun)(unsigned long long, uint32_t, void*);
+typedef void (*GLFWDBusnotificationactivatedfun)(uint32_t, const char*);
 {}
 
 const char* load_glfw(const char* path);
@@ -260,7 +236,7 @@ load_glfw(const char* path) {
 }
 
 void
-unload_glfw() {
+unload_glfw(void) {
     if (handle) { dlclose(handle); handle = NULL; }
 }
 '''.replace('LOAD', '\n\n    '.join(f.load() for f in functions))

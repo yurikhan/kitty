@@ -1,9 +1,10 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
 import re
 from collections import namedtuple
+from contextlib import suppress
 
 Color = namedtuple('Color', 'red green blue')
 
@@ -62,13 +63,11 @@ def to_color(raw, validate=False):
     if ans is not None:
         return ans
     val = None
-    try:
+    with suppress(Exception):
         if raw.startswith('#'):
             val = parse_sharp(raw[1:])
         elif raw[:4].lower() == 'rgb:':
             val = parse_rgb(raw[4:])
-    except Exception:
-        pass
     if val is None and validate:
         raise ValueError('Invalid color name: {}'.format(raw))
     return val

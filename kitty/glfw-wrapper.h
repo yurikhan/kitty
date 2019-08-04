@@ -28,24 +28,6 @@
 #define GLFW_VERSION_REVISION       0
 /*! @} */
 
-/*! @name Boolean values
- *  @{ */
-/*! @brief One.
- *
- *  One.  Seriously.  You don't _need_ to use this symbol in your code.  It's
- *  semantic sugar for the number 1.  You can also use `1` or `true` or `_True`
- *  or `GL_TRUE` or whatever you want.
- */
-#define GLFW_TRUE                   1
-/*! @brief Zero.
- *
- *  Zero.  Seriously.  You don't _need_ to use this symbol in your code.  It's
- *  semantic sugar for the number 0.  You can also use `0` or `false` or
- *  `_False` or `GL_FALSE` or whatever you want.
- */
-#define GLFW_FALSE                  0
-/*! @} */
-
 /*! @name Key and button actions
  *  @{ */
 /*! @brief The key or mouse button was released.
@@ -166,7 +148,8 @@
 #define GLFW_KEY_GRAVE_ACCENT       96  /* ` */
 #define GLFW_KEY_WORLD_1            161 /* non-US #1 */
 #define GLFW_KEY_WORLD_2            162 /* non-US #2 */
-#define GLFW_KEY_PLUS               163 /* non-US #2 */
+#define GLFW_KEY_PLUS               163
+#define GLFW_KEY_UNDERSCORE         164
 
 /* Function keys */
 #define GLFW_KEY_ESCAPE             256
@@ -585,7 +568,11 @@
  *  [window attribute](@ref GLFW_FOCUS_ON_SHOW_attrib).
  */
 #define GLFW_FOCUS_ON_SHOW          0x0002000C
-
+/*! @brief Occlusion window attribute
+ *
+ *  Occlusion [window attribute](@ref GLFW_OCCLUDED_attrib).
+ */
+#define GLFW_OCCLUDED               0x0002000D
 /*! @brief Framebuffer bit depth hint.
  *
  *  Framebuffer bit depth [hint](@ref GLFW_RED_BITS).
@@ -785,36 +772,19 @@
  *  @ingroup input
  *  @{ */
 
-/*! @brief The regular arrow cursor shape.
- *
- *  The regular arrow cursor.
- */
-#define GLFW_ARROW_CURSOR           0x00036001
-/*! @brief The text input I-beam cursor shape.
- *
- *  The text input I-beam cursor shape.
- */
-#define GLFW_IBEAM_CURSOR           0x00036002
-/*! @brief The crosshair shape.
- *
- *  The crosshair shape.
- */
-#define GLFW_CROSSHAIR_CURSOR       0x00036003
-/*! @brief The hand shape.
- *
- *  The hand shape.
- */
-#define GLFW_HAND_CURSOR            0x00036004
-/*! @brief The horizontal resize arrow shape.
- *
- *  The horizontal resize arrow shape.
- */
-#define GLFW_HRESIZE_CURSOR         0x00036005
-/*! @brief The vertical resize arrow shape.
- *
- *  The vertical resize arrow shape.
- */
-#define GLFW_VRESIZE_CURSOR         0x00036006
+typedef enum {
+    GLFW_ARROW_CURSOR,
+    GLFW_IBEAM_CURSOR,
+    GLFW_CROSSHAIR_CURSOR,
+    GLFW_HAND_CURSOR,
+    GLFW_HRESIZE_CURSOR,
+    GLFW_VRESIZE_CURSOR,
+    GLFW_NW_RESIZE_CURSOR,
+    GLFW_NE_RESIZE_CURSOR,
+    GLFW_SW_RESIZE_CURSOR,
+    GLFW_SE_RESIZE_CURSOR,
+    GLFW_INVALID_CURSOR
+} GLFWCursorShape;
 /*! @} */
 
 #define GLFW_CONNECTED              0x00040001
@@ -923,9 +893,9 @@ typedef void (* GLFWerrorfun)(int,const char*);
  *
  *  @param[in] window The window that was moved.
  *  @param[in] xpos The new x-coordinate, in screen coordinates, of the
- *  upper-left corner of the client area of the window.
+ *  upper-left corner of the content area of the window.
  *  @param[in] ypos The new y-coordinate, in screen coordinates, of the
- *  upper-left corner of the client area of the window.
+ *  upper-left corner of the content area of the window.
  *
  *  @sa @ref window_pos
  *  @sa @ref glfwSetWindowPosCallback
@@ -991,8 +961,8 @@ typedef void (* GLFWwindowrefreshfun)(GLFWwindow*);
  *  This is the function signature for window focus callback functions.
  *
  *  @param[in] window The window that gained or lost input focus.
- *  @param[in] focused `GLFW_TRUE` if the window was given input focus, or
- *  `GLFW_FALSE` if it lost it.
+ *  @param[in] focused `true` if the window was given input focus, or
+ *  `false` if it lost it.
  *
  *  @sa @ref window_focus
  *  @sa @ref glfwSetWindowFocusCallback
@@ -1003,14 +973,32 @@ typedef void (* GLFWwindowrefreshfun)(GLFWwindow*);
  */
 typedef void (* GLFWwindowfocusfun)(GLFWwindow*,int);
 
+/*! @brief The function signature for window occlusion callbacks.
+ *
+ *  This is the function signature for window occlusion callback functions.
+ *
+ *  @param[in] window The window whose occlusion state changed.
+ *  @param[in] occluded `true` if the window was occluded, or `false`
+ *  if the window is no longer occluded.
+ *
+ *  @sa @ref window_occlusion
+ *  @sa @ref glfwSetWindowOcclusionCallback
+ *
+ *  @since Added in version 3.3.
+ *
+ *  @ingroup window
+ */
+typedef void (* GLFWwindowocclusionfun)(GLFWwindow*, bool);
+
+
 /*! @brief The function signature for window iconify/restore callbacks.
  *
  *  This is the function signature for window iconify/restore callback
  *  functions.
  *
  *  @param[in] window The window that was iconified or restored.
- *  @param[in] iconified `GLFW_TRUE` if the window was iconified, or
- *  `GLFW_FALSE` if it was restored.
+ *  @param[in] iconified `true` if the window was iconified, or
+ *  `false` if it was restored.
  *
  *  @sa @ref window_iconify
  *  @sa @ref glfwSetWindowIconifyCallback
@@ -1027,8 +1015,8 @@ typedef void (* GLFWwindowiconifyfun)(GLFWwindow*,int);
  *  functions.
  *
  *  @param[in] window The window that was maximized or restored.
- *  @param[in] iconified `GLFW_TRUE` if the window was maximized, or
- *  `GLFW_FALSE` if it was restored.
+ *  @param[in] iconified `true` if the window was maximized, or
+ *  `false` if it was restored.
  *
  *  @sa @ref window_maximize
  *  @sa glfwSetWindowMaximizeCallback
@@ -1102,9 +1090,9 @@ typedef void (* GLFWmousebuttonfun)(GLFWwindow*,int,int,int);
  *
  *  @param[in] window The window that received the event.
  *  @param[in] xpos The new cursor x-coordinate, relative to the left edge of
- *  the client area.
+ *  the content area.
  *  @param[in] ypos The new cursor y-coordinate, relative to the top edge of the
- *  client area.
+ *  content area.
  *
  *  @sa @ref cursor_pos
  *  @sa @ref glfwSetCursorPosCallback
@@ -1120,8 +1108,8 @@ typedef void (* GLFWcursorposfun)(GLFWwindow*,double,double);
  *  This is the function signature for cursor enter/leave callback functions.
  *
  *  @param[in] window The window that received the event.
- *  @param[in] entered `GLFW_TRUE` if the cursor entered the window's client
- *  area, or `GLFW_FALSE` if it left it.
+ *  @param[in] entered `true` if the cursor entered the window's client
+ *  area, or `false` if it left it.
  *
  *  @sa @ref cursor_enter
  *  @sa @ref glfwSetCursorEnterCallback
@@ -1139,7 +1127,13 @@ typedef void (* GLFWcursorenterfun)(GLFWwindow*,int);
  *  @param[in] window The window that received the event.
  *  @param[in] xoffset The scroll offset along the x-axis.
  *  @param[in] yoffset The scroll offset along the y-axis.
- *  @param[in] flags A bit-mask providing extra data about the event. flags & 1 will be true if and only if the offset values are "high-precision". Typically pixel values. Otherwise the offset values are number of lines.
+ *  @param[in] flags A bit-mask providing extra data about the event.
+ *  flags & 1 will be true if and only if the offset values are "high-precision".
+ *  Typically pixel values. Otherwise the offset values are number of lines.
+ *  (flags >> 1) & 7 will have value 1 for the start of momentum scrolling,
+ *  value 2 for stationary momentum scrolling, value 3 for momentum scrolling
+ *  in progress, value 4 for momentum scrolling ended, value 5 for momentum
+ *  scrolling cancelled and value 6 if scrolling may begin soon.
  *
  *  @sa @ref scrolling
  *  @sa @ref glfwSetScrollCallback
@@ -1203,6 +1197,8 @@ typedef void (* GLFWkeyboardfun)(GLFWwindow*, int, int, int, int, const char*, i
  */
 typedef void (* GLFWdropfun)(GLFWwindow*,int,const char**);
 
+typedef void (* GLFWliveresizefun)(GLFWwindow*, bool);
+
 /*! @brief The function signature for monitor configuration callbacks.
  *
  *  This is the function signature for monitor configuration callback functions.
@@ -1237,6 +1233,9 @@ typedef void (* GLFWmonitorfun)(GLFWmonitor*,int);
  *  @ingroup input
  */
 typedef void (* GLFWjoystickfun)(int,int);
+
+typedef void (* GLFWuserdatafun)(unsigned long long, void*);
+typedef void (* GLFWtickcallback)(void*);
 
 /*! @brief Video mode type.
  *
@@ -1362,9 +1361,9 @@ typedef struct GLFWgamepadstate
  *  succeeds, you should call @ref glfwTerminate before the application exits.
  *
  *  Additional calls to this function after successful initialization but before
- *  termination will return `GLFW_TRUE` immediately.
+ *  termination will return `true` immediately.
  *
- *  @return `GLFW_TRUE` if successful, or `GLFW_FALSE` if an
+ *  @return `true` if successful, or `false` if an
  *  [error](@ref error_handling) occurred.
  *
  *  @errors Possible errors include @ref GLFW_PLATFORM_ERROR.
@@ -1385,15 +1384,38 @@ typedef struct GLFWgamepadstate
  */
 
 
-typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int);
+typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int,unsigned long);
 typedef int (* GLFWapplicationshouldhandlereopenfun)(int);
 typedef int (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
+typedef void (* GLFWcocoarenderframefun)(GLFWwindow*);
 typedef void (*GLFWwaylandframecallbackfunc)(unsigned long long id);
-typedef int (*glfwInit_func)();
+typedef void (*GLFWDBusnotificationcreatedfun)(unsigned long long, uint32_t, void*);
+typedef void (*GLFWDBusnotificationactivatedfun)(uint32_t, const char*);
+typedef int (*glfwInit_func)(void);
 glfwInit_func glfwInit_impl;
 #define glfwInit glfwInit_impl
 
-typedef void (*glfwTerminate_func)();
+typedef void (*glfwRunMainLoop_func)(GLFWtickcallback, void*);
+glfwRunMainLoop_func glfwRunMainLoop_impl;
+#define glfwRunMainLoop glfwRunMainLoop_impl
+
+typedef void (*glfwStopMainLoop_func)(void);
+glfwStopMainLoop_func glfwStopMainLoop_impl;
+#define glfwStopMainLoop glfwStopMainLoop_impl
+
+typedef unsigned long long (*glfwAddTimer_func)(double, bool, GLFWuserdatafun, void *, GLFWuserdatafun);
+glfwAddTimer_func glfwAddTimer_impl;
+#define glfwAddTimer glfwAddTimer_impl
+
+typedef void (*glfwUpdateTimer_func)(unsigned long long, double, bool);
+glfwUpdateTimer_func glfwUpdateTimer_impl;
+#define glfwUpdateTimer glfwUpdateTimer_impl
+
+typedef void (*glfwRemoveTimer_func)(unsigned long);
+glfwRemoveTimer_func glfwRemoveTimer_impl;
+#define glfwRemoveTimer glfwRemoveTimer_impl
+
+typedef void (*glfwTerminate_func)(void);
 glfwTerminate_func glfwTerminate_impl;
 #define glfwTerminate glfwTerminate_impl
 
@@ -1405,7 +1427,7 @@ typedef void (*glfwGetVersion_func)(int*, int*, int*);
 glfwGetVersion_func glfwGetVersion_impl;
 #define glfwGetVersion glfwGetVersion_impl
 
-typedef const char* (*glfwGetVersionString_func)();
+typedef const char* (*glfwGetVersionString_func)(void);
 glfwGetVersionString_func glfwGetVersionString_impl;
 #define glfwGetVersionString glfwGetVersionString_impl
 
@@ -1421,13 +1443,17 @@ typedef GLFWmonitor** (*glfwGetMonitors_func)(int*);
 glfwGetMonitors_func glfwGetMonitors_impl;
 #define glfwGetMonitors glfwGetMonitors_impl
 
-typedef GLFWmonitor* (*glfwGetPrimaryMonitor_func)();
+typedef GLFWmonitor* (*glfwGetPrimaryMonitor_func)(void);
 glfwGetPrimaryMonitor_func glfwGetPrimaryMonitor_impl;
 #define glfwGetPrimaryMonitor glfwGetPrimaryMonitor_impl
 
 typedef void (*glfwGetMonitorPos_func)(GLFWmonitor*, int*, int*);
 glfwGetMonitorPos_func glfwGetMonitorPos_impl;
 #define glfwGetMonitorPos glfwGetMonitorPos_impl
+
+typedef void (*glfwGetMonitorWorkarea_func)(GLFWmonitor*, int*, int*, int*, int*);
+glfwGetMonitorWorkarea_func glfwGetMonitorWorkarea_impl;
+#define glfwGetMonitorWorkarea glfwGetMonitorWorkarea_impl
 
 typedef void (*glfwGetMonitorPhysicalSize_func)(GLFWmonitor*, int*, int*);
 glfwGetMonitorPhysicalSize_func glfwGetMonitorPhysicalSize_impl;
@@ -1473,7 +1499,7 @@ typedef void (*glfwSetGammaRamp_func)(GLFWmonitor*, const GLFWgammaramp*);
 glfwSetGammaRamp_func glfwSetGammaRamp_impl;
 #define glfwSetGammaRamp glfwSetGammaRamp_impl
 
-typedef void (*glfwDefaultWindowHints_func)();
+typedef void (*glfwDefaultWindowHints_func)(void);
 glfwDefaultWindowHints_func glfwDefaultWindowHints_impl;
 #define glfwDefaultWindowHints glfwDefaultWindowHints_impl
 
@@ -1488,6 +1514,10 @@ glfwWindowHintString_func glfwWindowHintString_impl;
 typedef GLFWwindow* (*glfwCreateWindow_func)(int, int, const char*, GLFWmonitor*, GLFWwindow*);
 glfwCreateWindow_func glfwCreateWindow_impl;
 #define glfwCreateWindow glfwCreateWindow_impl
+
+typedef bool (*glfwToggleFullscreen_func)(GLFWwindow*, unsigned int);
+glfwToggleFullscreen_func glfwToggleFullscreen_impl;
+#define glfwToggleFullscreen glfwToggleFullscreen_impl
 
 typedef void (*glfwDestroyWindow_func)(GLFWwindow*);
 glfwDestroyWindow_func glfwDestroyWindow_impl;
@@ -1633,6 +1663,10 @@ typedef GLFWwindowfocusfun (*glfwSetWindowFocusCallback_func)(GLFWwindow*, GLFWw
 glfwSetWindowFocusCallback_func glfwSetWindowFocusCallback_impl;
 #define glfwSetWindowFocusCallback glfwSetWindowFocusCallback_impl
 
+typedef GLFWwindowocclusionfun (*glfwSetWindowOcclusionCallback_func)(GLFWwindow*, GLFWwindowocclusionfun);
+glfwSetWindowOcclusionCallback_func glfwSetWindowOcclusionCallback_impl;
+#define glfwSetWindowOcclusionCallback glfwSetWindowOcclusionCallback_impl
+
 typedef GLFWwindowiconifyfun (*glfwSetWindowIconifyCallback_func)(GLFWwindow*, GLFWwindowiconifyfun);
 glfwSetWindowIconifyCallback_func glfwSetWindowIconifyCallback_impl;
 #define glfwSetWindowIconifyCallback glfwSetWindowIconifyCallback_impl
@@ -1649,19 +1683,7 @@ typedef GLFWwindowcontentscalefun (*glfwSetWindowContentScaleCallback_func)(GLFW
 glfwSetWindowContentScaleCallback_func glfwSetWindowContentScaleCallback_impl;
 #define glfwSetWindowContentScaleCallback glfwSetWindowContentScaleCallback_impl
 
-typedef void (*glfwPollEvents_func)();
-glfwPollEvents_func glfwPollEvents_impl;
-#define glfwPollEvents glfwPollEvents_impl
-
-typedef void (*glfwWaitEvents_func)();
-glfwWaitEvents_func glfwWaitEvents_impl;
-#define glfwWaitEvents glfwWaitEvents_impl
-
-typedef void (*glfwWaitEventsTimeout_func)(double);
-glfwWaitEventsTimeout_func glfwWaitEventsTimeout_impl;
-#define glfwWaitEventsTimeout glfwWaitEventsTimeout_impl
-
-typedef void (*glfwPostEmptyEvent_func)();
+typedef void (*glfwPostEmptyEvent_func)(void);
 glfwPostEmptyEvent_func glfwPostEmptyEvent_impl;
 #define glfwPostEmptyEvent glfwPostEmptyEvent_impl
 
@@ -1701,7 +1723,7 @@ typedef GLFWcursor* (*glfwCreateCursor_func)(const GLFWimage*, int, int, int);
 glfwCreateCursor_func glfwCreateCursor_impl;
 #define glfwCreateCursor glfwCreateCursor_impl
 
-typedef GLFWcursor* (*glfwCreateStandardCursor_func)(int);
+typedef GLFWcursor* (*glfwCreateStandardCursor_func)(GLFWCursorShape);
 glfwCreateStandardCursor_func glfwCreateStandardCursor_impl;
 #define glfwCreateStandardCursor glfwCreateStandardCursor_impl
 
@@ -1740,6 +1762,10 @@ glfwSetScrollCallback_func glfwSetScrollCallback_impl;
 typedef GLFWdropfun (*glfwSetDropCallback_func)(GLFWwindow*, GLFWdropfun);
 glfwSetDropCallback_func glfwSetDropCallback_impl;
 #define glfwSetDropCallback glfwSetDropCallback_impl
+
+typedef GLFWliveresizefun (*glfwSetLiveResizeCallback_func)(GLFWwindow*, GLFWliveresizefun);
+glfwSetLiveResizeCallback_func glfwSetLiveResizeCallback_impl;
+#define glfwSetLiveResizeCallback glfwSetLiveResizeCallback_impl
 
 typedef int (*glfwJoystickPresent_func)(int);
 glfwJoystickPresent_func glfwJoystickPresent_impl;
@@ -1801,7 +1827,7 @@ typedef const char* (*glfwGetClipboardString_func)(GLFWwindow*);
 glfwGetClipboardString_func glfwGetClipboardString_impl;
 #define glfwGetClipboardString glfwGetClipboardString_impl
 
-typedef double (*glfwGetTime_func)();
+typedef double (*glfwGetTime_func)(void);
 glfwGetTime_func glfwGetTime_impl;
 #define glfwGetTime glfwGetTime_impl
 
@@ -1809,11 +1835,11 @@ typedef void (*glfwSetTime_func)(double);
 glfwSetTime_func glfwSetTime_impl;
 #define glfwSetTime glfwSetTime_impl
 
-typedef uint64_t (*glfwGetTimerValue_func)();
+typedef uint64_t (*glfwGetTimerValue_func)(void);
 glfwGetTimerValue_func glfwGetTimerValue_impl;
 #define glfwGetTimerValue glfwGetTimerValue_impl
 
-typedef uint64_t (*glfwGetTimerFrequency_func)();
+typedef uint64_t (*glfwGetTimerFrequency_func)(void);
 glfwGetTimerFrequency_func glfwGetTimerFrequency_impl;
 #define glfwGetTimerFrequency glfwGetTimerFrequency_impl
 
@@ -1821,7 +1847,7 @@ typedef void (*glfwMakeContextCurrent_func)(GLFWwindow*);
 glfwMakeContextCurrent_func glfwMakeContextCurrent_impl;
 #define glfwMakeContextCurrent glfwMakeContextCurrent_impl
 
-typedef GLFWwindow* (*glfwGetCurrentContext_func)();
+typedef GLFWwindow* (*glfwGetCurrentContext_func)(void);
 glfwGetCurrentContext_func glfwGetCurrentContext_impl;
 #define glfwGetCurrentContext glfwGetCurrentContext_impl
 
@@ -1841,7 +1867,7 @@ typedef GLFWglproc (*glfwGetProcAddress_func)(const char*);
 glfwGetProcAddress_func glfwGetProcAddress_impl;
 #define glfwGetProcAddress glfwGetProcAddress_impl
 
-typedef int (*glfwVulkanSupported_func)();
+typedef int (*glfwVulkanSupported_func)(void);
 glfwVulkanSupported_func glfwVulkanSupported_impl;
 #define glfwVulkanSupported glfwVulkanSupported_impl
 
@@ -1877,7 +1903,11 @@ typedef void (*glfwGetCocoaKeyEquivalent_func)(int, int, void*, void*);
 glfwGetCocoaKeyEquivalent_func glfwGetCocoaKeyEquivalent_impl;
 #define glfwGetCocoaKeyEquivalent glfwGetCocoaKeyEquivalent_impl
 
-typedef void* (*glfwGetX11Display_func)();
+typedef void (*glfwCocoaRequestRenderFrame_func)(GLFWwindow*, GLFWcocoarenderframefun);
+glfwCocoaRequestRenderFrame_func glfwCocoaRequestRenderFrame_impl;
+#define glfwCocoaRequestRenderFrame glfwCocoaRequestRenderFrame_impl
+
+typedef void* (*glfwGetX11Display_func)(void);
 glfwGetX11Display_func glfwGetX11Display_impl;
 #define glfwGetX11Display glfwGetX11Display_impl
 
@@ -1900,5 +1930,13 @@ glfwGetXKBScancode_func glfwGetXKBScancode_impl;
 typedef void (*glfwRequestWaylandFrameEvent_func)(GLFWwindow*, unsigned long long, GLFWwaylandframecallbackfunc);
 glfwRequestWaylandFrameEvent_func glfwRequestWaylandFrameEvent_impl;
 #define glfwRequestWaylandFrameEvent glfwRequestWaylandFrameEvent_impl
+
+typedef unsigned long long (*glfwDBusUserNotify_func)(const char*, const char*, const char*, const char*, const char*, int32_t, GLFWDBusnotificationcreatedfun, void*);
+glfwDBusUserNotify_func glfwDBusUserNotify_impl;
+#define glfwDBusUserNotify glfwDBusUserNotify_impl
+
+typedef void (*glfwDBusSetUserNotificationHandler_func)(GLFWDBusnotificationactivatedfun);
+glfwDBusSetUserNotificationHandler_func glfwDBusSetUserNotificationHandler_impl;
+#define glfwDBusSetUserNotificationHandler glfwDBusSetUserNotificationHandler_impl
 
 const char* load_glfw(const char* path);

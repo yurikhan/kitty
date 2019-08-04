@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -88,7 +88,7 @@ def set_font_family(opts=None, override_font_size=None, debug_font_matching=Fals
 
 def add_line(buf, cell_width, position, thickness, cell_height):
     y = position - thickness // 2
-    while thickness > 0 and y > -1 and y < cell_height:
+    while thickness > 0 and -1 < y < cell_height:
         thickness -= 1
         ctypes.memset(ctypes.addressof(buf) + (cell_width * y), 255, cell_width)
         y += 1
@@ -149,7 +149,11 @@ def render_special(
     ans = CharTexture if missing else CharTexture()
 
     def dl(f, *a):
-        f(ans, cell_width, *a)
+        try:
+            f(ans, cell_width, *a)
+        except Exception as e:
+            log_error('Failed to render {} at cell_width={} and cell_height={} with error: {}'.format(
+                f.__name__, cell_width, cell_height, e))
 
     if underline:
         t = underline_thickness

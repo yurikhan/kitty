@@ -75,18 +75,70 @@ set_freetype_error(const char* prefix, int err_code) {
 
 static FT_Library  library;
 
-#define CALC_CELL_HEIGHT(self) font_units_to_pixels(self, self->height)
+static inline int
+font_units_to_pixels_y(Face *self, int x) {
+    return ceil((double)FT_MulFix(x, self->face->size->metrics.y_scale) / 64.0);
+}
 
 static inline int
-font_units_to_pixels(Face *self, int x) {
-    return ceil((double)FT_MulFix(x, self->face->size->metrics.y_scale) / 64.0);
+font_units_to_pixels_x(Face *self, int x) {
+    return ceil((double)FT_MulFix(x, self->face->size->metrics.x_scale) / 64.0);
+}
+
+
+static inline int
+get_load_flags(int hinting, int hintstyle, int base) {
+    int flags = base;
+    if (hinting) {
+        if (hintstyle >= 3) flags |= FT_LOAD_TARGET_NORMAL;
+        else if (0 < hintstyle  && hintstyle < 3) flags |= FT_LOAD_TARGET_LIGHT;
+    } else flags |= FT_LOAD_NO_HINTING;
+    return flags;
+}
+
+
+static inline bool
+load_glyph(Face *self, int glyph_index, int load_type) {
+    int flags = get_load_flags(self->hinting, self->hintstyle, load_type);
+    int error = FT_Load_Glyph(self->face, glyph_index, flags);
+    if (error) { set_freetype_error("Failed to load glyph, with error:", error); return false; }
+    return true;
+}
+
+static inline unsigned int
+get_height_for_char(Face *self, char ch) {
+    unsigned int ans = 0;
+    int glyph_index = FT_Get_Char_Index(self->face, ch);
+    if (load_glyph(self, glyph_index, FT_LOAD_DEFAULT)) {
+        unsigned int baseline = font_units_to_pixels_y(self, self->ascender);
+        FT_GlyphSlotRec *glyph = self->face->glyph;
+        FT_Bitmap *bm = &glyph->bitmap;
+        if (glyph->bitmap_top <= 0 || (glyph->bitmap_top > 0 && (unsigned int)glyph->bitmap_top < baseline)) {
+            ans = baseline - glyph->bitmap_top + bm->rows;
+        }
+    }
+    return ans;
+}
+
+static inline unsigned int
+calc_cell_height(Face *self, bool for_metrics) {
+    unsigned int ans = font_units_to_pixels_y(self, self->height);
+    if (for_metrics) {
+        unsigned int underscore_height = get_height_for_char(self, '_');
+        if (underscore_height > ans) {
+            if (global_state.debug_font_fallback) printf(
+                "Increasing cell height by %u pixels to work around buggy font that renders underscore outside the bounding box\n", underscore_height - ans);
+            return underscore_height;
+        }
+    }
+    return ans;
 }
 
 static inline bool
 set_font_size(Face *self, FT_F26Dot6 char_width, FT_F26Dot6 char_height, FT_UInt xdpi, FT_UInt ydpi, unsigned int desired_height, unsigned int cell_height) {
     int error = FT_Set_Char_Size(self->face, 0, char_height, xdpi, ydpi);
     if (!error) {
-        unsigned int ch = CALC_CELL_HEIGHT(self);
+        unsigned int ch = calc_cell_height(self, false);
         if (desired_height && ch != desired_height) {
             FT_F26Dot6 h = floor((double)char_height * (double)desired_height / (double) ch);
             return set_font_size(self, 0, h, xdpi, ydpi, 0, cell_height);
@@ -141,17 +193,6 @@ set_size_for_face(PyObject *s, unsigned int desired_height, bool force, FONTS_DA
     ((Face*)self)->size_in_pts = fg->font_sz_in_pts;
     return set_font_size(self, w, w, xdpi, ydpi, desired_height, fg->cell_height);
 }
-
-static inline int
-get_load_flags(int hinting, int hintstyle, int base) {
-    int flags = base;
-    if (hinting) {
-        if (hintstyle >= 3) flags |= FT_LOAD_TARGET_NORMAL;
-        else if (0 < hintstyle  && hintstyle < 3) flags |= FT_LOAD_TARGET_LIGHT;
-    } else flags |= FT_LOAD_NO_HINTING;
-    return flags;
-}
-
 
 static inline bool
 init_ft_face(Face *self, PyObject *path, int hinting, int hintstyle, FONTS_DATA_HANDLE fg) {
@@ -231,14 +272,6 @@ repr(Face *self) {
 }
 
 
-static inline bool
-load_glyph(Face *self, int glyph_index, int load_type) {
-    int flags = get_load_flags(self->hinting, self->hintstyle, load_type);
-    int error = FT_Load_Glyph(self->face, glyph_index, flags);
-    if (error) { set_freetype_error("Failed to load glyph, with error:", error); return false; }
-    return true;
-}
-
 static inline unsigned int
 calc_cell_width(Face *self) {
     unsigned int ans = 0;
@@ -255,10 +288,10 @@ void
 cell_metrics(PyObject *s, unsigned int* cell_width, unsigned int* cell_height, unsigned int* baseline, unsigned int* underline_position, unsigned int* underline_thickness) {
     Face *self = (Face*)s;
     *cell_width = calc_cell_width(self);
-    *cell_height = CALC_CELL_HEIGHT(self);
-    *baseline = font_units_to_pixels(self, self->ascender);
-    *underline_position = MIN(*cell_height - 1, (unsigned int)font_units_to_pixels(self, MAX(0, self->ascender - self->underline_position)));
-    *underline_thickness = MAX(1, font_units_to_pixels(self, self->underline_thickness));
+    *cell_height = calc_cell_height(self, true);
+    *baseline = font_units_to_pixels_y(self, self->ascender);
+    *underline_position = MIN(*cell_height - 1, (unsigned int)font_units_to_pixels_y(self, MAX(0, self->ascender - self->underline_position)));
+    *underline_thickness = MAX(1, font_units_to_pixels_y(self, self->underline_thickness));
 }
 
 unsigned int
@@ -281,12 +314,11 @@ int
 get_glyph_width(PyObject *s, glyph_index g) {
     Face *self = (Face*)s;
     if (!load_glyph(self, g, FT_LOAD_DEFAULT)) { PyErr_Print(); return false; }
-    FT_Bitmap *bitmap = &self->face->glyph->bitmap;
 #define M self->face->glyph->metrics
 #define B self->face->glyph->bitmap
     /* printf("glyph: %u bitmap.width: %d bitmap.rows: %d horiAdvance: %ld horiBearingX: %ld horiBearingY: %ld vertBearingX: %ld vertBearingY: %ld vertAdvance: %ld width: %ld height: %ld\n", */
     /*         g, B.width, B.rows, M.horiAdvance, M.horiBearingX, M.horiBearingY, M.vertBearingX, M.vertBearingY, M.vertAdvance, M.width, M.height); */
-    return bitmap->width;
+    return B.width ? (int)B.width : (int)(M.width / 64);
 #undef M
 #undef B
 }
@@ -362,9 +394,9 @@ render_bitmap(Face *self, int glyph_id, ProcessedBitmap *ans, unsigned int cell_
         // Normalize gray levels to the range [0..255]
         bitmap.num_grays = 256;
         unsigned int stride = bitmap.pitch < 0 ? -bitmap.pitch : bitmap.pitch;
-        for (unsigned int i = 0; i < bitmap.rows; ++i) {
+        for (unsigned i = 0; i < (unsigned)bitmap.rows; ++i) {
             // We only have 2 levels
-            for (unsigned int j = 0; j < bitmap.width; ++j) bitmap.buffer[i * stride + j] *= 255;
+            for (unsigned j = 0; j < (unsigned)bitmap.width; ++j) bitmap.buffer[i * stride + j] *= 255;
         }
         populate_processed_bitmap(self->face->glyph, &bitmap, ans, true);
         FT_Bitmap_Done(library, &bitmap);
@@ -570,6 +602,44 @@ extra_data(PyObject *self, PyObject *a UNUSED) {
     return PyLong_FromVoidPtr(((Face*)self)->extra_data);
 }
 
+
+StringCanvas
+render_simple_text_impl(PyObject *s, const char *text, unsigned int baseline) {
+    Face *self = (Face*)s;
+    StringCanvas ans = {0};
+    size_t num_chars = strnlen(text, 32);
+    int max_char_width = font_units_to_pixels_x(self, self->face->max_advance_width);
+    size_t canvas_width = max_char_width * (num_chars*2);
+    size_t canvas_height = font_units_to_pixels_y(self, self->face->height) + 8;
+    pixel *canvas = calloc(canvas_width * canvas_height, sizeof(pixel));
+    if (!canvas) return ans;
+    size_t pen_x = 0;
+    ProcessedBitmap pbm;
+    for (size_t n = 0; n < num_chars; n++) {
+        FT_UInt glyph_index = FT_Get_Char_Index(self->face, text[n]);
+        int error = FT_Load_Glyph(self->face, glyph_index, FT_LOAD_DEFAULT);
+        if (error) continue;
+        error = FT_Render_Glyph(self->face->glyph, FT_RENDER_MODE_NORMAL);
+        if (error) continue;
+        FT_Bitmap *bitmap = &self->face->glyph->bitmap;
+        pbm = EMPTY_PBM;
+        populate_processed_bitmap(self->face->glyph, bitmap, &pbm, false);
+        place_bitmap_in_canvas(canvas, &pbm, canvas_width, canvas_height, pen_x, 0, baseline);
+        pen_x += self->face->glyph->advance.x >> 6;
+    }
+    ans.width = pen_x; ans.height = canvas_height;
+    ans.canvas = malloc(ans.width * ans.height);
+    if (ans.canvas) {
+        for (size_t row = 0; row < ans.height; row++) {
+            unsigned char *destp = ans.canvas + (ans.width * row);
+            pixel *srcp = canvas + (canvas_width * row);
+            for (size_t i = 0; i < ans.width; i++) destp[i] = srcp[i] & 0xff;
+        }
+    }
+    free(canvas);
+    return ans;
+}
+
 // Boilerplate {{{
 
 static PyMemberDef members[] = {
@@ -607,7 +677,7 @@ PyTypeObject Face_Type = {
 };
 
 static void
-free_freetype() {
+free_freetype(void) {
     FT_Done_FreeType(library);
 }
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -11,6 +11,7 @@ import re
 import string
 import sys
 from time import monotonic
+from contextlib import suppress
 
 from .constants import (
     appname, is_macos, is_wayland, supports_primary_selection
@@ -28,19 +29,15 @@ def load_shaders(name):
 
 
 def safe_print(*a, **k):
-    try:
+    with suppress(Exception):
         print(*a, **k)
-    except Exception:
-        pass
 
 
 def log_error(*a, **k):
     from .fast_data_types import log_error_string
-    try:
+    with suppress(Exception):
         msg = k.get('sep', ' ').join(map(str, a)) + k.get('end', '')
         log_error_string(msg.replace('\0', ''))
-    except Exception:
-        pass
 
 
 def ceil_int(x):
@@ -210,7 +207,7 @@ def end_startup_notification_x11(ctx):
 
 
 def init_startup_notification(window_handle, startup_id=None):
-    if is_macos or is_wayland:
+    if is_macos or is_wayland():
         return
     if window_handle is None:
         log_error('Could not perform startup notification as window handle not present')
@@ -225,7 +222,7 @@ def init_startup_notification(window_handle, startup_id=None):
 def end_startup_notification(ctx):
     if not ctx:
         return
-    if is_macos or is_wayland:
+    if is_macos or is_wayland():
         return
     try:
         end_startup_notification_x11(ctx)
@@ -258,15 +255,11 @@ class startup_notification_handler:
 
 
 def remove_socket_file(s, path=None):
-    try:
+    with suppress(EnvironmentError):
         s.close()
-    except EnvironmentError:
-        pass
     if path:
-        try:
+        with suppress(EnvironmentError):
             os.unlink(path)
-        except EnvironmentError:
-            pass
 
 
 def unix_socket_paths(name, ext='.lock'):
@@ -422,7 +415,7 @@ def get_editor():
         import shlex
         ans = os.environ.get('EDITOR')
         if not ans or not exe_exists(shlex.split(ans)[0]):
-            for q in ('vim', 'nvim', 'vi', 'emacs', 'micro', 'nano', 'vis'):
+            for q in ('vim', 'nvim', 'vi', 'emacs', 'kak', 'micro', 'nano', 'vis'):
                 r = exe_exists(q)
                 if r:
                     ans = r
@@ -449,3 +442,11 @@ def is_path_in_temp_dir(path):
         if q and path.startswith(q):
             return True
     return False
+
+
+def func_name(f):
+    if hasattr(f, '__name__'):
+        return f.__name__
+    if hasattr(f, 'func') and hasattr(f.func, '__name__'):
+        return f.func.__name__
+    return str(f)

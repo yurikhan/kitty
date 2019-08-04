@@ -1,13 +1,18 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import shlex
+from collections import namedtuple
 
 from .config_data import to_layout_names
 from .constants import shell_path, kitty_exe
 from .layout import all_layouts
 from .utils import log_error
+
+
+WindowSizeOpts = namedtuple(
+    'WindowSizeOpts', 'initial_window_width initial_window_height window_margin_width window_padding_width remember_window_size')
 
 
 class Tab:
@@ -28,6 +33,7 @@ class Session:
         self.tabs = []
         self.active_tab_idx = 0
         self.default_title = default_title
+        self.os_window_size = None
 
     def add_tab(self, opts, name=''):
         if self.tabs and not self.tabs[-1].windows:
@@ -78,14 +84,29 @@ def resolved_shell(opts):
 
 
 def parse_session(raw, opts, default_title=None):
+
+    def finalize_session(ans):
+        for t in ans.tabs:
+            if not t.windows:
+                t.windows.append(resolved_shell(opts))
+        return ans
+
     ans = Session(default_title)
     ans.add_tab(opts)
     for line in raw.splitlines():
         line = line.strip()
         if line and not line.startswith('#'):
-            cmd, rest = line.partition(' ')[::2]
+            parts = line.split(maxsplit=1)
+            if len(parts) == 1:
+                cmd, rest = parts[0], ''
+            else:
+                cmd, rest = parts
             cmd, rest = cmd.strip(), rest.strip()
             if cmd == 'new_tab':
+                ans.add_tab(opts, rest)
+            elif cmd == 'new_os_window':
+                yield finalize_session(ans)
+                ans = Session(default_title)
                 ans.add_tab(opts, rest)
             elif cmd == 'layout':
                 ans.set_layout(rest)
@@ -99,18 +120,20 @@ def parse_session(raw, opts, default_title=None):
                 ans.set_cwd(rest)
             elif cmd == 'title':
                 ans.set_next_title(rest)
+            elif cmd == 'os_window_size':
+                from kitty.config_data import window_size
+                w, h = map(window_size, rest.split(maxsplit=1))
+                ans.os_window_size = WindowSizeOpts(w, h, opts.window_margin_width, opts.window_padding_width, False)
             else:
                 raise ValueError('Unknown command in session file: {}'.format(cmd))
-    for t in ans.tabs:
-        if not t.windows:
-            t.windows.append(resolved_shell(opts))
-    return ans
+    yield finalize_session(ans)
 
 
-def create_session(opts, args=None, special_window=None, cwd_from=None, respect_cwd=False, default_session=None):
+def create_sessions(opts, args=None, special_window=None, cwd_from=None, respect_cwd=False, default_session=None):
     if args and args.session:
         with open(args.session) as f:
-            return parse_session(f.read(), opts, getattr(args, 'title', None))
+            yield from parse_session(f.read(), opts, getattr(args, 'title', None))
+            return
     if default_session and default_session != 'none':
         try:
             with open(default_session) as f:
@@ -118,7 +141,8 @@ def create_session(opts, args=None, special_window=None, cwd_from=None, respect_
         except EnvironmentError:
             log_error('Failed to read from session file, ignoring: {}'.format(default_session))
         else:
-            return parse_session(session_data, opts, getattr(args, 'title', None))
+            yield from parse_session(session_data, opts, getattr(args, 'title', None))
+            return
     ans = Session()
     current_layout = opts.enabled_layouts[0] if opts.enabled_layouts else 'tall'
     ans.add_tab(opts)
@@ -135,4 +159,4 @@ def create_session(opts, args=None, special_window=None, cwd_from=None, respect_
             k['override_title'] = args.title
         special_window = SpecialWindow(cmd, **k)
     ans.add_special_window(special_window)
-    return ans
+    yield ans

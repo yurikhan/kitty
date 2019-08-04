@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -121,6 +121,7 @@ control_codes.update({
     enumerate(range(defines.GLFW_KEY_A, defines.GLFW_KEY_RIGHT_BRACKET + 1))
 })
 control_codes[defines.GLFW_KEY_GRAVE_ACCENT] = (0,)
+control_codes[defines.GLFW_KEY_UNDERSCORE] = (0,)
 control_codes[defines.GLFW_KEY_SPACE] = (0,)
 control_codes[defines.GLFW_KEY_2] = (0,)
 control_codes[defines.GLFW_KEY_3] = (27,)
@@ -206,8 +207,8 @@ UN_SHIFTED_PRINTABLE.update(pmap(
     " ',-./;="
 ))
 UN_SHIFTED_PRINTABLE.update(pmap(
-    'LEFT_BRACKET BACKSLASH RIGHT_BRACKET GRAVE_ACCENT',
-    "[\\]`"
+    'LEFT_BRACKET BACKSLASH RIGHT_BRACKET GRAVE_ACCENT UNDERSCORE',
+    "[\\]`_"
 ))
 SHIFTED_PRINTABLE = UN_SHIFTED_PRINTABLE.copy()
 SHIFTED_PRINTABLE.update({

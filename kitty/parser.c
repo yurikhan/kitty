@@ -8,6 +8,7 @@
 #include "control-codes.h"
 #include "screen.h"
 #include "graphics.h"
+#include "charsets.h"
 #include <time.h>
 
 extern PyTypeObject Screen_Type;
@@ -305,7 +306,7 @@ dispatch_osc(Screen *screen, PyObject DUMP_UNUSED *dump_callback) {
 #define SET_COLOR(name) REPORT_OSC2(name, code, string); name(screen, code, string);
     const unsigned int limit = screen->parser_buf_pos;
     unsigned int code=0, i;
-    for (i = 0; i < MIN(limit, 5); i++) {
+    for (i = 0; i < MIN(limit, 5u); i++) {
         if (screen->parser_buf[i] < '0' || screen->parser_buf[i] > '9') break;
     }
     if (i > 0) {
@@ -379,7 +380,7 @@ screen_cursor_up2(Screen *s, unsigned int count) { screen_cursor_up(s, count, fa
 static inline void
 screen_cursor_back1(Screen *s, unsigned int count) { screen_cursor_back(s, count, -1); }
 static inline void
-screen_tabn(Screen *s, unsigned int count) { for (index_type i=0; i < MAX(1, count); i++) screen_tab(s); }
+screen_tabn(Screen *s, unsigned int count) { for (index_type i=0; i < MAX(1u, count); i++) screen_tab(s); }
 
 static inline const char*
 repr_csi_params(unsigned int *params, unsigned int num_params) {
@@ -611,7 +612,7 @@ dispatch_csi(Screen *screen, PyObject DUMP_UNUSED *dump_callback) {
     unsigned int num = screen->parser_buf_pos, start, i, num_params=0, p1, p2;
     static unsigned int params[MAX_PARAMS] = {0};
     bool private;
-    if (buf[0] == '>' || buf[0] == '?' || buf[0] == '!') {
+    if (buf[0] == '>' || buf[0] == '?' || buf[0] == '!' || buf[0] == '=' || buf[0] == '-') {
         start_modifier = (char)screen->parser_buf[0];
         buf++; num--;
     }
@@ -992,6 +993,8 @@ accumulate_csi(Screen *screen, uint32_t ch, PyObject DUMP_UNUSED *dump_callback)
         case '?':
         case '>':
         case '!':
+        case '=':
+        case '-':
             if (screen->parser_buf_pos != 0) {
                 REPORT_ERROR("Invalid character in CSI: 0x%x, ignoring the sequence", ch);
                 SET_STATE(0);

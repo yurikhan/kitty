@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -7,6 +7,7 @@ import string
 import subprocess
 from functools import lru_cache
 from gettext import gettext as _
+from contextlib import suppress
 
 from kitty.config import cached_values_for
 from kitty.constants import config_dir
@@ -239,11 +240,10 @@ class Table:
 
 
 def is_index(w):
-    try:
+    with suppress(Exception):
         int(w.lstrip(INDEX_CHAR), 16)
         return True
-    except Exception:
-        return False
+    return False
 
 
 class UnicodeInput(Handler):
@@ -293,24 +293,21 @@ class UnicodeInput(Handler):
         self.update_codepoints()
         self.current_char = None
         if self.mode is HEX:
-            try:
-                if self.line_edit.current_input.startswith(INDEX_CHAR) and len(self.line_edit.current_input) > 1:
-                    self.current_char = chr(self.table.codepoint_at_hint(self.line_edit.current_input[1:]))
-                else:
+            with suppress(Exception):
+                if self.line_edit.current_input.startswith(INDEX_CHAR):
+                    if len(self.line_edit.current_input) > 1:
+                        self.current_char = chr(self.table.codepoint_at_hint(self.line_edit.current_input[1:]))
+                elif self.line_edit.current_input:
                     code = int(self.line_edit.current_input, 16)
                     self.current_char = chr(code)
-            except Exception:
-                pass
         elif self.mode is NAME:
             cc = self.table.current_codepoint
             if cc:
                 self.current_char = chr(cc)
         else:
-            try:
+            with suppress(Exception):
                 if self.line_edit.current_input:
                     self.current_char = chr(self.table.codepoint_at_hint(self.line_edit.current_input.lstrip(INDEX_CHAR)))
-            except Exception:
-                pass
         if self.current_char is not None:
             code = ord(self.current_char)
             if not codepoint_ok(code):
@@ -391,6 +388,24 @@ class UnicodeInput(Handler):
         self.refresh()
 
     def on_key(self, key_event):
+        if self.mode is HEX and key_event.type is not RELEASE and not key_event.mods:
+            try:
+                val = int(self.line_edit.current_input, 16)
+            except Exception:
+                pass
+            else:
+                if key_event.key is TAB:
+                    self.line_edit.current_input = hex(val + 0x10)[2:]
+                    self.refresh()
+                    return
+                if key_event.key is UP:
+                    self.line_edit.current_input = hex(val + 1)[2:]
+                    self.refresh()
+                    return
+                if key_event.key is DOWN:
+                    self.line_edit.current_input = hex(val - 1)[2:]
+                    self.refresh()
+                    return
         if self.mode is NAME and key_event.type is not RELEASE and not key_event.mods:
             if key_event.key is TAB:
                 if key_event.mods == SHIFT:
@@ -466,10 +481,8 @@ def main(args):
         handler = UnicodeInput(cached_values)
         loop.loop(handler)
         if handler.current_char and loop.return_code == 0:
-            try:
+            with suppress(Exception):
                 handler.recent.remove(ord(handler.current_char))
-            except Exception:
-                pass
             recent = [ord(handler.current_char)] + handler.recent
             cached_values['recent'] = recent[:len(DEFAULT_SET)]
             return handler.current_char

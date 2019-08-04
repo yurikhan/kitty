@@ -1,15 +1,18 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
 # Configuration file for the Sphinx documentation builder.
 #
 # This file does only contain a selection of the most common options. For a
 # full list see the documentation:
-# http://www.sphinx-doc.org/en/master/config
+# https://www.sphinx-doc.org/en/master/config
 
+import importlib
 import os
 import re
 import subprocess
 import sys
+import time
 from functools import partial
 
 from docutils import nodes
@@ -19,15 +22,19 @@ from pygments.token import (
     Comment, Keyword, Literal, Name, Number, String, Whitespace
 )
 from sphinx import addnodes
+from sphinx.environment.adapters.toctree import TocTree
 from sphinx.util.logging import getLogger
 
-from kitty.constants import str_version
+kitty_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if kitty_src not in sys.path:
+    sys.path.insert(0, kitty_src)
+str_version = importlib.import_module('kitty.constants').str_version
 
 # config {{{
 # -- Project information -----------------------------------------------------
 
 project = 'kitty'
-copyright = '2018, Kovid Goyal'
+copyright = time.strftime('%Y, Kovid Goyal')
 author = 'Kovid Goyal'
 building_man_pages = 'man' in sys.argv
 
@@ -175,7 +182,7 @@ texinfo_documents = [
 # }}}
 
 
-# GitHub linking inlne roles {{{
+# GitHub linking inline roles {{{
 
 def num_role(which, name, rawtext, text, lineno, inliner, options={}, content=[]):
     ' Link to a github issue '
@@ -214,7 +221,8 @@ def commit_role(name, rawtext, text, lineno, inliner, options={}, content=[]):
 
 # Sidebar ToC {{{
 def create_toc(app, pagename):
-    toctree = app.env.get_toc_for(pagename, app.builder)
+    tt = TocTree(app.env)
+    toctree = tt.get_toc_for(pagename, app.builder)
     if toctree is not None:
         subtree = toctree[toctree.first_child_matching_class(nodes.list_item)]
         bl = subtree.first_child_matching_class(nodes.bullet_list)
@@ -265,6 +273,48 @@ def write_cli_docs(all_kitten_names):
                     data['options'], message=data['help_text'], usage=data['usage'], appname=f'kitty +kitten {kitten}',
                     heading_char='^'))
 
+# }}}
+
+
+def write_remote_control_protocol_docs():  # {{{
+    from kitty.cmds import cmap
+    field_pat = re.compile(r'\s*([a-zA-Z0-9_+]+)\s*:\s*(.+)')
+
+    def format_cmd(p, name, cmd):
+        p(name)
+        p('-' * 80)
+        lines = cmd.__doc__.strip().splitlines()
+        fields = []
+        for line in lines:
+            m = field_pat.match(line)
+            if m is None:
+                p(line)
+            else:
+                fields.append((m.group(1), m.group(2)))
+        if fields:
+            p('\nFields are:\n')
+            for (name, desc) in fields:
+                if '+' in name:
+                    title = name.replace('+', ' (required)')
+                else:
+                    title = name
+                    defval = cmd.get_default(name.replace('-', '_'), cmd)
+                    if defval is not cmd:
+                        title = f'{title} (default: {defval})'
+                    else:
+                        title = f'{title} (optional)'
+                p(f':code:`{title}`')
+                p(' ', desc), p()
+        p(), p()
+
+    with open(f'generated/rc.rst', 'w') as f:
+        p = partial(print, file=f)
+        for name in sorted(cmap):
+            cmd = cmap[name]
+            if not cmd.__doc__:
+                continue
+            name = name.replace('_', '-')
+            format_cmd(p, name, cmd)
 # }}}
 
 
@@ -475,9 +525,12 @@ def process_shortcut_link(env, refnode, has_explicit_title, title, target):
         conf_name, slug = 'kitty', conf_name
     full_name = conf_name + '.' + slug
     try:
-        target, title = shortcut_slugs[full_name]
+        target, stitle = shortcut_slugs[full_name]
     except KeyError:
         logger.warning('Unknown shortcut: {}'.format(target), location=refnode)
+    else:
+        if not has_explicit_title:
+            title = stitle
     return title, target
 
 
@@ -529,6 +582,7 @@ def setup(app):
     from kittens.runner import all_kitten_names
     all_kitten_names = all_kitten_names()
     write_cli_docs(all_kitten_names)
+    write_remote_control_protocol_docs()
     write_conf_docs(app, all_kitten_names)
     app.add_lexer('session', SessionLexer())
     app.add_role('link', link_role)

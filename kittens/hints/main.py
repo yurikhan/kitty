@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -213,7 +213,7 @@ def url(text, s, e):
 @postprocessor
 def brackets(text, s, e):
     # Remove matching brackets
-    if e > s and e <= len(text):
+    if s < e <= len(text):
         before = text[s]
         if before in '({[<' and text[e-1] == closing_bracket_map[before]:
             s += 1
@@ -224,7 +224,7 @@ def brackets(text, s, e):
 @postprocessor
 def quotes(text, s, e):
     # Remove matching quotes
-    if e > s and e <= len(text):
+    if s < e <= len(text):
         before = text[s]
         if before in '\'"' and text[e-1] == before:
             s += 1
@@ -246,7 +246,9 @@ def run_loop(args, text, all_marks, index_map):
     handler = Hints(text, all_marks, index_map, args)
     loop.loop(handler)
     if handler.chosen and loop.return_code == 0:
-        return {'match': handler.chosen, 'program': args.program}
+        return {'match': handler.chosen, 'program': args.program,
+                'multiple_joiner': args.multiple_joiner,
+                'type': args.type}
     raise SystemExit(loop.return_code)
 
 
@@ -348,7 +350,9 @@ default=(?m)^\s*(.+)\s*$
 The regular expression to use when :option:`kitty +kitten hints --type`=regex.
 If you specify a group in the regular expression only the group
 will be matched. This allow you to match text ignoring a prefix/suffix, as
-needed. The default expression matches lines.
+needed. The default expression matches lines. To match text over
+multiple lines you should prefix the regular expression with :code:`(?ms)`,
+which turns on MULTILINE and DOTALL modes for the regex engine.
 
 
 --url-prefixes
@@ -374,6 +378,17 @@ Select multiple matches and perform the action on all of them together at the en
 In this mode, press :kbd:`Esc` to finish selecting.
 
 
+--multiple-joiner
+default=auto
+String to use to join multiple selections when copying to the clipboard or
+inserting into the terminal. The special strings: "space", "newline", "empty",
+"json" and "auto" are interpreted as a space character, a newline an empty
+joiner, a JSON serialized list and an automatic choice, based on the type of
+text being selected. In addition, integers are interpreted as zero-based
+indices into the list of selections. You can use 0 for the first selection and
+-1 for the last.
+
+
 --add-trailing-space
 default=auto
 choices=auto,always,never
@@ -385,7 +400,7 @@ when used together with --multiple.
 default=1
 type=int
 The offset (from zero) at which to start hint numbering. Note that only numbers
-greater than zero are respected.
+greater than or equal to zero are respected.
 '''.format(','.join(sorted(URL_PREFIXES))).format
 help_text = 'Select text from the screen using the keyboard. Defaults to searching for URLs.'
 usage = ''
@@ -422,13 +437,34 @@ def main(args):
 def handle_result(args, data, target_window_id, boss):
     program = data['program']
     matches = tuple(filter(None, data['match']))
+    joiner = data['multiple_joiner']
+    try:
+        is_int = int(joiner)
+    except Exception:
+        is_int = None
+    text_type = data['type']
+
+    def joined_text():
+        if is_int is not None:
+            try:
+                return matches[is_int]
+            except IndexError:
+                return matches[-1]
+        if joiner == 'json':
+            import json
+            return json.dumps(matches, ensure_ascii=False, indent='\t')
+        if joiner == 'auto':
+            q = '\n\r' if text_type in ('line', 'url') else ' '
+        else:
+            q = {'newline': '\n\r', 'space': ' '}.get(joiner, '')
+        return q.join(matches)
+
     if program == '-':
         w = boss.window_id_map.get(target_window_id)
         if w is not None:
-            for m in matches:
-                w.paste(m)
+            w.paste(joined_text())
     elif program == '@':
-        set_clipboard_string(matches[-1])
+        set_clipboard_string(joined_text())
     else:
         cwd = None
         w = boss.window_id_map.get(target_window_id)

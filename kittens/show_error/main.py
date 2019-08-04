@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -17,10 +17,10 @@ The title for the error message.
 
 
 def real_main(args):
+    msg = 'Show an error message'
+    args, items = parse_args(args[1:], OPTIONS, '', msg, 'hints')
     error_message = sys.stdin.buffer.read().decode('utf-8')
     sys.stdin = open(os.ctermid())
-    msg = 'Show an error message'
-    args, items = parse_args(args, OPTIONS, '', msg, 'hints')
     print(styled(args.title, fg_intense=True, fg='red', bold=True))
     print()
     print(error_message)

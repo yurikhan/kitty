@@ -1,7 +1,7 @@
 //========================================================================
 // GLFW 3.3 macOS - www.glfw.org
 //------------------------------------------------------------------------
-// Copyright (c) 2009-2016 Camilla Löwy <elmindreda@glfw.org>
+// Copyright (c) 2009-2019 Camilla Löwy <elmindreda@glfw.org>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -23,14 +23,11 @@
 //    distribution.
 //
 //========================================================================
+// It is fine to use C99 in this file because it will not be built with VS
+//========================================================================
 
 #include "internal.h"
 
-
-#if (MAC_OS_X_VERSION_MAX_ALLOWED < 101400)
- #define NSOpenGLContextParameterSwapInterval NSOpenGLCPSwapInterval
- #define NSOpenGLContextParameterSurfaceOpacity NSOpenGLCPSurfaceOpacity
-#endif
 
 static void makeContextCurrentNSGL(_GLFWwindow* window)
 {
@@ -48,19 +45,17 @@ static void swapBuffersNSGL(_GLFWwindow* window)
     [window->context.nsgl.object flushBuffer];
 }
 
-static void swapIntervalNSGL(int interval)
+static void swapIntervalNSGL(int interval UNUSED)
 {
-    _GLFWwindow* window = _glfwPlatformGetTls(&_glfw.contextSlot);
-
-    GLint sync = interval;
-    [window->context.nsgl.object setValues:&sync
-                              forParameter:NSOpenGLContextParameterSwapInterval];
+    // As of Mojave this does not work so we use CVDisplayLink instead
+    _glfwInputError(GLFW_API_UNAVAILABLE,
+                    "NSGL: Swap intervals do not work on macOS");
 }
 
-static int extensionSupportedNSGL(const char* extension)
+static int extensionSupportedNSGL(const char* extension UNUSED)
 {
     // There are no NSGL extensions
-    return GLFW_FALSE;
+    return false;
 }
 
 static GLFWglproc getProcAddressNSGL(const char* procname)
@@ -69,16 +64,15 @@ static GLFWglproc getProcAddressNSGL(const char* procname)
                                                        procname,
                                                        kCFStringEncodingASCII);
 
-    GLFWglproc symbol = CFBundleGetFunctionPointerForName(_glfw.nsgl.framework,
-                                                          symbolName);
+    GLFWglproc symbol;
+    *(void **) &symbol = CFBundleGetFunctionPointerForName(_glfw.nsgl.framework,
+                                                           symbolName);
 
     CFRelease(symbolName);
 
     return symbol;
 }
 
-// Destroy the OpenGL context
-//
 static void destroyContextNSGL(_GLFWwindow* window)
 {
     [window->context.nsgl.pixelFormat release];
@@ -95,10 +89,10 @@ static void destroyContextNSGL(_GLFWwindow* window)
 
 // Initialize OpenGL support
 //
-GLFWbool _glfwInitNSGL(void)
+bool _glfwInitNSGL(void)
 {
     if (_glfw.nsgl.framework)
-        return GLFW_TRUE;
+        return true;
 
     _glfw.nsgl.framework =
         CFBundleGetBundleWithIdentifier(CFSTR("com.apple.opengl"));
@@ -106,10 +100,10 @@ GLFWbool _glfwInitNSGL(void)
     {
         _glfwInputError(GLFW_API_UNAVAILABLE,
                         "NSGL: Failed to locate OpenGL framework");
-        return GLFW_FALSE;
+        return false;
     }
 
-    return GLFW_TRUE;
+    return true;
 }
 
 // Terminate OpenGL support
@@ -120,7 +114,7 @@ void _glfwTerminateNSGL(void)
 
 // Create the OpenGL context
 //
-GLFWbool _glfwCreateContextNSGL(_GLFWwindow* window,
+bool _glfwCreateContextNSGL(_GLFWwindow* window,
                                 const _GLFWctxconfig* ctxconfig,
                                 const _GLFWfbconfig* fbconfig)
 {
@@ -128,7 +122,7 @@ GLFWbool _glfwCreateContextNSGL(_GLFWwindow* window,
     {
         _glfwInputError(GLFW_API_UNAVAILABLE,
                         "NSGL: OpenGL ES is not available on macOS");
-        return GLFW_FALSE;
+        return false;
     }
 
     if (ctxconfig->major > 2)
@@ -137,14 +131,7 @@ GLFWbool _glfwCreateContextNSGL(_GLFWwindow* window,
         {
             _glfwInputError(GLFW_VERSION_UNAVAILABLE,
                             "NSGL: The targeted version of macOS does not support OpenGL 3.0 or 3.1 but may support 3.2 and above");
-            return GLFW_FALSE;
-        }
-
-        if (!ctxconfig->forward || ctxconfig->profile != GLFW_OPENGL_CORE_PROFILE)
-        {
-            _glfwInputError(GLFW_VERSION_UNAVAILABLE,
-                            "NSGL: The targeted version of macOS only supports forward-compatible core profile contexts for OpenGL 3.2 and above");
-            return GLFW_FALSE;
+            return false;
         }
     }
 
@@ -180,9 +167,7 @@ GLFWbool _glfwCreateContextNSGL(_GLFWwindow* window,
         //       Info.plist for unbundled applications
         // HACK: This assumes that NSOpenGLPixelFormat will remain
         //       a straightforward wrapper of its CGL counterpart
-#if MAC_OS_X_VERSION_MAX_ALLOWED >= 1080
         addAttrib(kCGLPFASupportsAutomaticGraphicsSwitching);
-#endif /*MAC_OS_X_VERSION_MAX_ALLOWED*/
     }
 
 #if MAC_OS_X_VERSION_MAX_ALLOWED >= 101000
@@ -247,7 +232,7 @@ GLFWbool _glfwCreateContextNSGL(_GLFWwindow* window,
 #if MAC_OS_X_VERSION_MAX_ALLOWED >= 101200
         _glfwInputError(GLFW_FORMAT_UNAVAILABLE,
                         "NSGL: Stereo rendering is deprecated");
-        return GLFW_FALSE;
+        return false;
 #else
         addAttrib(NSOpenGLPFAStereo);
 #endif
@@ -283,7 +268,7 @@ GLFWbool _glfwCreateContextNSGL(_GLFWwindow* window,
     {
         _glfwInputError(GLFW_FORMAT_UNAVAILABLE,
                         "NSGL: Failed to find a suitable pixel format");
-        return GLFW_FALSE;
+        return false;
     }
 
     NSOpenGLContext* share = NULL;
@@ -298,14 +283,22 @@ GLFWbool _glfwCreateContextNSGL(_GLFWwindow* window,
     {
         _glfwInputError(GLFW_VERSION_UNAVAILABLE,
                         "NSGL: Failed to create OpenGL context");
-        return GLFW_FALSE;
+        return false;
     }
 
     if (fbconfig->transparent)
     {
         GLint opaque = 0;
-        [window->context.nsgl.object setValues:&opaque forParameter:NSOpenGLContextParameterSurfaceOpacity];
+        [window->context.nsgl.object setValues:&opaque
+                                  forParameter:NSOpenGLContextParameterSurfaceOpacity];
     }
+
+    if (window->ns.retina)
+        [window->ns.view setWantsBestResolutionOpenGLSurface:YES];
+
+    GLint interval = 0;
+    [window->context.nsgl.object setValues:&interval
+                              forParameter:NSOpenGLContextParameterSwapInterval];
 
     [window->context.nsgl.object setView:window->ns.view];
 
@@ -316,7 +309,7 @@ GLFWbool _glfwCreateContextNSGL(_GLFWwindow* window,
     window->context.getProcAddress = getProcAddressNSGL;
     window->context.destroy = destroyContextNSGL;
 
-    return GLFW_TRUE;
+    return true;
 }
 
 

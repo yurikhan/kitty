@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -16,14 +16,15 @@ from .constants import (
 )
 from .fast_data_types import (
     BLIT_PROGRAM, CELL_BG_PROGRAM, CELL_FG_PROGRAM, CELL_PROGRAM,
-    CELL_SPECIAL_PROGRAM, CSI, DCS, DECORATION, DIM, GRAPHICS_PREMULT_PROGRAM,
-    GRAPHICS_PROGRAM, OSC, REVERSE, SCROLL_FULL, SCROLL_LINE, SCROLL_PAGE,
-    STRIKETHROUGH, Screen, add_window, cell_size_for_window, compile_program,
-    get_clipboard_string, glfw_post_empty_event, init_cell_program,
-    set_clipboard_string, set_titlebar_color, set_window_render_data,
-    update_window_title, update_window_visibility, viewport_for_window
+    CELL_SPECIAL_PROGRAM, CSI, DCS, DECORATION, DIM,
+    GRAPHICS_ALPHA_MASK_PROGRAM, GRAPHICS_PREMULT_PROGRAM, GRAPHICS_PROGRAM,
+    OSC, REVERSE, SCROLL_FULL, SCROLL_LINE, SCROLL_PAGE, STRIKETHROUGH, Screen,
+    add_window, cell_size_for_window, compile_program, get_clipboard_string,
+    init_cell_program, set_clipboard_string, set_titlebar_color,
+    set_window_render_data, update_window_title, update_window_visibility,
+    viewport_for_window
 )
-from .keys import keyboard_mode_name, extended_key_event, defines
+from .keys import defines, extended_key_event, keyboard_mode_name
 from .rgb import to_color
 from .terminfo import get_capabilities
 from .utils import (
@@ -55,12 +56,9 @@ def calculate_gl_geometry(window_geometry, viewport_width, viewport_height, cell
     return ScreenGeometry(xstart, ystart, window_geometry.xnum, window_geometry.ynum, dx, dy)
 
 
-def load_shader_programs(semi_transparent=0):
+def load_shader_programs(semi_transparent=False):
     compile_program(BLIT_PROGRAM, *load_shaders('blit'))
     v, f = load_shaders('cell')
-
-    def color_as_vec3(x):
-        return 'vec3({}, {}, {})'.format(x.red / 255, x.green / 255, x.blue / 255)
 
     for which, p in {
             'SIMPLE': CELL_PROGRAM,
@@ -79,31 +77,43 @@ def load_shader_programs(semi_transparent=0):
         if semi_transparent:
             vv = vv.replace('#define NOT_TRANSPARENT', '#define TRANSPARENT')
             ff = ff.replace('#define NOT_TRANSPARENT', '#define TRANSPARENT')
+        if not load_shader_programs.use_selection_fg:
+            vv = vv.replace('#define USE_SELECTION_FG', '#define DONT_USE_SELECTION_FG')
+            ff = ff.replace('#define USE_SELECTION_FG', '#define DONT_USE_SELECTION_FG')
         compile_program(p, vv, ff)
     v, f = load_shaders('graphics')
     for which, p in {
             'SIMPLE': GRAPHICS_PROGRAM,
             'PREMULT': GRAPHICS_PREMULT_PROGRAM,
+            'ALPHA_MASK': GRAPHICS_ALPHA_MASK_PROGRAM,
     }.items():
         ff = f.replace('ALPHA_TYPE', which)
         compile_program(p, v, ff)
     init_cell_program()
 
 
+load_shader_programs.use_selection_fg = True
+
+
 def setup_colors(screen, opts):
     screen.color_profile.update_ansi_color_table(build_ansi_color_table(opts))
     cursor_text_color = opts.cursor_text_color or (12, 12, 12)
     cursor_text_color_as_bg = 3 if opts.cursor_text_color is None else 1
+    sfg = (0, 0, 0) if opts.selection_foreground is None else opts.selection_foreground
     screen.color_profile.set_configured_colors(*map(color_as_int, (
         opts.foreground, opts.background, opts.cursor,
         cursor_text_color, (0, 0, cursor_text_color_as_bg),
-        opts.selection_foreground, opts.selection_background)
+        sfg, opts.selection_background)
     ))
 
 
 def text_sanitizer(as_ansi, add_wrap_markers):
-    import re
-    pat = re.compile(r'\033\[.+?m')
+    pat = getattr(text_sanitizer, 'pat', None)
+    if pat is None:
+        import re
+        pat = text_sanitizer.pat = re.compile(r'\033\[.+?m')
+
+    ansi, wrap_markers = not as_ansi, not add_wrap_markers
 
     def remove_wrap_markers(line):
         return line.replace('\r', '')
@@ -114,8 +124,8 @@ def text_sanitizer(as_ansi, add_wrap_markers):
     def remove_both(line):
         return pat.sub('', line.replace('\r', ''))
 
-    if as_ansi:
-        return remove_both if add_wrap_markers else remove_sgr
+    if ansi:
+        return remove_both if wrap_markers else remove_sgr
     return remove_wrap_markers
 
 
@@ -260,7 +270,6 @@ class Window:
         t = self.tabref()
         if t is not None:
             t.title_changed(self)
-        glfw_post_empty_event()
 
     def set_title(self, title):
         if title:
@@ -270,7 +279,7 @@ class Window:
 
     # screen callbacks {{{
     def use_utf8(self, on):
-        get_boss().child_monitor.set_iutf8(self.id, on)
+        get_boss().child_monitor.set_iutf8_winid(self.id, on)
 
     def focus_changed(self, focused):
         if focused:
@@ -294,6 +303,12 @@ class Window:
         return get_boss().active_window is self
 
     def on_bell(self):
+        if self.opts.command_on_bell and self.opts.command_on_bell != ['none']:
+            import subprocess
+            import shlex
+            env = self.child.final_env
+            env['KITTY_CHILD_CMDLINE'] = ' '.join(map(shlex.quote, self.child.cmdline))
+            subprocess.Popen(self.opts.command_on_bell, env=env, cwd=self.child.foreground_cwd)
         if not self.is_active:
             self.needs_attention = True
             tab = self.tabref()
@@ -354,7 +369,6 @@ class Window:
             code += 1
         if color_changes:
             self.change_colors(color_changes)
-            glfw_post_empty_event()
 
     def set_color_table_color(self, code, value):
         cp = self.screen.color_profile
@@ -422,7 +436,8 @@ class Window:
 
             def write(key, func):
                 if text:
-                    if len(self.clipboard_control_buffers[key]) > 1024*1024:
+                    if ('no-append' in self.opts.clipboard_control or
+                            len(self.clipboard_control_buffers[key]) > 1024*1024):
                         self.clipboard_control_buffers[key] = ''
                     self.clipboard_control_buffers[key] += text
                 else:
@@ -433,7 +448,7 @@ class Window:
                 if 'write-clipboard' in self.opts.clipboard_control:
                     write('c', set_clipboard_string)
             if 'p' in where:
-                if self.opts.copy_on_select:
+                if self.opts.copy_on_select == 'clipboard':
                     if 'write-clipboard' in self.opts.clipboard_control:
                         write('c', set_clipboard_string)
                 if 'write-primary' in self.opts.clipboard_control:
@@ -451,7 +466,11 @@ class Window:
     # }}}
 
     def text_for_selection(self):
-        return ''.join(self.screen.text_for_selection())
+        lines = self.screen.text_for_selection()
+        if self.opts.strip_trailing_spaces == 'always' or (
+                self.opts.strip_trailing_spaces == 'smart' and not self.screen.is_rectangle_select()):
+            lines = ((l.rstrip() or '\n') for l in lines)
+        return ''.join(lines)
 
     def destroy(self):
         self.destroyed = True
@@ -471,10 +490,12 @@ class Window:
         if add_history:
             h = []
             self.screen.historybuf.pagerhist_as_text(h.append)
-            if not as_ansi or not add_wrap_markers:
+            if h and (not as_ansi or not add_wrap_markers):
                 sanitizer = text_sanitizer(as_ansi, add_wrap_markers)
                 h = list(map(sanitizer, h))
             self.screen.historybuf.as_text(h.append, as_ansi, add_wrap_markers)
+            if not self.screen.linebuf.is_continued(0) and h:
+                h[-1] += '\n'
             lines = chain(h, lines)
         return ''.join(lines)
 

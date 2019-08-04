@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import suppress
 
 import requests
 
@@ -62,10 +63,34 @@ def run_html(args):
     call('make FAIL_WARN=-W html', cwd=docs_dir)
 
 
+def add_analytics():
+    analytics = '''
+<!-- Google Analytics -->
+<script>
+window.ga=window.ga||function(){(ga.q=ga.q||[]).push(arguments)};ga.l=+new Date;
+ga('create', 'UA-20736318-2', 'auto');
+ga('send', 'pageview');
+</script>
+<script async="async" src='https://www.google-analytics.com/analytics.js'></script>
+<!-- End Google Analytics -->\
+'''
+    for dirpath, firnames, filenames in os.walk(publish_dir):
+        for fname in filenames:
+            if fname.endswith('.html'):
+                with open(os.path.join(dirpath, fname), 'r+b') as f:
+                    html = f.read().decode('utf-8')
+                    html = html.replace('<!-- kitty analytics placeholder -->', analytics, 1)
+                    f.seek(0), f.truncate()
+                    f.write(html.encode('utf-8'))
+
+
 def run_website(args):
     if os.path.exists(publish_dir):
         shutil.rmtree(publish_dir)
     shutil.copytree(os.path.join(docs_dir, '_build', 'html'), publish_dir)
+    add_analytics()
+    with open(os.path.join(publish_dir, 'current-version.txt'), 'w') as f:
+        f.write(version)
     shutil.copy2(os.path.join(docs_dir, 'installer.sh'), publish_dir)
     installer = os.path.join(docs_dir, 'installer.py')
     subprocess.check_call([
@@ -88,10 +113,8 @@ def run_sdist(args):
             shutil.copytree(os.path.join(docs_dir, '_build', x), os.path.join(dest, x))
         dest = os.path.abspath(os.path.join('build', f'kitty-{version}.tar'))
         subprocess.check_call(['tar', '-cf', dest, os.path.basename(base)], cwd=tdir)
-        try:
+        with suppress(FileNotFoundError):
             os.remove(dest + '.xz')
-        except FileNotFoundError:
-            pass
         subprocess.check_call(['xz', '-9', dest])
 
 
@@ -141,12 +164,7 @@ class ReadFileWithProgressReporting(io.BufferedReader):  # {{{
 
 class Base(object):  # {{{
     def __init__(self):
-        self.d = os.path.dirname
-        self.j = os.path.join
-        self.a = os.path.abspath
-        self.b = os.path.basename
-        self.s = os.path.splitext
-        self.e = os.path.exists
+        pass
 
     def info(self, *args, **kwargs):
         print(*args, **kwargs)

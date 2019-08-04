@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -428,6 +428,20 @@ class TestScreen(BaseTest):
         self.ae(s.text_for_selection(), expected)
         s.scroll(2, True)
         self.ae(s.text_for_selection(), expected)
+
+    def test_variation_selectors(self):
+        s = self.create_screen()
+        s.draw('\U0001f610')
+        self.ae(s.cursor.x, 2)
+        s.carriage_return(), s.linefeed()
+        s.draw('\U0001f610\ufe0e')
+        self.ae(s.cursor.x, 1)
+        s.carriage_return(), s.linefeed()
+        s.draw('\u25b6')
+        self.ae(s.cursor.x, 1)
+        s.carriage_return(), s.linefeed()
+        s.draw('\u25b6\ufe0f')
+        self.ae(s.cursor.x, 2)
 
     def test_serialize(self):
         s = self.create_screen()
