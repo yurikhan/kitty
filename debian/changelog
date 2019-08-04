@@ -1,3 +1,10 @@
+kitty (0.14.3-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+    + Update to Unicode 12
+
+ -- James McCoy <jamessan@debian.org>  Sun, 04 Aug 2019 11:31:44 -0400
+
 kitty (0.13.3-1) unstable; urgency=medium
 
   * New upstream release

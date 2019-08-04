@@ -13,7 +13,7 @@ License: Expat
 
 Files: glfw/*
 Copyright: 2002-2006, Marcus Geelnard
-           2006-2016, Camilla Löwy <elmindreda@glfw.org>
+           2006-2019, Camilla Löwy <elmindreda@glfw.org>
            2016, Google Inc.
            2014, Jonas Ådahl <jadahl@gmail.com>
            2002-2006, Marcus Geelnard
@@ -21,10 +21,12 @@ Copyright: 2002-2006, Marcus Geelnard
            2014-2018 Kovid Goyal <kovid@kovidgoyal.net>
 License: Zlib
 
-Files: glfw/glfw.py
-       glfw/backend_utils.c
+Files: glfw/backend_utils.c
+       glfw/glfw.py
+       glfw/linux_notify.*
+       glfw/main_loop.h
        glfw/memfd.h
-Copyright: 2017-2018, Kovid Goyal <kovid at kovidgoyal.net>
+Copyright: 2017-2019, Kovid Goyal <kovid at kovidgoyal.net>
 License: GPL-3+
 
 Files: kitty_tests/FiraCode-Medium.otf
@@ -34,10 +36,6 @@ License: OFL-1.1
 Files: kitty_tests/LiberationMono-Regular.ttf
 Copyright: 2012, Red Hat, Inc.
 License: Liberation
-
-Files: kitty/khrplatform.h
-Copyright: 2008-2018, The Khronos Group Inc.
-License: Expat
 
 Files: docs/_static/custom.css
 Copyright: 2018 Kovid Goyal <kovid at kovidgoyal.net>
