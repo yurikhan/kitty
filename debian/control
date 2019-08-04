@@ -10,6 +10,7 @@ Vcs-Browser: https://salsa.debian.org/jamessan/kitty
 Build-Depends:
  debhelper (>= 11~),
  dh-python,
+ libcanberra-dev,
  libdbus-1-dev,
  libfontconfig1-dev,
  libfreetype6-dev,
