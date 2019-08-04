@@ -38,6 +38,9 @@ Depends:
  ${shlibs:Depends},
 Recommends:
  kitty-doc
+Suggests:
+# For tui kitten
+ imagemagick
 Provides:
  x-terminal-emulator
 Description: fast, featureful, GPU based terminal emulator
