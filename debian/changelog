@@ -1,9 +1,17 @@
-kitty (0.14.3-1) UNRELEASED; urgency=medium
+kitty (0.14.3-1) unstable; urgency=medium
 
   * New upstream release
     + Update to Unicode 12
+  * control:
+    + Add libcanberra-dev to B-D, used for term bell
+    + Add imagemagick to Suggests for icat kitten
+    + Add wayland-protocols/libwayland-dev to B-D to enable Wayland support
+  * Install a system kitty.conf to disable update checks
+  * rules:
+    + Fix name of uptream changelog file
+    + Disable compression of all the html docs
 
- -- James McCoy <jamessan@debian.org>  Sun, 04 Aug 2019 11:31:44 -0400
+ -- James McCoy <jamessan@debian.org>  Sun, 04 Aug 2019 21:59:29 -0400
 
 kitty (0.13.3-1) unstable; urgency=medium
 
