@@ -23,12 +23,12 @@ Build-Depends:
  libxinerama-dev,
  libxkbcommon-x11-dev,
  libxrandr-dev,
- libwayland-dev,
+ libwayland-dev [linux-any],
  pkg-config,
  python3-dev (>= 3.5),
  python3-pil <!nocheck>,
  python3-sphinx,
- wayland-protocols,
+ wayland-protocols [linux-any],
  zlib1g-dev,
 
 Package: kitty
