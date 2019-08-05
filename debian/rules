@@ -51,3 +51,6 @@ override_dh_python3:
 
 override_dh_installchangelogs:
 	dh_installchangelogs docs/changelog.rst
+
+override_dh_compress:
+	dh_compress -X/html/
