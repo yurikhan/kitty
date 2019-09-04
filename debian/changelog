@@ -14,7 +14,7 @@ kitty (0.14.3-1) unstable; urgency=medium
     + Add wayland-protocols/libwayland-dev to B-D to enable Wayland support
   * Install a system kitty.conf to disable update checks
   * rules:
-    + Fix name of uptream changelog file
+    + Fix name of upstream changelog file
     + Disable compression of all the html docs
 
  -- James McCoy <jamessan@debian.org>  Sun, 04 Aug 2019 21:59:29 -0400
