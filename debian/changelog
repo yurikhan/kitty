@@ -1,8 +1,8 @@
-kitty (0.14.3-2) UNRELEASED; urgency=medium
+kitty (0.14.4-1) UNRELEASED; urgency=medium
 
-  * 
+  * New upstream release
 
- -- James McCoy <jamessan@debian.org>  Mon, 05 Aug 2019 06:56:31 -0400
+ -- James McCoy <jamessan@debian.org>  Tue, 03 Sep 2019 20:41:50 -0400
 
 kitty (0.14.3-1) unstable; urgency=medium
 
