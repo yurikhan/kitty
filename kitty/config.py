@@ -263,6 +263,21 @@ class KeyDefinition:
         self.trigger = defines.resolve_key_mods(kitty_mod, self.trigger[0]), self.trigger[1], self.trigger[2]
         self.rest = tuple((defines.resolve_key_mods(kitty_mod, mods), is_native, key) for mods, is_native, key in self.rest)
 
+    def resolve_kitten_aliases(self, aliases):
+        if not self.action.args:
+            return
+        kitten = self.action.args[0]
+        rest = self.action.args[1] if len(self.action.args) > 1 else ''
+        changed = False
+        for key, expanded in aliases.items():
+            if key == kitten:
+                changed = True
+                kitten = expanded[0]
+                if len(expanded) > 1:
+                    rest = expanded[1] + ' ' + rest
+        if changed:
+            self.action = self.action._replace(args=[kitten + (' ' + rest).rstrip()])
+
 
 def parse_key(val, key_definitions):
     parts = val.split(maxsplit=1)
@@ -386,6 +401,13 @@ def handle_symbol_map(key, val, ans):
 
 
 @special_handler
+def handle_kitten_alias(key, val, ans):
+    parts = val.split(maxsplit=2)
+    if len(parts) >= 2:
+        ans['kitten_aliases'][parts[0]] = parts[1:]
+
+
+@special_handler
 def handle_send_text(key, val, ans):
     # For legacy compatibility
     parse_send_text(val, ans['key_definitions'])
@@ -405,6 +427,25 @@ def handle_deprecated_hide_window_decorations_aliases(key, val, ans):
     if to_bool(val):
         if is_macos and key == 'macos_hide_titlebar' or (not is_macos and key == 'x11_hide_window_decorations'):
             ans['hide_window_decorations'] = True
+
+
+@deprecated_handler('macos_show_window_title_in_menubar')
+def handle_deprecated_macos_show_window_title_in_menubar_alias(key, val, ans):
+    if not hasattr(handle_deprecated_macos_show_window_title_in_menubar_alias, key):
+        handle_deprecated_macos_show_window_title_in_menubar_alias.key = True
+        log_error('The option {} is deprecated. Use macos_show_window_title_in menubar instead.'.format(key))
+    macos_show_window_title_in = ans.get('macos_show_window_title_in', 'all')
+    if to_bool(val):
+        if macos_show_window_title_in == 'none':
+            macos_show_window_title_in = 'menubar'
+        elif macos_show_window_title_in == 'window':
+            macos_show_window_title_in = 'all'
+    else:
+        if macos_show_window_title_in == 'all':
+            macos_show_window_title_in = 'window'
+        elif macos_show_window_title_in == 'menubar':
+            macos_show_window_title_in = 'none'
+    ans['macos_show_window_title_in'] = macos_show_window_title_in
 
 
 def expandvars(val, env):
@@ -444,7 +485,7 @@ def option_names_for_completion():
 
 
 def parse_config(lines, check_keys=True, accumulate_bad_lines=None):
-    ans = {'symbol_map': {}, 'keymap': {}, 'sequence_map': {}, 'key_definitions': [], 'env': {}}
+    ans = {'symbol_map': {}, 'keymap': {}, 'sequence_map': {}, 'key_definitions': [], 'env': {}, 'kitten_aliases': {}}
     parse_config_base(
         lines,
         defaults,
@@ -594,8 +635,11 @@ def finalize_keys(opts):
             defns = []
         else:
             defns.append(d)
+    kitten_aliases = opts.kitten_aliases
     for d in defns:
         d.resolve(opts.kitty_mod)
+        if kitten_aliases and d.action.func == 'kitten':
+            d.resolve_kitten_aliases(kitten_aliases)
     keymap = {}
     sequence_map = {}
 

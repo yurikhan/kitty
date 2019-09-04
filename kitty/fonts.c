@@ -58,9 +58,10 @@ typedef struct {
 
 
 static hb_buffer_t *harfbuzz_buffer = NULL;
-static hb_feature_t no_calt_feature = {0};
+static hb_feature_t hb_features[3] = {{0}};
 static char_type shape_buffer[4096] = {0};
 static size_t max_texture_size = 1024, max_array_len = 1024;
+typedef enum { LIGA_FEATURE, DLIG_FEATURE, CALT_FEATURE } HBFeature;
 
 typedef struct {
     char_type left, right;
@@ -76,6 +77,8 @@ typedef struct {
     PyObject *face;
     // Map glyphs to sprite map co-ords
     SpritePosition sprite_map[1024];
+    hb_feature_t hb_features[8];
+    size_t num_hb_features;
     SpecialGlyphCache special_glyph_cache[SPECIAL_GLYPH_CACHE_SIZE];
     bool bold, italic, emoji_presentation;
 } Font;
@@ -345,11 +348,21 @@ desc_to_face(PyObject *desc, FONTS_DATA_HANDLE fg) {
     return ans;
 }
 
+static inline void
+copy_hb_feature(Font *f, HBFeature which) {
+    memcpy(f->hb_features + f->num_hb_features++, hb_features + which, sizeof(hb_features[0]));
+}
 
 static inline bool
 init_font(Font *f, PyObject *face, bool bold, bool italic, bool emoji_presentation) {
     f->face = face; Py_INCREF(f->face);
     f->bold = bold; f->italic = italic; f->emoji_presentation = emoji_presentation;
+    f->num_hb_features = 0;
+    const char *psname = postscript_name_for_face(face);
+    if (strstr(psname, "NimbusMonoPS-") == psname) {
+        copy_hb_feature(f, LIGA_FEATURE); copy_hb_feature(f, DLIG_FEATURE);
+    }
+    copy_hb_feature(f, CALT_FEATURE);
     return true;
 }
 
@@ -484,6 +497,20 @@ load_fallback_font(FontGroup *fg, CPUCell *cell, bool bold, bool italic, bool em
     Font *af = &fg->fonts[ans];
     if (!init_font(af, face, bold, italic, emoji_presentation)) fatal("Out of memory");
     Py_DECREF(face);
+    if (!has_cell_text(af, cell)) {
+        if (global_state.debug_font_fallback) {
+            printf("The font chosen by the OS for the text: ");
+            printf("U+%x ", cell->ch);
+            for (unsigned i = 0; i < arraysz(cell->cc_idx) && cell->cc_idx[i]; i++) {
+                printf("U+%x ", codepoint_for_mark(cell->cc_idx[i]));
+            }
+            printf("is ");
+            PyObject_Print(af->face, stdout, 0);
+            printf(" but it does not actually contain glyphs for that text\n");
+        }
+        del_font(af);
+        return MISSING_FONT;
+    }
     fg->fallback_fonts_count++;
     fg->fonts_count++;
     return ans;
@@ -714,7 +741,7 @@ num_codepoints_in_cell(CPUCell *cell) {
 }
 
 static inline void
-shape(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells, hb_font_t *font, bool disable_ligature) {
+shape(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells, hb_font_t *font, Font *fobj, bool disable_ligature) {
     if (group_state.groups_capacity <= 2 * num_cells) {
         group_state.groups_capacity = MAX(128u, 2 * num_cells);  // avoid unnecessary reallocs
         group_state.groups = realloc(group_state.groups, sizeof(Group) * group_state.groups_capacity);
@@ -739,11 +766,7 @@ shape(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells, hb
     group_state.last_gpu_cell = first_gpu_cell + (num_cells ? num_cells - 1 : 0);
     load_hb_buffer(first_cpu_cell, first_gpu_cell, num_cells);
 
-    if (disable_ligature) {
-        hb_shape(font, harfbuzz_buffer, &no_calt_feature, 1);
-    } else {
-        hb_shape(font, harfbuzz_buffer, NULL, 0);
-    }
+    hb_shape(font, harfbuzz_buffer, fobj->hb_features, fobj->num_hb_features - (disable_ligature ? 0 : 1));
 
     unsigned int info_length, positions_length;
     group_state.info = hb_buffer_get_glyph_infos(harfbuzz_buffer, &info_length);
@@ -814,7 +837,7 @@ check_cell_consumed(CellData *cell_data, CPUCell *last_cpu_cell) {
 
 static inline void
 shape_run(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells, Font *font, bool disable_ligature) {
-    shape(first_cpu_cell, first_gpu_cell, num_cells, harfbuzz_font_for_face(font->face), disable_ligature);
+    shape(first_cpu_cell, first_gpu_cell, num_cells, harfbuzz_font_for_face(font->face), font, disable_ligature);
 #if 0
         static char dbuf[1024];
         // You can also generate this easily using hb-shape --show-extents --cluster-level=1 --shapers=ot /path/to/font/file text
@@ -989,6 +1012,8 @@ test_shape(PyObject UNUSED *self, PyObject *args) {
         if (face == NULL) return NULL;
         font = calloc(1, sizeof(Font));
         font->face = face;
+        font->hb_features[0] = hb_features[CALT_FEATURE];
+        font->num_hb_features = 1;
     } else {
         FontGroup *fg = font_groups;
         font = fg->fonts + fg->medium_font_idx;
@@ -1414,12 +1439,15 @@ init_fonts(PyObject *module) {
     harfbuzz_buffer = hb_buffer_create();
     if (harfbuzz_buffer == NULL || !hb_buffer_allocation_successful(harfbuzz_buffer) || !hb_buffer_pre_allocate(harfbuzz_buffer, 2048)) { PyErr_NoMemory(); return false; }
     hb_buffer_set_cluster_level(harfbuzz_buffer, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS);
-#define feature_str "-calt"
-    if (!hb_feature_from_string(feature_str, sizeof(feature_str) - 1, &no_calt_feature)) {
-        PyErr_SetString(PyExc_RuntimeError, "Failed to create -calt harfbuzz feature");
-        return false;
-    }
-#undef feature_str
+#define create_feature(feature, where) {\
+    if (!hb_feature_from_string(feature, sizeof(feature) - 1, &hb_features[where])) { \
+        PyErr_SetString(PyExc_RuntimeError, "Failed to create " feature " harfbuzz feature"); \
+        return false; \
+    }}
+    create_feature("-liga", LIGA_FEATURE);
+    create_feature("-dlig", DLIG_FEATURE);
+    create_feature("-calt", CALT_FEATURE);
+#undef create_feature
     if (PyModule_AddFunctions(module, module_methods) != 0) return false;
     current_send_sprite_to_gpu = send_sprite_to_gpu;
     return true;

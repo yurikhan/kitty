@@ -53,6 +53,7 @@ typedef enum { DISABLE_LIGATURES_NEVER, DISABLE_LIGATURES_CURSOR, DISABLE_LIGATU
 typedef enum MouseTrackingModes { NO_TRACKING, BUTTON_MODE, MOTION_MODE, ANY_MODE } MouseTrackingMode;
 typedef enum MouseTrackingProtocols { NORMAL_PROTOCOL, UTF8_PROTOCOL, SGR_PROTOCOL, URXVT_PROTOCOL} MouseTrackingProtocol;
 typedef enum MouseShapes { BEAM, HAND, ARROW } MouseShape;
+typedef enum { NONE, MENUBAR, WINDOW, ALL } WindowTitleIn;
 
 #define MAX_CHILDREN 512
 #define BLANK_CHAR 0
@@ -277,6 +278,7 @@ Cursor* alloc_cursor(void);
 LineBuf* alloc_linebuf(unsigned int, unsigned int);
 HistoryBuf* alloc_historybuf(unsigned int, unsigned int, unsigned int);
 ColorProfile* alloc_color_profile(void);
+void copy_color_profile(ColorProfile*, ColorProfile*);
 PyObject* create_256_color_table(void);
 PyObject* parse_bytes_dump(PyObject UNUSED *, PyObject *);
 PyObject* parse_bytes(PyObject UNUSED *, PyObject *);
@@ -286,7 +288,7 @@ void cursor_copy_to(Cursor *src, Cursor *dest);
 void cursor_reset_display_attrs(Cursor*);
 void cursor_from_sgr(Cursor *self, unsigned int *params, unsigned int count);
 void apply_sgr_to_cells(GPUCell *first_cell, unsigned int cell_count, unsigned int *params, unsigned int count);
-const char* cell_as_sgr(GPUCell *, GPUCell *);
+const char* cell_as_sgr(const GPUCell *, const GPUCell *);
 const char* cursor_as_sgr(const Cursor *);
 
 double monotonic(void);

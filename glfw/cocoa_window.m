@@ -1,5 +1,5 @@
 //========================================================================
-// GLFW 3.3 macOS - www.glfw.org
+// GLFW 3.4 macOS - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2009-2019 Camilla Löwy <elmindreda@glfw.org>
 //
@@ -261,9 +261,13 @@ static inline const char*
 format_text(const char *src) {
     static char buf[256];
     char *p = buf;
+    const char *last_char = buf + sizeof(buf) - 1;
     if (!src[0]) return "<none>";
     while (*src) {
-        p += snprintf(p, sizeof(buf) - (p - buf), "0x%x ", (unsigned char)*(src++));
+        int num = snprintf(p, sizeof(buf) - (p - buf), "0x%x ", (unsigned char)*(src++));
+        if (num < 0) return "<error>";
+        if (p + num >= last_char) break;
+        p += num;
     }
     if (p != buf) *(--p) = 0;
     return buf;
@@ -630,7 +634,7 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
         markedRect = NSMakeRect(0.0, 0.0, 0.0, 0.0);
 
         [self updateTrackingAreas];
-        [self registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+        [self registerForDraggedTypes:@[NSPasteboardTypeFileURL, NSPasteboardTypeString]];
     }
 
     return self;
@@ -692,8 +696,8 @@ static GLFWapplicationshouldhandlereopenfun handle_reopen_callback = NULL;
             [window->context.nsgl.object update];
         } @catch (NSException *e) {
             _glfwInputError(GLFW_PLATFORM_ERROR,
-                    "Failed to update NSGL Context object with error: %s (%s)",
-                    [[e name] UTF8String], [[e reason] UTF8String]);
+                            "Failed to update NSGL Context object with error: %s (%s)",
+                            [[e name] UTF8String], [[e reason] UTF8String]);
         }
     }
 
@@ -948,13 +952,13 @@ is_ascii_control_char(char x) {
                     &char_count,
                     text
                     ) != noErr) {
-            debug_key(@"UCKeyTranslate failed for scancode: 0x%x (%s) %s\n",
-                    scancode, safe_name_for_scancode(scancode), format_mods(mods));
+            debug_key(@"UCKeyTranslate failed for scancode: 0x%x (%@) %@\n",
+                    scancode, @(safe_name_for_scancode(scancode)), @(format_mods(mods)));
             window->ns.deadKeyState = 0;
             return;
         }
-        debug_key(@"scancode: 0x%x (%s) %schar_count: %lu deadKeyState: %u repeat: %d",
-                scancode, safe_name_for_scancode(scancode), format_mods(mods), char_count, window->ns.deadKeyState, event.ARepeat);
+        debug_key(@"scancode: 0x%x (%@) %@char_count: %lu deadKeyState: %u repeat: %d",
+                scancode, @(safe_name_for_scancode(scancode)), @(format_mods(mods)), char_count, window->ns.deadKeyState, event.ARepeat);
         if (process_text) {
             // this will call insertText which will fill up _glfw.ns.text
             [self interpretKeyEvents:[NSArray arrayWithObject:event]];
@@ -963,7 +967,7 @@ is_ascii_control_char(char x) {
         }
         if (window->ns.deadKeyState && (char_count == 0 || scancode == 0x75)) {
             // 0x75 is the delete key which needs to be ignored during a compose sequence
-            debug_key(@"Sending pre-edit text for dead key (text: %s markedText: %@).\n", format_text(_glfw.ns.text), markedText);
+            debug_key(@"Sending pre-edit text for dead key (text: %@ markedText: %@).\n", @(format_text(_glfw.ns.text)), markedText);
             _glfwInputKeyboard(window, key, scancode, GLFW_PRESS, mods,
                                [[markedText string] UTF8String], 1); // update pre-edit text
             return;
@@ -975,8 +979,8 @@ is_ascii_control_char(char x) {
         }
     }
     if (is_ascii_control_char(_glfw.ns.text[0])) _glfw.ns.text[0] = 0;  // don't send text for ascii control codes
-    debug_key(@"text: %s glfw_key: %s marked_text: %@\n",
-            format_text(_glfw.ns.text), _glfwGetKeyName(key), markedText);
+    debug_key(@"text: %@ glfw_key: %@ marked_text: %@\n",
+            @(format_text(_glfw.ns.text)), @(_glfwGetKeyName(key)), markedText);
     if (!window->ns.deadKeyState) {
         if ([self hasMarkedText]) {
             _glfwInputKeyboard(window, key, scancode, GLFW_PRESS, mods,
@@ -1073,16 +1077,27 @@ is_ascii_control_char(char x) {
 
     NSPasteboard* pasteboard = [sender draggingPasteboard];
     NSDictionary* options = @{NSPasteboardURLReadingFileURLsOnlyKey:@YES};
-    NSArray* urls = [pasteboard readObjectsForClasses:@[[NSURL class]]
+    NSArray* objs = [pasteboard readObjectsForClasses:@[[NSURL class], [NSString class]]
                                               options:options];
-    if (!urls) return NO;
-    const NSUInteger count = [urls count];
+    if (!objs) return NO;
+    const NSUInteger count = [objs count];
     if (count)
     {
         char** paths = calloc(count, sizeof(char*));
 
         for (NSUInteger i = 0;  i < count;  i++)
-            paths[i] = _glfw_strdup([urls[i] fileSystemRepresentation]);
+        {
+            id obj = objs[i];
+            if ([obj isKindOfClass:[NSURL class]]) {
+                paths[i] = _glfw_strdup([obj fileSystemRepresentation]);
+            } else if ([obj isKindOfClass:[NSString class]]) {
+                paths[i] = _glfw_strdup([obj UTF8String]);
+            } else {
+                _glfwInputError(GLFW_PLATFORM_ERROR,
+                                "Cocoa: Object is neither a URL nor a string");
+                paths[i] = _glfw_strdup("");
+            }
+        }
 
         _glfwInputDrop(window, (int) count, (const char**) paths);
 

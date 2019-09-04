@@ -1,5 +1,5 @@
 //========================================================================
-// GLFW 3.3 POSIX - www.glfw.org
+// GLFW 3.4 POSIX - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2002-2006 Marcus Geelnard
 // Copyright (c) 2006-2017 Camilla Löwy <elmindreda@glfw.org>
@@ -35,7 +35,7 @@
 //
 typedef struct _GLFWtlsPOSIX
 {
-    bool        allocated;
+    bool            allocated;
     pthread_key_t   key;
 
 } _GLFWtlsPOSIX;
@@ -44,7 +44,7 @@ typedef struct _GLFWtlsPOSIX
 //
 typedef struct _GLFWmutexPOSIX
 {
-    bool        allocated;
+    bool            allocated;
     pthread_mutex_t handle;
 
 } _GLFWmutexPOSIX;

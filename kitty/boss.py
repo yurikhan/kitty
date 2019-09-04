@@ -619,12 +619,12 @@ class Boss:
         if tm is not None:
             tm.update_tab_bar_data()
 
-    def on_drop(self, os_window_id, paths):
+    def on_drop(self, os_window_id, strings):
         tm = self.os_window_map.get(os_window_id)
         if tm is not None:
             w = tm.active_window
             if w is not None:
-                w.paste('\n'.join(paths))
+                w.paste('\n'.join(strings))
 
     def on_os_window_closed(self, os_window_id, viewport_width, viewport_height):
         self.cached_values['window-size'] = viewport_width, viewport_height
@@ -716,7 +716,9 @@ class Boss:
                     },
                     cwd=w.cwd_of_child,
                     overlay_for=w.id
-                ))
+                ),
+                copy_colors_from=w
+            )
             overlay_window.action_on_close = partial(self.on_kitten_finish, w.id, end_kitten)
             return overlay_window
 

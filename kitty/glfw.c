@@ -12,6 +12,7 @@
 extern bool cocoa_make_window_resizable(void *w, bool);
 extern void cocoa_focus_window(void *w);
 extern void cocoa_create_global_menu(void);
+extern void cocoa_hide_window_title(void *w);
 extern void cocoa_set_activation_policy(bool);
 extern void cocoa_set_titlebar_color(void *w, color_type color);
 extern bool cocoa_alt_option_key_pressed(unsigned long);
@@ -43,10 +44,20 @@ update_os_window_viewport(OSWindow *window, bool notify_boss) {
     if (fw == window->viewport_width && fh == window->viewport_height && w == window->window_width && h == window->window_height) {
         return; // no change, ignore
     }
-    if (fw / w > 5 || fh / h > 5 || fw < min_width || fh < min_height || fw < w || fh < h) {
+    if (w <= 0 || h <= 0 || fw / w > 5 || fh / h > 5 || fw < min_width || fh < min_height || fw < w || fh < h) {
         log_error("Invalid geometry ignored: framebuffer: %dx%d window: %dx%d\n", fw, fh, w, h);
+        if (!window->viewport_updated_at_least_once) {
+            window->viewport_width = min_width; window->viewport_height = min_height;
+            window->window_width = min_width; window->window_height = min_height;
+            window->viewport_x_ratio = 1; window->viewport_y_ratio = 1;
+            window->viewport_size_dirty = true;
+            if (notify_boss) {
+                call_boss(on_window_resize, "KiiO", window->id, window->viewport_width, window->viewport_height, Py_False);
+            }
+        }
         return;
     }
+    window->viewport_updated_at_least_once = true;
     window->viewport_width = fw; window->viewport_height = fh;
     double xr = window->viewport_x_ratio, yr = window->viewport_y_ratio;
     window->viewport_x_ratio = w > 0 ? (double)window->viewport_width / (double)w : xr;
@@ -58,8 +69,8 @@ update_os_window_viewport(OSWindow *window, bool notify_boss) {
     window->viewport_size_dirty = true;
     window->viewport_width = MAX(window->viewport_width, min_width);
     window->viewport_height = MAX(window->viewport_height, min_height);
-    window->window_width = MAX(w, 100);
-    window->window_height = MAX(h, 100);
+    window->window_width = MAX(w, min_width);
+    window->window_height = MAX(h, min_height);
     if (notify_boss) {
         call_boss(on_window_resize, "KiiO", window->id, window->viewport_width, window->viewport_height, dpi_changed ? Py_True : Py_False);
     }
@@ -308,13 +319,13 @@ window_focus_callback(GLFWwindow *w, int focused) {
 }
 
 static void
-drop_callback(GLFWwindow *w, int count, const char **paths) {
+drop_callback(GLFWwindow *w, int count, const char **strings) {
     if (!set_callback_window(w)) return;
-    PyObject *p = PyTuple_New(count);
-    if (p) {
-        for (int i = 0; i < count; i++) PyTuple_SET_ITEM(p, i, PyUnicode_FromString(paths[i]));
-        WINDOW_CALLBACK(on_drop, "O", p);
-        Py_CLEAR(p);
+    PyObject *s = PyTuple_New(count);
+    if (s) {
+        for (int i = 0; i < count; i++) PyTuple_SET_ITEM(s, i, PyUnicode_FromString(strings[i]));
+        WINDOW_CALLBACK(on_drop, "O", s);
+        Py_CLEAR(s);
         request_tick_callback();
     }
     global_state.callback_os_window = NULL;
@@ -636,8 +647,12 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
     glfwSetKeyboardCallback(glfw_window, key_callback);
     glfwSetDropCallback(glfw_window, drop_callback);
 #ifdef __APPLE__
-    if (glfwGetCocoaWindow) cocoa_make_window_resizable(glfwGetCocoaWindow(glfw_window), OPT(macos_window_resizable));
-    else log_error("Failed to load glfwGetCocoaWindow");
+    if (glfwGetCocoaWindow) {
+        if (!(OPT(macos_show_window_title_in) & WINDOW)) {
+            cocoa_hide_window_title(glfwGetCocoaWindow(glfw_window));
+        }
+        cocoa_make_window_resizable(glfwGetCocoaWindow(glfw_window), OPT(macos_window_resizable));
+    } else log_error("Failed to load glfwGetCocoaWindow");
 #endif
     double now = monotonic();
     w->is_focused = true;

@@ -1,5 +1,5 @@
 //========================================================================
-// GLFW 3.3 XKB - www.glfw.org
+// GLFW 3.4 XKB - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2018 Kovid Goyal <kovid@kovidgoyal.net>
 //
@@ -67,8 +67,8 @@ typedef struct {
 
 #ifdef _GLFW_X11
     int32_t                 keyboard_device_id;
-    bool                available;
-    bool                detectable;
+    bool                    available;
+    bool                    detectable;
     int                     majorOpcode;
     int                     eventBase;
     int                     errorBase;

@@ -30,14 +30,16 @@ if is_macos:
 else:
 
     def cmdline_of_process(pid):
-        return list(filter(None, open('/proc/{}/cmdline'.format(pid), 'rb').read().decode('utf-8').split('\0')))
+        with open('/proc/{}/cmdline'.format(pid), 'rb') as f:
+            return list(filter(None, f.read().decode('utf-8').split('\0')))
 
     def cwd_of_process(pid):
         ans = '/proc/{}/cwd'.format(pid)
         return os.path.realpath(ans)
 
     def _environ_of_process(pid):
-        return open('/proc/{}/environ'.format(pid), 'rb').read().decode('utf-8')
+        with open('/proc/{}/environ'.format(pid), 'rb') as f:
+            return f.read().decode('utf-8')
 
     def process_group_map():
         ans = defaultdict(list)
@@ -47,7 +49,8 @@ else:
             except Exception:
                 continue
             try:
-                raw = open('/proc/' + x + '/stat', 'rb').read().decode('utf-8')
+                with open('/proc/' + x + '/stat', 'rb') as f:
+                    raw = f.read().decode('utf-8')
             except EnvironmentError:
                 continue
             try:
@@ -118,6 +121,10 @@ def remove_cloexec(fd):
     fcntl.fcntl(fd, fcntl.F_SETFD, fcntl.fcntl(fd, fcntl.F_GETFD) & ~fcntl.FD_CLOEXEC)
 
 
+def remove_blocking(fd):
+    os.set_blocking(fd, False)
+
+
 def default_env():
     try:
         return default_env.env
@@ -130,6 +137,13 @@ def set_default_env(val=None):
     if val:
         env.update(val)
     default_env.env = env
+
+
+def openpty():
+    master, slave = os.openpty()  # Note that master and slave are in blocking mode
+    remove_cloexec(slave)
+    fast_data_types.set_iutf8_fd(master, True)
+    return master, slave
 
 
 class Child:
@@ -166,7 +180,7 @@ class Child:
             env['TERM'] = self.opts.term
             env['COLORTERM'] = 'truecolor'
             if self.cwd:
-                # needed incase cwd is a symlink, in which case shells
+                # needed in case cwd is a symlink, in which case shells
                 # can use it to display the current directory name rather
                 # than the resolved path
                 env['PWD'] = self.cwd
@@ -178,9 +192,7 @@ class Child:
         if self.forked:
             return
         self.forked = True
-        master, slave = os.openpty()  # Note that master and slave are in blocking mode
-        remove_cloexec(slave)
-        fast_data_types.set_iutf8_fd(master, True)
+        master, slave = openpty()
         stdin, self.stdin = self.stdin, None
         ready_read_fd, ready_write_fd = os.pipe()
         remove_cloexec(ready_read_fd)
@@ -194,8 +206,20 @@ class Child:
         argv = list(self.argv)
         exe = argv[0]
         if is_macos and exe == shell_path:
-            # Some macOS machines need the shell to have argv[0] prefixed by
-            # hyphen, see https://github.com/kovidgoyal/kitty/issues/247
+            # bash will only source ~/.bash_profile if it detects it is a login
+            # shell (see the invocation section of the bash man page), which it
+            # does if argv[0] is prefixed by a hyphen see
+            # https://github.com/kovidgoyal/kitty/issues/247
+            # it is apparently common to use ~/.bash_profile instead of the
+            # more correct ~/.bashrc on macOS to setup env vars, so if
+            # the default shell is used prefix argv[0] by '-'
+            #
+            # it is arguable whether graphical terminals should start shells
+            # in login mode in general, there are at least a few Linux users
+            # that also make this incorrect assumption, see for example
+            # https://github.com/kovidgoyal/kitty/issues/1870
+            # xterm, urxvt, konsole and gnome-terminal do not do it in my
+            # testing.
             argv[0] = ('-' + exe.split('/')[-1])
         pid = fast_data_types.spawn(exe, self.cwd, tuple(argv), env, master, slave, stdin_read_fd, stdin_write_fd, ready_read_fd, ready_write_fd)
         os.close(slave)
@@ -206,7 +230,7 @@ class Child:
             fast_data_types.thread_write(stdin_write_fd, stdin)
         os.close(ready_read_fd)
         self.terminal_ready_fd = ready_write_fd
-        fcntl.fcntl(self.child_fd, fcntl.F_SETFL, fcntl.fcntl(self.child_fd, fcntl.F_GETFL) | os.O_NONBLOCK)
+        remove_blocking(self.child_fd)
         return pid
 
     def mark_terminal_ready(self):

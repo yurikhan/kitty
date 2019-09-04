@@ -1,8 +1,8 @@
 ifdef V
-		VVAL=--verbose
+	VVAL=--verbose
 endif
 ifdef VERBOSE
-		VVAL=--verbose
+	VVAL=--verbose
 endif
 
 all:
@@ -28,7 +28,7 @@ asan:
 profile:
 	python3 setup.py build $(VVAL) --profile
 
-app: 
+app:
 	python3 setup.py kitty.app $(VVAL)
 
 man:

@@ -20,7 +20,7 @@ from ..tui.loop import Loop
 from ..tui.operations import faint, styled
 
 URL_PREFIXES = 'http https file ftp'.split()
-HINT_ALPHABET = string.digits + string.ascii_lowercase
+DEFAULT_HINT_ALPHABET = string.digits + string.ascii_lowercase
 screen_size = screen_size_function()
 
 
@@ -34,21 +34,26 @@ class Mark:
 
 
 @lru_cache(maxsize=2048)
-def encode_hint(num):
+def encode_hint(num, alphabet):
     res = ''
-    d = len(HINT_ALPHABET)
+    d = len(alphabet)
     while not res or num > 0:
         num, i = divmod(num, d)
-        res = HINT_ALPHABET[i] + res
+        res = alphabet[i] + res
     return res
 
 
-def decode_hint(x):
-    return int(x, 36)
+def decode_hint(x, alphabet=DEFAULT_HINT_ALPHABET):
+    base = len(alphabet)
+    index_map = {c: i for i, c in enumerate(alphabet)}
+    i = 0
+    for char in x:
+        i = i * base + index_map[char]
+    return i
 
 
-def highlight_mark(m, text, current_input):
-    hint = encode_hint(m.index)
+def highlight_mark(m, text, current_input, alphabet):
+    hint = encode_hint(m.index, alphabet)
     if current_input and not hint.startswith(current_input):
         return faint(text)
     hint = hint[len(current_input):] or ' '
@@ -63,11 +68,11 @@ def highlight_mark(m, text, current_input):
     )
 
 
-def render(text, current_input, all_marks, ignore_mark_indices):
+def render(text, current_input, all_marks, ignore_mark_indices, alphabet):
     for mark in reversed(all_marks):
         if mark.index in ignore_mark_indices:
             continue
-        mtext = highlight_mark(mark, text[mark.start:mark.end], current_input)
+        mtext = highlight_mark(mark, text[mark.start:mark.end], current_input, alphabet)
         text = text[:mark.start] + mtext + text[mark.end:]
 
     text = text.replace('\0', '')
@@ -79,6 +84,7 @@ class Hints(Handler):
 
     def __init__(self, text, all_marks, index_map, args):
         self.text, self.index_map = text, index_map
+        self.alphabet = args.alphabet or DEFAULT_HINT_ALPHABET
         self.all_marks = all_marks
         self.ignore_mark_indices = set()
         self.args = args
@@ -111,13 +117,13 @@ class Hints(Handler):
     def on_text(self, text, in_bracketed_paste):
         changed = False
         for c in text:
-            if c in HINT_ALPHABET:
+            if c in self.alphabet:
                 self.current_input += c
                 changed = True
         if changed:
             matches = [
                 m for idx, m in self.index_map.items()
-                if encode_hint(idx).startswith(self.current_input)
+                if encode_hint(idx, self.alphabet).startswith(self.current_input)
             ]
             if len(matches) == 1:
                 self.chosen.append(matches[0].text + self.match_suffix)
@@ -137,7 +143,7 @@ class Hints(Handler):
             self.draw_screen()
         elif key_event is enter_key and self.current_input:
             try:
-                idx = decode_hint(self.current_input)
+                idx = decode_hint(self.current_input, self.alphabet)
                 self.chosen.append(self.index_map[idx].text + self.match_suffix)
                 self.ignore_mark_indices.add(idx)
             except Exception:
@@ -164,7 +170,7 @@ class Hints(Handler):
 
     def draw_screen(self):
         if self.current_text is None:
-            self.current_text = render(self.text, self.current_input, self.all_marks, self.ignore_mark_indices)
+            self.current_text = render(self.text, self.current_input, self.all_marks, self.ignore_mark_indices, self.alphabet)
         self.cmd.clear_screen()
         self.write(self.current_text)
 
@@ -246,7 +252,7 @@ def run_loop(args, text, all_marks, index_map):
     handler = Hints(text, all_marks, index_map, args)
     loop.loop(handler)
     if handler.chosen and loop.return_code == 0:
-        return {'match': handler.chosen, 'program': args.program,
+        return {'match': handler.chosen, 'programs': args.program,
                 'multiple_joiner': args.multiple_joiner,
                 'type': args.type}
     raise SystemExit(loop.return_code)
@@ -333,10 +339,12 @@ def run(args, text):
 # CLI {{{
 OPTIONS = r'''
 --program
-default=default
+type=list
 What program to use to open matched text. Defaults to the default open program
-for the operating system.  Use a value of :file:`-` to paste the match into the
+for the operating system. Use a value of :file:`-` to paste the match into the
 terminal window instead. A value of :file:`@` will copy the match to the clipboard.
+A value of :file:`default` will run the default open program. Can be specified
+multiple times to run multiple programs.
 
 
 --type
@@ -348,11 +356,11 @@ The type of text to search for.
 --regex
 default=(?m)^\s*(.+)\s*$
 The regular expression to use when :option:`kitty +kitten hints --type`=regex.
-If you specify a group in the regular expression only the group
-will be matched. This allow you to match text ignoring a prefix/suffix, as
-needed. The default expression matches lines. To match text over
-multiple lines you should prefix the regular expression with :code:`(?ms)`,
-which turns on MULTILINE and DOTALL modes for the regex engine.
+The regular expression is in python syntax. If you specify a group in
+the regular expression only the group will be matched. This allow you to match
+text ignoring a prefix/suffix, as needed. The default expression matches lines.
+To match text over multiple lines you should prefix the regular expression with
+:code:`(?ms)`, which turns on MULTILINE and DOTALL modes for the regex engine.
 
 
 --url-prefixes
@@ -362,7 +370,7 @@ Comma separated list of recognized URL prefixes.
 
 --word-characters
 Characters to consider as part of a word. In addition, all characters marked as
-alpha-numeric in the unicode database will be considered as word characters.
+alphanumeric in the unicode database will be considered as word characters.
 Defaults to the select_by_word_characters setting from kitty.conf.
 
 
@@ -401,6 +409,15 @@ default=1
 type=int
 The offset (from zero) at which to start hint numbering. Note that only numbers
 greater than or equal to zero are respected.
+
+
+--alphabet
+The list of characters to use for hints. The default is to use numbers and lowercase
+English alphabets. Specify your preference as a string of characters. Note that
+unless you specify the hints offset as zero the first match will be highlighted with
+the second character you specify.
+
+
 '''.format(','.join(sorted(URL_PREFIXES))).format
 help_text = 'Select text from the screen using the keyboard. Defaults to searching for URLs.'
 usage = ''
@@ -430,12 +447,11 @@ def main(args):
     if items:
         print('Extra command line arguments present: {}'.format(' '.join(items)), file=sys.stderr)
         input(_('Press Enter to quit'))
-        return
     return run(args, text)
 
 
 def handle_result(args, data, target_window_id, boss):
-    program = data['program']
+    programs = data['programs'] or ('default',)
     matches = tuple(filter(None, data['match']))
     joiner = data['multiple_joiner']
     try:
@@ -444,6 +460,7 @@ def handle_result(args, data, target_window_id, boss):
         is_int = None
     text_type = data['type']
 
+    @lru_cache()
     def joined_text():
         if is_int is not None:
             try:
@@ -459,20 +476,21 @@ def handle_result(args, data, target_window_id, boss):
             q = {'newline': '\n\r', 'space': ' '}.get(joiner, '')
         return q.join(matches)
 
-    if program == '-':
-        w = boss.window_id_map.get(target_window_id)
-        if w is not None:
-            w.paste(joined_text())
-    elif program == '@':
-        set_clipboard_string(joined_text())
-    else:
-        cwd = None
-        w = boss.window_id_map.get(target_window_id)
-        if w is not None:
-            cwd = w.cwd_of_child
-        program = None if program == 'default' else program
-        for m in matches:
-            boss.open_url(m, program, cwd=cwd)
+    for program in programs:
+        if program == '-':
+            w = boss.window_id_map.get(target_window_id)
+            if w is not None:
+                w.paste(joined_text())
+        elif program == '@':
+            set_clipboard_string(joined_text())
+        else:
+            cwd = None
+            w = boss.window_id_map.get(target_window_id)
+            if w is not None:
+                cwd = w.cwd_of_child
+            program = None if program == 'default' else program
+            for m in matches:
+                boss.open_url(m, program, cwd=cwd)
 
 
 handle_result.type_of_input = 'screen'

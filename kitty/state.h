@@ -26,9 +26,10 @@ typedef struct {
     color_type url_color, background, foreground, active_border_color, inactive_border_color, bell_border_color;
     double repaint_delay, input_delay;
     bool focus_follows_mouse, hide_window_decorations;
-    bool macos_hide_from_tasks, macos_quit_when_last_window_closed, macos_window_resizable, macos_traditional_fullscreen, macos_show_window_title_in_menubar;
+    bool macos_hide_from_tasks, macos_quit_when_last_window_closed, macos_window_resizable, macos_traditional_fullscreen;
     unsigned int macos_option_as_alt;
     float macos_thicken_font;
+    WindowTitleIn macos_show_window_title_in;
     int adjust_line_height_px, adjust_column_width_px;
     float adjust_line_height_frac, adjust_column_width_frac;
     float background_opacity, dim_opacity;
@@ -139,7 +140,7 @@ typedef struct {
     bool mouse_button_pressed[20];
     PyObject *window_title;
     bool is_key_pressed[MAX_KEY_COUNT];
-    bool viewport_size_dirty;
+    bool viewport_size_dirty, viewport_updated_at_least_once;
     LiveResizeInfo live_resize;
     bool has_pending_resizes, is_semi_transparent, shown_once, is_damaged;
     uint32_t offscreen_texture_id;

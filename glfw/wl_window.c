@@ -1,5 +1,5 @@
 //========================================================================
-// GLFW 3.3 Wayland - www.glfw.org
+// GLFW 3.4 Wayland - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2014 Jonas Ådahl <jadahl@gmail.com>
 //
@@ -173,7 +173,7 @@ static void dispatchChangesAfterConfigure(_GLFWwindow *window, int32_t width, in
  * SCM_RIGHTS methods.
  *
  * posix_fallocate() is used to guarantee that disk space is available
- * for the file at the given size. If disk space is insufficent, errno
+ * for the file at the given size. If disk space is insufficient, errno
  * is set to ENOSPC. If posix_fallocate() is not supported, program may
  * receive SIGBUS on accessing mmap()'ed file contents instead.
  */
@@ -1836,7 +1836,7 @@ static inline bool _glfwEnsureDataDevice(void) {
         if (!_glfw.wl.dataDevice)
         {
             _glfwInputError(GLFW_PLATFORM_ERROR,
-                    "Wayland: Cannot use clipboard, failed to create data device");
+                            "Wayland: Cannot use clipboard, failed to create data device");
             return false;
         }
     }
