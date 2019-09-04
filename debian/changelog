@@ -1,8 +1,12 @@
-kitty (0.14.4-1) UNRELEASED; urgency=medium
+kitty (0.14.4-1) unstable; urgency=medium
 
   * New upstream release
+  * control:
+    + Restrict Wayland B-D to Linux architectures
+  * Update to debhelper compat 12 and debhelper-compat Build-Depends
+  * Declare compliance with Policy 4.4.0, no changes needed
 
- -- James McCoy <jamessan@debian.org>  Tue, 03 Sep 2019 20:41:50 -0400
+ -- James McCoy <jamessan@debian.org>  Tue, 03 Sep 2019 20:52:30 -0400
 
 kitty (0.14.3-1) unstable; urgency=medium
 
