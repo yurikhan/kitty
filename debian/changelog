@@ -1,9 +1,10 @@
-kitty (0.14.6-1) UNRELEASED; urgency=medium
+kitty (0.14.6-1) unstable; urgency=medium
 
   * New upstream release
     + Support fonts where fontconfig reports spacing=90.  (Closes: #944558)
+  * Declare compliance with Policy 4.4.1, no changes needed
 
- -- James McCoy <jamessan@debian.org>  Mon, 11 Nov 2019 20:12:36 -0500
+ -- James McCoy <jamessan@debian.org>  Mon, 11 Nov 2019 20:18:35 -0500
 
 kitty (0.14.4-1) unstable; urgency=medium
 
