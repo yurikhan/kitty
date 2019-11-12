@@ -550,6 +550,7 @@ START_ALLOW_CASE_RANGE
     switch(cpu_cell->ch) {
         case 0:
         case ' ':
+        case '\t':
             return BLANK_FONT;
         case 0x2500 ... 0x2570:
         case 0x2574 ... 0x259f:
@@ -954,8 +955,11 @@ merge_groups_for_pua_space_ligature(void) {
     while (G(group_idx) > 0) {
         Group *g = G(groups), *g1 = G(groups) + 1;
         g->num_cells += g1->num_cells;
-        g->num_glyphs += g1->num_glyphs;
-        g->num_glyphs = MIN(g->num_glyphs, MAX_NUM_EXTRA_GLYPHS + 1);
+        // We dont want the space glyphs rendered because some stupid
+        // fonts like PowerLine dont have a space glyph
+        // https://github.com/kovidgoyal/kitty/issues/1225
+        /* g->num_glyphs += g1->num_glyphs; */
+        /* g->num_glyphs = MIN(g->num_glyphs, MAX_NUM_EXTRA_GLYPHS + 1); */
         G(group_idx)--;
     }
 }
@@ -1256,7 +1260,6 @@ send_prerendered_sprites_for_window(OSWindow *w) {
     FontGroup *fg = (FontGroup*)w->fonts_data;
     if (!fg->sprite_map) {
         fg->sprite_map = alloc_sprite_map(fg->cell_width, fg->cell_height);
-        if (!fg->sprite_map) fatal("Out of memory allocating a sprite map");
         send_prerendered_sprites(fg);
     }
 }

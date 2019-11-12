@@ -185,11 +185,37 @@ def kitty_cli_opts(ans, prefix=None):
 
 def complete_kitty_cli_arg(ans, opt, prefix):
     prefix = prefix or ''
-    if opt and opt['dest'] == 'override':
+    if not opt:
+        return
+    dest = opt['dest']
+    if dest == 'override':
         from kitty.config import option_names_for_completion
         k = 'Config directives'
         ans.match_groups[k] = {k+'=': None for k in option_names_for_completion() if k.startswith(prefix)}
         ans.no_space_groups.add(k)
+    elif dest == 'config':
+
+        def is_conf_file(x):
+            if os.path.isdir(x):
+                return True
+            return x.lower().endswith('.conf')
+
+        complete_files_and_dirs(ans, prefix, files_group_name='Config files', predicate=is_conf_file)
+    elif dest == 'session':
+        complete_files_and_dirs(ans, prefix, files_group_name='Session files')
+    elif dest == 'directory':
+        complete_files_and_dirs(ans, prefix, files_group_name='Directories', predicate=os.path.isdir)
+    elif dest == 'start_as':
+        k = 'Start as'
+        ans.match_groups[k] = {x: x for x in 'normal,fullscreen,maximized,minimized'.split(',') if x.startswith(prefix)}
+        ans.no_space_groups.add(k)
+    elif dest == 'listen_on':
+        if ':' not in prefix:
+            k = 'Address type'
+            ans.match_groups[k] = {x: x for x in ('unix:', 'tcp:') if x.startswith(prefix)}
+            ans.no_space_groups.add(k)
+        elif prefix.startswith('unix:') and not prefix.startswith('@'):
+            complete_files_and_dirs(ans, prefix[len('unix:'):], files_group_name='UNIX sockets', add_prefix='unix:')
 
 
 def complete_alias_map(ans, words, new_word, option_map, complete_args=None):
@@ -273,9 +299,12 @@ def path_completion(prefix=''):
     return dirs, files
 
 
-def complete_files_and_dirs(ans, prefix, files_group_name='Files', predicate=None):
+def complete_files_and_dirs(ans, prefix, files_group_name='Files', predicate=None, add_prefix=None):
     dirs, files = path_completion(prefix or '')
     files = filter(predicate, files)
+    if add_prefix:
+        dirs = (add_prefix + x for x in dirs)
+        files = (add_prefix + x for x in files)
 
     if dirs:
         ans.match_groups['Directories'] = dict.fromkeys(dirs)

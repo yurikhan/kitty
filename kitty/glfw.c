@@ -41,7 +41,10 @@ update_os_window_viewport(OSWindow *window, bool notify_boss) {
     int w, h, fw, fh;
     glfwGetFramebufferSize(window->handle, &fw, &fh);
     glfwGetWindowSize(window->handle, &w, &h);
-    if (fw == window->viewport_width && fh == window->viewport_height && w == window->window_width && h == window->window_height) {
+    double xdpi = window->logical_dpi_x, ydpi = window->logical_dpi_y;
+    set_os_window_dpi(window);
+
+    if (fw == window->viewport_width && fh == window->viewport_height && w == window->window_width && h == window->window_height && xdpi == window->logical_dpi_x && ydpi == window->logical_dpi_y) {
         return; // no change, ignore
     }
     if (w <= 0 || h <= 0 || fw / w > 5 || fh / h > 5 || fw < min_width || fh < min_height || fw < w || fh < h) {
@@ -62,8 +65,6 @@ update_os_window_viewport(OSWindow *window, bool notify_boss) {
     double xr = window->viewport_x_ratio, yr = window->viewport_y_ratio;
     window->viewport_x_ratio = w > 0 ? (double)window->viewport_width / (double)w : xr;
     window->viewport_y_ratio = h > 0 ? (double)window->viewport_height / (double)h : yr;
-    double xdpi = window->logical_dpi_x, ydpi = window->logical_dpi_y;
-    set_os_window_dpi(window);
     bool dpi_changed = (xr != 0.0 && xr != window->viewport_x_ratio) || (yr != 0.0 && yr != window->viewport_y_ratio) || (xdpi != window->logical_dpi_x) || (ydpi != window->logical_dpi_y);
 
     window->viewport_size_dirty = true;
@@ -781,7 +782,7 @@ glfw_init(PyObject UNUSED *self, PyObject *args) {
     // Joysticks cause slow startup on some linux systems, see
     // https://github.com/kovidgoyal/kitty/issues/830
     glfwInitHint(GLFW_ENABLE_JOYSTICKS, 0);
-    global_state.opts.debug_keyboard = debug_keyboard != 0;
+    OPT(debug_keyboard) = debug_keyboard != 0;
 #ifdef __APPLE__
     glfwInitHint(GLFW_COCOA_CHDIR_RESOURCES, 0);
     glfwInitHint(GLFW_COCOA_MENUBAR, 0);
@@ -1234,7 +1235,15 @@ init_glfw(PyObject *m) {
 
 // --- Printable keys ----------------------------------------------------------
     ADDC(GLFW_KEY_SPACE);
+    ADDC(GLFW_KEY_EXCLAM);
+    ADDC(GLFW_KEY_DOUBLE_QUOTE);
+    ADDC(GLFW_KEY_NUMBER_SIGN);
+    ADDC(GLFW_KEY_DOLLAR);
+    ADDC(GLFW_KEY_AMPERSAND);
     ADDC(GLFW_KEY_APOSTROPHE);
+    ADDC(GLFW_KEY_PARENTHESIS_LEFT);
+    ADDC(GLFW_KEY_PARENTHESIS_RIGHT);
+    ADDC(GLFW_KEY_PLUS);
     ADDC(GLFW_KEY_COMMA);
     ADDC(GLFW_KEY_MINUS);
     ADDC(GLFW_KEY_PERIOD);
@@ -1249,8 +1258,12 @@ init_glfw(PyObject *m) {
     ADDC(GLFW_KEY_7);
     ADDC(GLFW_KEY_8);
     ADDC(GLFW_KEY_9);
+    ADDC(GLFW_KEY_COLON);
     ADDC(GLFW_KEY_SEMICOLON);
+    ADDC(GLFW_KEY_LESS);
     ADDC(GLFW_KEY_EQUAL);
+    ADDC(GLFW_KEY_GREATER);
+    ADDC(GLFW_KEY_AT);
     ADDC(GLFW_KEY_A);
     ADDC(GLFW_KEY_B);
     ADDC(GLFW_KEY_C);
@@ -1280,11 +1293,61 @@ init_glfw(PyObject *m) {
     ADDC(GLFW_KEY_LEFT_BRACKET);
     ADDC(GLFW_KEY_BACKSLASH);
     ADDC(GLFW_KEY_RIGHT_BRACKET);
+    ADDC(GLFW_KEY_UNDERSCORE);
     ADDC(GLFW_KEY_GRAVE_ACCENT);
     ADDC(GLFW_KEY_WORLD_1);
     ADDC(GLFW_KEY_WORLD_2);
-    ADDC(GLFW_KEY_PLUS);
-    ADDC(GLFW_KEY_UNDERSCORE);
+    ADDC(GLFW_KEY_PARAGRAPH);
+    ADDC(GLFW_KEY_MASCULINE);
+    ADDC(GLFW_KEY_A_GRAVE);
+    ADDC(GLFW_KEY_A_DIAERESIS);
+    ADDC(GLFW_KEY_A_RING);
+    ADDC(GLFW_KEY_AE);
+    ADDC(GLFW_KEY_C_CEDILLA);
+    ADDC(GLFW_KEY_E_GRAVE);
+    ADDC(GLFW_KEY_E_ACUTE);
+    ADDC(GLFW_KEY_I_GRAVE);
+    ADDC(GLFW_KEY_N_TILDE);
+    ADDC(GLFW_KEY_O_GRAVE);
+    ADDC(GLFW_KEY_O_DIAERESIS);
+    ADDC(GLFW_KEY_O_SLASH);
+    ADDC(GLFW_KEY_U_GRAVE);
+    ADDC(GLFW_KEY_U_DIAERESIS);
+    ADDC(GLFW_KEY_S_SHARP);
+    ADDC(GLFW_KEY_CYRILLIC_A);
+    ADDC(GLFW_KEY_CYRILLIC_BE);
+    ADDC(GLFW_KEY_CYRILLIC_VE);
+    ADDC(GLFW_KEY_CYRILLIC_GHE);
+    ADDC(GLFW_KEY_CYRILLIC_DE);
+    ADDC(GLFW_KEY_CYRILLIC_IE);
+    ADDC(GLFW_KEY_CYRILLIC_ZHE);
+    ADDC(GLFW_KEY_CYRILLIC_ZE);
+    ADDC(GLFW_KEY_CYRILLIC_I);
+    ADDC(GLFW_KEY_CYRILLIC_SHORT_I);
+    ADDC(GLFW_KEY_CYRILLIC_KA);
+    ADDC(GLFW_KEY_CYRILLIC_EL);
+    ADDC(GLFW_KEY_CYRILLIC_EM);
+    ADDC(GLFW_KEY_CYRILLIC_EN);
+    ADDC(GLFW_KEY_CYRILLIC_O);
+    ADDC(GLFW_KEY_CYRILLIC_PE);
+    ADDC(GLFW_KEY_CYRILLIC_ER);
+    ADDC(GLFW_KEY_CYRILLIC_ES);
+    ADDC(GLFW_KEY_CYRILLIC_TE);
+    ADDC(GLFW_KEY_CYRILLIC_U);
+    ADDC(GLFW_KEY_CYRILLIC_EF);
+    ADDC(GLFW_KEY_CYRILLIC_HA);
+    ADDC(GLFW_KEY_CYRILLIC_TSE);
+    ADDC(GLFW_KEY_CYRILLIC_CHE);
+    ADDC(GLFW_KEY_CYRILLIC_SHA);
+    ADDC(GLFW_KEY_CYRILLIC_SHCHA);
+    ADDC(GLFW_KEY_CYRILLIC_HARD_SIGN);
+    ADDC(GLFW_KEY_CYRILLIC_YERU);
+    ADDC(GLFW_KEY_CYRILLIC_SOFT_SIGN);
+    ADDC(GLFW_KEY_CYRILLIC_E);
+    ADDC(GLFW_KEY_CYRILLIC_YU);
+    ADDC(GLFW_KEY_CYRILLIC_YA);
+    ADDC(GLFW_KEY_CYRILLIC_IO);
+    ADDC(GLFW_KEY_LAST_PRINTABLE);
 
 // --- Function keys -----------------------------------------------------------
     ADDC(GLFW_KEY_ESCAPE);
