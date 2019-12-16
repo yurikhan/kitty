@@ -1,9 +1,9 @@
-kitty (0.15.0-1) UNRELEASED; urgency=medium
+kitty (0.15.0-1) unstable; urgency=medium
 
   * New upstream release
     + Dynamically load canberra (for sounds) rather than linking against it.
 
- -- James McCoy <jamessan@debian.org>  Sun, 15 Dec 2019 21:49:55 -0500
+ -- James McCoy <jamessan@debian.org>  Sun, 15 Dec 2019 22:28:08 -0500
 
 kitty (0.14.6-1) unstable; urgency=medium
 
