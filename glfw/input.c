@@ -28,6 +28,7 @@
 //========================================================================
 
 #include "internal.h"
+#include "../kitty/monotonic.h"
 
 #include <assert.h>
 #include <float.h>
@@ -256,33 +257,44 @@ static bool parseMapping(_GLFWmapping* mapping, const char* string)
 //////                         GLFW event API                       //////
 //////////////////////////////////////////////////////////////////////////
 
+void _glfwInitializeKeyEvent(GLFWkeyevent *ev, int key, int native_key, int action, int mods)
+{
+    ev->key = key;
+    ev->native_key = native_key;
+    ev->action = action;
+    ev->mods = mods;
+    ev->text = NULL;
+    ev->ime_state = 0;
+}
+
 // Notifies shared code of a physical key event
 //
-void _glfwInputKeyboard(_GLFWwindow* window, int key, int scancode, int action, int mods, const char* text, int state)
+void _glfwInputKeyboard(_GLFWwindow* window, GLFWkeyevent* ev)
 {
-    if (key >= 0 && key <= GLFW_KEY_LAST)
+    if (ev->key >= 0 && ev->key <= GLFW_KEY_LAST)
     {
         bool repeated = false;
 
-        if (action == GLFW_RELEASE && window->keys[key] == GLFW_RELEASE)
+        if (ev->action == GLFW_RELEASE && window->keys[ev->key] == GLFW_RELEASE)
             return;
 
-        if (action == GLFW_PRESS && window->keys[key] == GLFW_PRESS)
+        if (ev->action == GLFW_PRESS && window->keys[ev->key] == GLFW_PRESS)
             repeated = true;
 
-        if (action == GLFW_RELEASE && window->stickyKeys)
-            window->keys[key] = _GLFW_STICK;
+        if (ev->action == GLFW_RELEASE && window->stickyKeys)
+            window->keys[ev->key] = _GLFW_STICK;
         else
-            window->keys[key] = (char) action;
+            window->keys[ev->key] = (char) ev->action;
 
         if (repeated)
-            action = GLFW_REPEAT;
+            ev->action = GLFW_REPEAT;
     }
 
 
+    // FIXME: will need to update ev->virtual_mods here too?
     if (window->callbacks.keyboard) {
-        if (!window->lockKeyMods) mods &= ~(GLFW_MOD_CAPS_LOCK | GLFW_MOD_NUM_LOCK);
-        window->callbacks.keyboard((GLFWwindow*) window, key, scancode, action, mods, text, state);
+        if (!window->lockKeyMods) ev->mods &= ~(GLFW_MOD_CAPS_LOCK | GLFW_MOD_NUM_LOCK);
+        window->callbacks.keyboard((GLFWwindow*) window, ev);
     }
 }
 
@@ -744,7 +756,7 @@ GLFWAPI void glfwSetInputMode(GLFWwindow* handle, int mode, int value)
         _glfwInputError(GLFW_INVALID_ENUM, "Invalid input mode 0x%08X", mode);
 }
 
-GLFWAPI const char* glfwGetKeyName(int key, int scancode)
+GLFWAPI const char* glfwGetKeyName(int key, int native_key)
 {
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
 
@@ -757,13 +769,13 @@ GLFWAPI const char* glfwGetKeyName(int key, int scancode)
             return NULL;
         }
 
-        scancode = _glfwPlatformGetKeyScancode(key);
+        native_key = _glfwPlatformGetNativeKeyForKey(key);
     }
 
-    return _glfwPlatformGetScancodeName(scancode);
+    return _glfwPlatformGetNativeKeyName(native_key);
 }
 
-GLFWAPI int glfwGetKeyScancode(int key)
+GLFWAPI int glfwGetNativeKeyForKey(int key)
 {
     _GLFW_REQUIRE_INIT_OR_RETURN(-1);
 
@@ -773,7 +785,7 @@ GLFWAPI int glfwGetKeyScancode(int key)
         return GLFW_RELEASE;
     }
 
-    return _glfwPlatformGetKeyScancode(key);
+    return _glfwPlatformGetNativeKeyForKey(key);
 }
 
 GLFWAPI int glfwGetKey(GLFWwindow* handle, int key)
@@ -1466,25 +1478,23 @@ GLFWAPI const char* glfwGetPrimarySelectionString(GLFWwindow* handle UNUSED)
 }
 #endif
 
-GLFWAPI double glfwGetTime(void)
+GLFWAPI monotonic_t glfwGetTime(void)
 {
-    _GLFW_REQUIRE_INIT_OR_RETURN(0.0);
-    return (double) (_glfwPlatformGetTimerValue() - _glfw.timer.offset) /
-        _glfwPlatformGetTimerFrequency();
+    _GLFW_REQUIRE_INIT_OR_RETURN(0);
+    return monotonic();
 }
 
-GLFWAPI void glfwSetTime(double time)
+GLFWAPI void glfwSetTime(monotonic_t time)
 {
     _GLFW_REQUIRE_INIT();
 
-    if (time != time || time < 0.0 || time > 18446744073.0)
+    if (time < 0)
     {
-        _glfwInputError(GLFW_INVALID_VALUE, "Invalid time %f", time);
+        _glfwInputError(GLFW_INVALID_VALUE, "Invalid time %f", monotonic_t_to_s_double(time));
         return;
     }
 
-    _glfw.timer.offset = _glfwPlatformGetTimerValue() -
-        (uint64_t) (time * _glfwPlatformGetTimerFrequency());
+    // Do nothing
 }
 
 GLFWAPI uint64_t glfwGetTimerValue(void)

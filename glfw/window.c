@@ -29,6 +29,7 @@
 //========================================================================
 
 #include "internal.h"
+#include "../kitty/monotonic.h"
 
 #include <assert.h>
 #include <string.h>
@@ -56,8 +57,10 @@ void _glfwInputWindowFocus(_GLFWwindow* window, bool focused)
         {
             if (window->keys[key] == GLFW_PRESS)
             {
-                const int scancode = _glfwPlatformGetKeyScancode(key);
-                _glfwInputKeyboard(window, key, scancode, GLFW_RELEASE, 0, "", 0);
+                const int native_key = _glfwPlatformGetNativeKeyForKey(key);
+                GLFWkeyevent ev;
+                _glfwInitializeKeyEvent(&ev, key, native_key, GLFW_RELEASE, 0);
+                _glfwInputKeyboard(window, &ev);
             }
         }
 
@@ -736,12 +739,12 @@ GLFWAPI void glfwGetWindowContentScale(GLFWwindow* handle,
     _glfwPlatformGetWindowContentScale(window, xscale, yscale);
 }
 
-GLFWAPI double glfwGetDoubleClickInterval(GLFWwindow* handle)
+GLFWAPI monotonic_t glfwGetDoubleClickInterval(GLFWwindow* handle)
 {
     _GLFWwindow* window = (_GLFWwindow*) handle;
     assert(window != NULL);
 
-    _GLFW_REQUIRE_INIT_OR_RETURN(0.5f);
+    _GLFW_REQUIRE_INIT_OR_RETURN(ms_to_monotonic_t(500ll));
     return _glfwPlatformGetDoubleClickInterval(window);
 }
 

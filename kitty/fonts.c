@@ -409,9 +409,9 @@ calc_cell_metrics(FontGroup *fg) {
     unsigned int before_cell_height = cell_height;
     int cw = cell_width, ch = cell_height;
     if (OPT(adjust_line_height_px) != 0) ch += OPT(adjust_line_height_px);
-    if (OPT(adjust_line_height_frac) != 0.f) ch *= OPT(adjust_line_height_frac);
+    if (OPT(adjust_line_height_frac) != 0.f) ch = (int)(ch * OPT(adjust_line_height_frac));
     if (OPT(adjust_column_width_px != 0)) cw += OPT(adjust_column_width_px);
-    if (OPT(adjust_column_width_frac) != 0.f) cw *= OPT(adjust_column_width_frac);
+    if (OPT(adjust_column_width_frac) != 0.f) cw = (int)(cw * OPT(adjust_column_width_frac));
 #define MAX_DIM 1000
 #define MIN_WIDTH 2
 #define MIN_HEIGHT 4
@@ -543,8 +543,18 @@ in_symbol_maps(FontGroup *fg, char_type ch) {
 }
 
 
-static ssize_t
-font_for_cell(FontGroup *fg, CPUCell *cpu_cell, GPUCell *gpu_cell) {
+// Decides which 'font' to use for a given cell.
+//
+// Possible results:
+// - NO_FONT
+// - MISSING_FONT
+// - BLANK_FONT
+// - BOX_FONT
+// - an index in the fonts list
+static inline ssize_t
+font_for_cell(FontGroup *fg, CPUCell *cpu_cell, GPUCell *gpu_cell, bool *is_fallback_font, bool *is_emoji_presentation) {
+    *is_fallback_font = false;
+    *is_emoji_presentation = false;
 START_ALLOW_CASE_RANGE
     ssize_t ans;
     switch(cpu_cell->ch) {
@@ -552,12 +562,14 @@ START_ALLOW_CASE_RANGE
         case ' ':
         case '\t':
             return BLANK_FONT;
-        case 0x2500 ... 0x2570:
+        case 0x2500 ... 0x2573:
         case 0x2574 ... 0x259f:
-        case 0xe0b0:
-        case 0xe0b2:
-        case 0xe0b4:
+        case 0xe0b0 ... 0xe0b4:
         case 0xe0b6:
+        case 0xe0b8: // 
+        case 0xe0ba: //   
+        case 0xe0bc: // 
+        case 0xe0be: //   
             return BOX_FONT;
         default:
             ans = in_symbol_maps(fg, cpu_cell->ch);
@@ -573,7 +585,9 @@ START_ALLOW_CASE_RANGE
                     ans = fg->bi_font_idx; break;
             }
             if (ans < 0) ans = fg->medium_font_idx;
-            if (!has_emoji_presentation(cpu_cell, gpu_cell) && has_cell_text(fg->fonts + ans, cpu_cell)) return ans;
+            *is_emoji_presentation = has_emoji_presentation(cpu_cell, gpu_cell);
+            if (!*is_emoji_presentation && has_cell_text(fg->fonts + ans, cpu_cell)) return ans;
+            *is_fallback_font = true;
             return fallback_font(fg, cpu_cell, gpu_cell);
     }
 END_ALLOW_CASE_RANGE
@@ -584,20 +598,15 @@ set_sprite(GPUCell *cell, sprite_index x, sprite_index y, sprite_index z) {
     cell->sprite_x = x; cell->sprite_y = y; cell->sprite_z = z;
 }
 
+// Gives a unique (arbitrary) id to a box glyph
 static inline glyph_index
 box_glyph_id(char_type ch) {
 START_ALLOW_CASE_RANGE
     switch(ch) {
         case 0x2500 ... 0x259f:
-            return ch - 0x2500;
-        case 0xe0b0:
-            return 0xfa;
-        case 0xe0b2:
-            return 0xfb;
-        case 0xe0b4:
-            return 0xfc;
-        case 0xe0b6:
-            return 0xfd;
+            return ch - 0x2500; // IDs from 0x00 to 0x9f
+        case 0xe0b0 ... 0xe0d4:
+            return 0xa0 + ch - 0xe0b0; // IDs from 0xa0 to 0xc4
         default:
             return 0xff;
     }
@@ -682,7 +691,7 @@ static inline void
 render_group(FontGroup *fg, unsigned int num_cells, unsigned int num_glyphs, CPUCell *cpu_cells, GPUCell *gpu_cells, hb_glyph_info_t *info, hb_glyph_position_t *positions, Font *font, glyph_index glyph, ExtraGlyphs *extra_glyphs, bool center_glyph) {
     static SpritePosition* sprite_position[16];
     int error = 0;
-    num_cells = MIN(sizeof(sprite_position)/sizeof(sprite_position[0]), num_cells);
+    num_cells = MIN(arraysz(sprite_position), num_cells);
     for (unsigned int i = 0; i < num_cells; i++) {
         sprite_position[i] = sprite_position_for(fg, font, glyph, extra_glyphs, (uint8_t)i, &error);
         if (error != 0) { sprite_map_set_error(error); PyErr_Print(); return; }
@@ -717,7 +726,7 @@ typedef struct {
 
 typedef struct {
     unsigned int first_glyph_idx, first_cell_idx, num_glyphs, num_cells;
-    bool has_special_glyph;
+    bool has_special_glyph, is_space_ligature;
 } Group;
 
 typedef struct {
@@ -955,13 +964,11 @@ merge_groups_for_pua_space_ligature(void) {
     while (G(group_idx) > 0) {
         Group *g = G(groups), *g1 = G(groups) + 1;
         g->num_cells += g1->num_cells;
-        // We dont want the space glyphs rendered because some stupid
-        // fonts like PowerLine dont have a space glyph
-        // https://github.com/kovidgoyal/kitty/issues/1225
-        /* g->num_glyphs += g1->num_glyphs; */
-        /* g->num_glyphs = MIN(g->num_glyphs, MAX_NUM_EXTRA_GLYPHS + 1); */
+        g->num_glyphs += g1->num_glyphs;
+        g->num_glyphs = MIN(g->num_glyphs, MAX_NUM_EXTRA_GLYPHS + 1);
         G(group_idx)--;
     }
+    G(groups)->is_space_ligature = true;
 }
 
 static inline void
@@ -995,7 +1002,11 @@ render_groups(FontGroup *fg, Font *font, bool center_glyph) {
         int last = -1;
         for (i = 1; i < MIN(arraysz(ed.data) + 1, group->num_glyphs); i++) { last = i - 1; ed.data[last] = G(info)[group->first_glyph_idx + i].codepoint; }
         if ((size_t)(last + 1) < arraysz(ed.data)) ed.data[last + 1] = 0;
-        render_group(fg, group->num_cells, group->num_glyphs, G(first_cpu_cell) + group->first_cell_idx, G(first_gpu_cell) + group->first_cell_idx, G(info) + group->first_glyph_idx, G(positions) + group->first_glyph_idx, font, primary, &ed, center_glyph);
+        // We dont want to render the spaces in a space ligature because
+        // there exist stupid fonts like Powerline that have no space glyph,
+        // so special case it: https://github.com/kovidgoyal/kitty/issues/1225
+        unsigned int num_glyphs = group->is_space_ligature ? 1 : group->num_glyphs;
+        render_group(fg, group->num_cells, num_glyphs, G(first_cpu_cell) + group->first_cell_idx, G(first_gpu_cell) + group->first_cell_idx, G(info) + group->first_glyph_idx, G(positions) + group->first_glyph_idx, font, primary, &ed, center_glyph);
         idx++;
     }
 }
@@ -1096,18 +1107,20 @@ render_line(FONTS_DATA_HANDLE fg_, Line *line, index_type lnum, Cursor *cursor, 
         if (prev_width == 2) { prev_width = 0; continue; }
         CPUCell *cpu_cell = line->cpu_cells + i;
         GPUCell *gpu_cell = line->gpu_cells + i;
-        ssize_t cell_font_idx = font_for_cell(fg, cpu_cell, gpu_cell);
+        bool is_fallback_font, is_emoji_presentation;
+        ssize_t cell_font_idx = font_for_cell(fg, cpu_cell, gpu_cell, &is_fallback_font, &is_emoji_presentation);
 
-        if (is_private_use(cpu_cell->ch)
-                && cell_font_idx != BOX_FONT
-                && cell_font_idx != MISSING_FONT) {
+        if (
+                cell_font_idx != MISSING_FONT &&
+                ((is_fallback_font && !is_emoji_presentation && is_symbol(cpu_cell->ch)) || (cell_font_idx != BOX_FONT && is_private_use(cpu_cell->ch)))
+        ) {
             unsigned int desired_cells = 1;
             if (cell_font_idx > 0) {
                 Font *font = (fg->fonts + cell_font_idx);
                 glyph_index glyph_id = glyph_id_for_codepoint(font->face, cpu_cell->ch);
 
                 int width = get_glyph_width(font->face, glyph_id);
-                desired_cells = ceilf((float)width / fg->cell_width);
+                desired_cells = (unsigned int)ceilf((float)width / fg->cell_width);
             }
 
             unsigned int num_spaces = 0;

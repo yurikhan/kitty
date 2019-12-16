@@ -2,6 +2,11 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
+#
+# NOTE: to add a new glyph, add an entry to the `box_chars` dict, then update
+# the functions `font_for_cell` and `box_glyph_id` in `kitty/fonts.c`.
+#
+
 import math
 from functools import partial as p
 from itertools import repeat
@@ -170,6 +175,117 @@ def triangle(buf, width, height, left=True):
     lowery = line_equation(x1, by1, x2, y2)
     xlimits = [(uppery(x), lowery(x)) for x in range(width)]
     fill_region(buf, width, height, xlimits)
+
+
+def corner_triangle(buf, width, height, corner):
+    if corner == 'top-right' or corner == 'bottom-left':
+        diagonal_y = line_equation(0, 0, width - 1, height - 1)
+        if corner == 'top-right':
+            xlimits = [(0, diagonal_y(x)) for x in range(width)]
+        elif corner == 'bottom-left':
+            xlimits = [(diagonal_y(x), height - 1) for x in range(width)]
+    else:
+        diagonal_y = line_equation(width - 1, 0, 0, height - 1)
+        if corner == 'top-left':
+            xlimits = [(0, diagonal_y(x)) for x in range(width)]
+        elif corner == 'bottom-right':
+            xlimits = [(diagonal_y(x), height - 1) for x in range(width)]
+    fill_region(buf, width, height, xlimits)
+
+
+def antialiased_1px_line(buf, width, height, p1, p2):
+    # Draw an antialiased line using the Wu algorithm
+    x1, y1 = p1
+    x2, y2 = p2
+    dx, dy = x2 - x1, y2 - y1
+    off_limit = height * width
+    steep = abs(dx) < abs(dy)
+
+    if steep:
+        x1, y1, x2, y2, dx, dy = y1, x1, y2, x2, dy, dx
+
+        def p(x, y):
+            return y, x
+    else:
+        def p(x, y):
+            return x, y
+
+    if x2 < x1:
+        x1, x2, y1, y2 = x2, x1, y2, y1
+
+    def fpart(x):
+        return x - int(x)
+
+    def rfpart(x):
+        return 1 - fpart(x)
+
+    def putpixel(p, alpha):
+        x, y = p
+        off = int(x + y * width)
+        if 0 <= off < off_limit:
+            buf[off] = int(min(buf[off] + (alpha * 255), 255))
+
+    def draw_endpoint(pt):
+        x, y = pt
+        xend = round(x)
+        yend = y + grad * (xend - x)
+        xgap = rfpart(x + 0.5)
+        px, py = int(xend), int(yend)
+        putpixel(p(px, py), rfpart(yend) * xgap)
+        putpixel(p(px, py+1), fpart(yend) * xgap)
+        return px
+
+    grad = dy/dx
+    intery = y1 + rfpart(x1) * grad
+
+    xstart = draw_endpoint(p(*p1))
+    xend = draw_endpoint(p(*p2))
+
+    if xstart > xend:
+        xstart, xend = xend, xstart
+    xstart += 1
+
+    for x in range(xstart, xend):
+        y = int(intery)
+        putpixel(p(x, y), rfpart(intery))
+        putpixel(p(x, y+1), fpart(intery))
+        intery += grad
+
+
+def antialiased_line(buf, width, height, p1, p2, level=1):
+    th = thickness(level)
+    if th < 2:
+        return antialiased_1px_line(buf, width, height, p1, p2)
+    (x1, y1), (x2, y2) = p1, p2
+    dh = th // 2
+    items = range(-dh, dh + (th % 2))
+    for delta in items:
+        antialiased_1px_line(buf, width, height, (x1, y1 + delta), (x2, y2 + delta))
+
+
+def cross_line(buf, width, height, left=True, level=1):
+    if left:
+        p1, p2 = (0, 0), (width - 1, height - 1)
+    else:
+        p1, p2 = (width - 1, 0), (0, height - 1)
+    antialiased_line(buf, width, height, p1, p2, level=level)
+
+
+def half_cross_line(buf, width, height, which='tl', level=1):
+    my = (height - 1) // 2
+    if which == 'tl':
+        p1 = 0, 0
+        p2 = width - 1, my
+    elif which == 'bl':
+        p2 = 0, height - 1
+        p1 = width - 1, my
+    elif which == 'tr':
+        p1 = width - 1, 0
+        p2 = 0, my
+    else:
+        p2 = width - 1, height - 1
+        p1 = 0, my
+    antialiased_line(buf, width, height, p1, p2, level=level)
 
 
 def cubic_bezier(start, end, c1, c2):
@@ -459,6 +575,12 @@ box_chars = {
     '': [p(triangle, left=False)],
     '': [D],
     '': [p(D, left=False)],
+    '': [p(half_cross_line, which='tl'), p(half_cross_line, which='bl')],
+    '': [p(half_cross_line, which='tr'), p(half_cross_line, which='br')],
+    '': [p(corner_triangle, corner='bottom-left')],
+    '': [p(corner_triangle, corner='bottom-right')],
+    '': [p(corner_triangle, corner='top-left')],
+    '': [p(corner_triangle, corner='top-right')],
     '═': [dhline],
     '║': [dvline],
     '╞': [vline, p(half_dhline, which='right')],
@@ -472,6 +594,9 @@ box_chars = {
     '╣': [p(inner_corner, which='tl'), p(inner_corner, which='bl'), p(dvline, only='right')],
     '╦': [p(inner_corner, which='bl'), p(inner_corner, which='br'), p(dhline, only='top')],
     '╩': [p(inner_corner, which='tl'), p(inner_corner, which='tr'), p(dhline, only='bottom')],
+    '╱': [p(cross_line, left=False)],
+    '╲': [cross_line],
+    '╳': [cross_line, p(cross_line, left=False)],
     '▀': [p(vblock, frac=1/2)],
     '▁': [p(vblock, frac=1/8, gravity='bottom')],
     '▂': [p(vblock, frac=1/4, gravity='bottom')],
@@ -551,60 +676,60 @@ def render_missing_glyph(buf, width, height):
 
 
 def test_char(ch, sz=48):
-    # kitty +runpy "from kitty.fonts.box_drawing import test_char; import sys; test_char('XXX')"
+    # kitty +runpy "from kitty.fonts.box_drawing import test_char; test_char('XXX')"
     from .render import display_bitmap, setup_for_testing
     from kitty.fast_data_types import concat_cells, set_send_sprite_to_gpu
-    width, height = setup_for_testing('monospace', sz)[1:]
-    buf = bytearray(width * height)
-    try:
-        render_box_char(ch, buf, width, height)
+    with setup_for_testing('monospace', sz) as (_, width, height):
+        buf = bytearray(width * height)
+        try:
+            render_box_char(ch, buf, width, height)
 
-        def join_cells(*cells):
-            cells = tuple(bytes(x) for x in cells)
-            return concat_cells(width, height, False, cells)
+            def join_cells(*cells):
+                cells = tuple(bytes(x) for x in cells)
+                return concat_cells(width, height, False, cells)
 
-        rgb_data = join_cells(buf)
-        display_bitmap(rgb_data, width, height)
-        print()
-    finally:
-        set_send_sprite_to_gpu(None)
+            rgb_data = join_cells(buf)
+            display_bitmap(rgb_data, width, height)
+            print()
+        finally:
+            set_send_sprite_to_gpu(None)
 
 
 def test_drawing(sz=48, family='monospace'):
     from .render import display_bitmap, setup_for_testing
     from kitty.fast_data_types import concat_cells, set_send_sprite_to_gpu
 
-    width, height = setup_for_testing(family, sz)[1:]
-    space = bytearray(width * height)
+    with setup_for_testing(family, sz) as (_, width, height):
+        space = bytearray(width * height)
 
-    def join_cells(cells):
-        cells = tuple(bytes(x) for x in cells)
-        return concat_cells(width, height, False, cells)
+        def join_cells(cells):
+            cells = tuple(bytes(x) for x in cells)
+            return concat_cells(width, height, False, cells)
 
-    def render_chr(ch):
-        if ch in box_chars:
-            cell = bytearray(len(space))
-            render_box_char(ch, cell, width, height)
-            return cell
-        return space
+        def render_chr(ch):
+            if ch in box_chars:
+                cell = bytearray(len(space))
+                render_box_char(ch, cell, width, height)
+                return cell
+            return space
 
-    pos = 0x2500
-    rows = []
-    space_row = join_cells(repeat(space, 32))
+        pos = 0x2500
+        rows = []
+        space_row = join_cells(repeat(space, 32))
 
-    try:
-        for r in range(10):
-            row = []
-            for i in range(16):
-                row.append(render_chr(chr(pos)))
-                row.append(space)
-                pos += 1
-            rows.append(join_cells(row))
-            rows.append(space_row)
-        rgb_data = b''.join(rows)
-        width *= 32
-        height *= len(rows)
-        assert len(rgb_data) == width * height * 4, '{} != {}'.format(len(rgb_data), width * height * 4)
-        display_bitmap(rgb_data, width, height)
-    finally:
-        set_send_sprite_to_gpu(None)
+        try:
+            for r in range(10):
+                row = []
+                for i in range(16):
+                    row.append(render_chr(chr(pos)))
+                    row.append(space)
+                    pos += 1
+                rows.append(join_cells(row))
+                rows.append(space_row)
+            rgb_data = b''.join(rows)
+            width *= 32
+            height *= len(rows)
+            assert len(rgb_data) == width * height * 4, '{} != {}'.format(len(rgb_data), width * height * 4)
+            display_bitmap(rgb_data, width, height)
+        finally:
+            set_send_sprite_to_gpu(None)

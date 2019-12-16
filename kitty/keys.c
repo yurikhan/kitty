@@ -26,7 +26,7 @@ key_to_bytes(int glfw_key, bool smkx, bool extended, int mods, int action) {
 #define SPECIAL_INDEX(key) ((key & 0x7f) | ( (mods & 0xF) << 7))
 #define IS_ALT_MODS(mods) (mods == GLFW_MOD_ALT || mods == (GLFW_MOD_ALT | GLFW_MOD_SHIFT))
 
-typedef struct { int mods, scancode; } NativeKey;
+typedef struct { int mods, native_key; } NativeKey;
 static NativeKey *native_special_keys = NULL;
 static size_t native_special_keys_capacity = 0, native_special_keys_count = 0;
 
@@ -39,7 +39,7 @@ set_special_key_combo(int glfw_key, int mods, bool is_native) {
             if (native_special_keys == NULL) fatal("Out of memory");
         }
         native_special_keys[native_special_keys_count].mods = mods;
-        native_special_keys[native_special_keys_count++].scancode = glfw_key;
+        native_special_keys[native_special_keys_count++].native_key = glfw_key;
     } else {
         uint16_t key = key_map[glfw_key];
         if (key != UINT8_MAX) {
@@ -68,6 +68,7 @@ is_modifier_key(int key) {
         case GLFW_KEY_RIGHT_CONTROL:
         case GLFW_KEY_LEFT_SUPER:
         case GLFW_KEY_RIGHT_SUPER:
+        case GLFW_KEY_CAPS_LOCK:
             return true;
         default:
             return false;
@@ -96,7 +97,7 @@ is_ascii_control_char(char c) {
 }
 
 static inline bool
-check_if_special(int key, int mods, int scancode) {
+check_if_special(int key, int mods, int native_key) {
     uint16_t qkey = (0 <= key && key < (ssize_t)arraysz(key_map)) ? key_map[key] : UINT8_MAX;
     bool special = false;
     if (qkey != UINT8_MAX) {
@@ -104,7 +105,8 @@ check_if_special(int key, int mods, int scancode) {
         special = needs_special_handling[qkey];
     }
     for (size_t i = 0; !special && i < native_special_keys_count; i++) {
-        if (scancode == native_special_keys[i].scancode && mods == native_special_keys[i].mods) special = true;
+        if (native_key == native_special_keys[i].native_key && mods == native_special_keys[i].mods)
+          special = true;
     }
     return special;
 }
@@ -121,23 +123,26 @@ update_ime_position(OSWindow *os_window, Window* w, Screen *screen) {
 #define debug(...) if (OPT(debug_keyboard)) printf(__VA_ARGS__);
 
 void
-on_key_input(int key, int scancode, int action, int mods, const char* text, int state) {
+on_key_input(GLFWkeyevent *ev) {
     Window *w = active_window();
+    int action = ev->action, native_key = ev->native_key, key = ev->key, mods = ev->mods;
+    const char *text = ev->text ? ev->text : "";
+
     debug("on_key_input: glfw key: %d native_code: 0x%x action: %s mods: 0x%x text: '%s' state: %d ",
-            key, scancode,
+            key, native_key,
             (action == GLFW_RELEASE ? "RELEASE" : (action == GLFW_PRESS ? "PRESS" : "REPEAT")),
-            mods, text, state);
+            mods, text, ev->ime_state);
     if (!w) { debug("no active window, ignoring\n"); return; }
     if (OPT(mouse_hide_wait) < 0 && !is_modifier_key(key)) hide_mouse(global_state.callback_os_window);
     Screen *screen = w->render_data.screen;
-    switch(state) {
+    switch(ev->ime_state) {
         case 1:  // update pre-edit text
             update_ime_position(global_state.callback_os_window, w, screen);
             screen_draw_overlay_text(screen, text);
             debug("updated pre-edit text: '%s'\n", text);
             return;
         case 2:  // commit text
-            if (text && *text) {
+            if (*text) {
                 schedule_write_to_child(w->id, 1, text, strlen(text));
                 debug("committed pre-edit text: %s\n", text);
             } else debug("committed pre-edit text: (null)\n");
@@ -158,13 +163,13 @@ on_key_input(int key, int scancode, int action, int mods, const char* text, int 
         if (
             action != GLFW_RELEASE &&
             key != GLFW_KEY_LEFT_SHIFT && key != GLFW_KEY_RIGHT_SHIFT && key != GLFW_KEY_LEFT_ALT && key != GLFW_KEY_RIGHT_ALT && key != GLFW_KEY_LEFT_CONTROL && key != GLFW_KEY_RIGHT_CONTROL
-        ) call_boss(process_sequence, "iiii", key, scancode, action, mods);
+        ) call_boss(process_sequence, "iiii", key, native_key, action, mods);
         return;
     }
-    bool has_text = text && !is_ascii_control_char(text[0]);
+    bool has_text = text[0] && !is_ascii_control_char(text[0]);
     if (action == GLFW_PRESS || action == GLFW_REPEAT) {
-        if (check_if_special(key, mods, scancode)) {
-            PyObject *ret = PyObject_CallMethod(global_state.boss, "dispatch_special_key", "iiii", key, scancode, action, mods);
+        if (check_if_special(key, mods, native_key)) {
+            PyObject *ret = PyObject_CallMethod(global_state.boss, "dispatch_special_key", "iiii", key, native_key, action, mods);
             if (ret == NULL) { PyErr_Print(); }
             else {
                 bool consumed = ret == Py_True;
@@ -225,9 +230,9 @@ PYWRAP1(key_for_native_key_name) {
     int case_sensitive = 0;
     PA("s|p", &name, &case_sensitive);
 #ifndef __APPLE__
-    if (glfwGetXKBScancode) {  // if this function is called before GLFW is initialized glfwGetXKBScancode will be NULL
-        int scancode = glfwGetXKBScancode(name, case_sensitive);
-        if (scancode) return Py_BuildValue("i", scancode);
+    if (glfwGetNativeKeyForName) {  // if this function is called before GLFW is initialized glfwGetNativeKeyForName will be NULL
+        int native_key = glfwGetNativeKeyForName(name, case_sensitive);
+        if (native_key) return Py_BuildValue("i", native_key);
     }
 #endif
     Py_RETURN_NONE;

@@ -7,6 +7,7 @@
 
 
 #include "state.h"
+#include "monotonic.h"
 #include <Cocoa/Cocoa.h>
 
 #include <AvailabilityMacros.h>
@@ -231,8 +232,6 @@ cocoa_send_notification(PyObject *self UNUSED, PyObject *args) {
 // global menu {{{
 void
 cocoa_create_global_menu(void) {
-    @autoreleasepool {
-
     NSString* app_name = find_app_name();
     NSMenu* bar = [[NSMenu alloc] init];
     GlobalMenuTarget *global_menu_target = [GlobalMenuTarget shared_instance];
@@ -324,13 +323,11 @@ cocoa_create_global_menu(void) {
 
 
     [NSApp setServicesProvider:[[[ServiceProvider alloc] init] autorelease]];
-
-    } // autoreleasepool
 }
 
 void
 cocoa_update_menu_bar_title(PyObject *pytitle) {
-    NSString *title = [[NSString alloc] initWithUTF8String:PyUnicode_AsUTF8(pytitle)];
+    NSString *title = @(PyUnicode_AsUTF8(pytitle));
     NSMenu *bar = [NSApp mainMenu];
     if (title_menu != NULL) {
         [bar removeItem:title_menu];
@@ -339,7 +336,6 @@ cocoa_update_menu_bar_title(PyObject *pytitle) {
     NSMenu *m = [[NSMenu alloc] initWithTitle:[NSString stringWithFormat:@" :: %@", title]];
     [title_menu setSubmenu:m];
     [m release];
-    [title release];
 } // }}}
 
 bool
@@ -411,7 +407,7 @@ cocoa_get_lang(PyObject UNUSED *self) {
     } // autoreleasepool
 }
 
-double
+monotonic_t
 cocoa_cursor_blink_interval(void) {
     @autoreleasepool {
 
@@ -420,12 +416,12 @@ cocoa_cursor_blink_interval(void) {
     double off_period_ms = [defaults doubleForKey:@"NSTextInsertionPointBlinkPeriodOff"];
     double period_ms = [defaults doubleForKey:@"NSTextInsertionPointBlinkPeriod"];
     double max_value = 60 * 1000.0, ans = -1.0;
-    if (on_period_ms || off_period_ms) {
+    if (on_period_ms != 0. || off_period_ms != 0.) {
         ans = on_period_ms + off_period_ms;
-    } else if (period_ms) {
+    } else if (period_ms != 0.) {
         ans = period_ms;
     }
-    return ans > max_value ? 0.0 : ans;
+    return ans > max_value ? 0ll : ms_double_to_monotonic_t(ans);
 
     } // autoreleasepool
 }

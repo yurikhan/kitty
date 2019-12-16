@@ -99,6 +99,19 @@ add_tab(id_type os_window_id) {
     return 0;
 }
 
+static inline void
+create_gpu_resources_for_window(Window *w) {
+    w->render_data.vao_idx = create_cell_vao();
+    w->render_data.gvao_idx = create_graphics_vao();
+}
+
+static inline void
+release_gpu_resources_for_window(Window *w) {
+    remove_vao(w->render_data.vao_idx); remove_vao(w->render_data.gvao_idx);
+    w->render_data.vao_idx = 0; w->render_data.gvao_idx = 0;
+}
+
+
 static inline id_type
 add_window(id_type os_window_id, id_type tab_id, PyObject *title) {
     WITH_TAB(os_window_id, tab_id);
@@ -108,8 +121,7 @@ add_window(id_type os_window_id, id_type tab_id, PyObject *title) {
         tab->windows[tab->num_windows].id = ++global_state.window_id_counter;
         tab->windows[tab->num_windows].visible = true;
         tab->windows[tab->num_windows].title = title;
-        tab->windows[tab->num_windows].render_data.vao_idx = create_cell_vao();
-        tab->windows[tab->num_windows].render_data.gvao_idx = create_graphics_vao();
+        create_gpu_resources_for_window(&tab->windows[tab->num_windows]);
         Py_INCREF(tab->windows[tab->num_windows].title);
         return tab->windows[tab->num_windows++].id;
     END_WITH_TAB;
@@ -133,7 +145,7 @@ update_window_title(id_type os_window_id, id_type tab_id, id_type window_id, PyO
 static inline void
 destroy_window(Window *w) {
     Py_CLEAR(w->render_data.screen); Py_CLEAR(w->title);
-    remove_vao(w->render_data.vao_idx); remove_vao(w->render_data.gvao_idx);
+    release_gpu_resources_for_window(w);
 }
 
 static inline void
@@ -146,6 +158,70 @@ remove_window(id_type os_window_id, id_type tab_id, id_type id) {
     WITH_TAB(os_window_id, tab_id);
         make_os_window_context_current(osw);
         remove_window_inner(tab, id);
+    END_WITH_TAB;
+}
+
+typedef struct {
+    unsigned int num_windows, capacity;
+    Window *windows;
+} DetachedWindows;
+
+static DetachedWindows detached_windows = {0};
+
+
+static void
+add_detached_window(Window *w) {
+    ensure_space_for(&detached_windows, windows, Window, detached_windows.num_windows + 1, capacity, 8, true);
+    memcpy(detached_windows.windows + detached_windows.num_windows++, w, sizeof(Window));
+}
+
+static inline void
+detach_window(id_type os_window_id, id_type tab_id, id_type id) {
+    WITH_TAB(os_window_id, tab_id);
+        for (size_t i = 0; i < tab->num_windows; i++) {
+            if (tab->windows[i].id == id) {
+                make_os_window_context_current(osw);
+                release_gpu_resources_for_window(&tab->windows[i]);
+                add_detached_window(tab->windows + i);
+                zero_at_i(tab->windows, i);
+                remove_i_from_array(tab->windows, i, tab->num_windows);
+                break;
+            }
+        }
+    END_WITH_TAB;
+}
+
+
+static inline void
+resize_screen(OSWindow *os_window, Screen *screen, bool has_graphics) {
+    if (screen) {
+        screen->cell_size.width = os_window->fonts_data->cell_width;
+        screen->cell_size.height = os_window->fonts_data->cell_height;
+        screen_dirty_sprite_positions(screen);
+        if (has_graphics) screen_rescale_images(screen);
+    }
+}
+
+static inline void
+attach_window(id_type os_window_id, id_type tab_id, id_type id) {
+    WITH_TAB(os_window_id, tab_id);
+        for (size_t i = 0; i < detached_windows.num_windows; i++) {
+            if (detached_windows.windows[i].id == id) {
+                ensure_space_for(tab, windows, Window, tab->num_windows + 1, capacity, 1, true);
+                Window *w = tab->windows + tab->num_windows++;
+                memcpy(w, detached_windows.windows + i, sizeof(Window));
+                zero_at_i(detached_windows.windows, i);
+                remove_i_from_array(detached_windows.windows, i, detached_windows.num_windows);
+                make_os_window_context_current(osw);
+                create_gpu_resources_for_window(w);
+                if (
+                    w->render_data.screen->cell_size.width != osw->fonts_data->cell_width ||
+                    w->render_data.screen->cell_size.height != osw->fonts_data->cell_height
+                ) resize_screen(osw, w->render_data.screen, true);
+                else screen_dirty_sprite_positions(w->render_data.screen);
+                break;
+            }
+        }
     END_WITH_TAB;
 }
 
@@ -300,9 +376,14 @@ color_as_int(PyObject *color) {
 #undef I
 }
 
-static inline double
-repaint_delay(PyObject *val) {
-    return (double)(PyLong_AsUnsignedLong(val)) / 1000.0;
+static inline monotonic_t
+parse_s_double_to_monotonic_t(PyObject *val) {
+    return s_double_to_monotonic_t(PyFloat_AsDouble(val));
+}
+
+static inline monotonic_t
+parse_ms_long_to_monotonic_t(PyObject *val) {
+    return ms_to_monotonic_t(PyLong_AsUnsignedLong(val));
 }
 
 static int kitty_mod = 0;
@@ -360,6 +441,11 @@ set_special_keys(PyObject *dict) {
     }}
 }
 
+static inline float
+PyFloat_AsFloat(PyObject *o) {
+    return (float)PyFloat_AsDouble(o);
+}
+
 PYWRAP0(next_window_id) {
     return PyLong_FromUnsignedLongLong(global_state.window_id_counter + 1);
 }
@@ -390,28 +476,28 @@ PYWRAP1(set_options) {
 #define S(name, convert) SS(name, OPT(name), convert)
     SS(kitty_mod, kitty_mod, PyLong_AsLong);
     S(hide_window_decorations, PyObject_IsTrue);
-    S(visual_bell_duration, PyFloat_AsDouble);
+    S(visual_bell_duration, parse_s_double_to_monotonic_t);
     S(enable_audio_bell, PyObject_IsTrue);
     S(focus_follows_mouse, PyObject_IsTrue);
-    S(cursor_blink_interval, PyFloat_AsDouble);
-    S(cursor_stop_blinking_after, PyFloat_AsDouble);
-    S(background_opacity, PyFloat_AsDouble);
-    S(dim_opacity, PyFloat_AsDouble);
+    S(cursor_blink_interval, parse_s_double_to_monotonic_t);
+    S(cursor_stop_blinking_after, parse_s_double_to_monotonic_t);
+    S(background_opacity, PyFloat_AsFloat);
+    S(dim_opacity, PyFloat_AsFloat);
     S(dynamic_background_opacity, PyObject_IsTrue);
-    S(inactive_text_alpha, PyFloat_AsDouble);
-    S(window_padding_width, PyFloat_AsDouble);
+    S(inactive_text_alpha, PyFloat_AsFloat);
+    S(window_padding_width, PyFloat_AsFloat);
     S(scrollback_pager_history_size, PyLong_AsUnsignedLong);
     S(cursor_shape, PyLong_AsLong);
     S(url_style, PyLong_AsUnsignedLong);
     S(tab_bar_edge, PyLong_AsLong);
-    S(mouse_hide_wait, PyFloat_AsDouble);
+    S(mouse_hide_wait, parse_s_double_to_monotonic_t);
     S(wheel_scroll_multiplier, PyFloat_AsDouble);
     S(touch_scroll_multiplier, PyFloat_AsDouble);
     S(open_url_modifiers, convert_mods);
     S(rectangle_select_modifiers, convert_mods);
     S(terminal_select_modifiers, convert_mods);
-    S(click_interval, PyFloat_AsDouble);
-    S(resize_debounce_time, PyFloat_AsDouble);
+    S(click_interval, parse_s_double_to_monotonic_t);
+    S(resize_debounce_time, parse_s_double_to_monotonic_t);
     S(url_color, color_as_int);
     S(background, color_as_int);
     S(foreground, color_as_int);
@@ -420,8 +506,8 @@ PYWRAP1(set_options) {
     default_color = 0;
     S(inactive_border_color, color_as_int);
     S(bell_border_color, color_as_int);
-    S(repaint_delay, repaint_delay);
-    S(input_delay, repaint_delay);
+    S(repaint_delay, parse_ms_long_to_monotonic_t);
+    S(input_delay, parse_ms_long_to_monotonic_t);
     S(sync_to_monitor, PyObject_IsTrue);
     S(close_on_child_death, PyObject_IsTrue);
     S(window_alert_on_bell, PyObject_IsTrue);
@@ -431,7 +517,7 @@ PYWRAP1(set_options) {
     S(macos_show_window_title_in, window_title_in);
     S(macos_window_resizable, PyObject_IsTrue);
     S(macos_hide_from_tasks, PyObject_IsTrue);
-    S(macos_thicken_font, PyFloat_AsDouble);
+    S(macos_thicken_font, PyFloat_AsFloat);
     S(tab_bar_min_tabs, PyLong_AsUnsignedLong);
     S(disable_ligatures, PyLong_AsLong);
     S(resize_draw_strategy, PyLong_AsLong);
@@ -675,16 +761,6 @@ PYWRAP1(global_font_size) {
     return Py_BuildValue("d", global_state.font_sz_in_pts);
 }
 
-static inline void
-resize_screen(OSWindow *os_window, Screen *screen, bool has_graphics) {
-    if (screen) {
-        screen->cell_size.width = os_window->fonts_data->cell_width;
-        screen->cell_size.height = os_window->fonts_data->cell_height;
-        screen_dirty_sprite_positions(screen);
-        if (has_graphics) screen_rescale_images(screen);
-    }
-}
-
 PYWRAP1(os_window_font_size) {
     id_type os_window_id;
     int force = 0;
@@ -743,6 +819,8 @@ PYWRAP0(destroy_global_data) {
 
 THREE_ID_OBJ(update_window_title)
 THREE_ID(remove_window)
+THREE_ID(detach_window)
+THREE_ID(attach_window)
 PYWRAP1(resolve_key_mods) { int mods; PA("ii", &kitty_mod, &mods); return PyLong_FromLong(resolve_mods(mods)); }
 PYWRAP1(add_tab) { return PyLong_FromUnsignedLongLong(add_tab(PyLong_AsUnsignedLongLong(args))); }
 PYWRAP1(add_window) { PyObject *title; id_type a, b; PA("KKO", &a, &b, &title); return PyLong_FromUnsignedLongLong(add_window(a, b, title)); }
@@ -770,6 +848,8 @@ static PyMethodDef module_methods[] = {
     MW(update_window_title, METH_VARARGS),
     MW(remove_tab, METH_VARARGS),
     MW(remove_window, METH_VARARGS),
+    MW(detach_window, METH_VARARGS),
+    MW(attach_window, METH_VARARGS),
     MW(set_active_tab, METH_VARARGS),
     MW(set_active_window, METH_VARARGS),
     MW(swap_tabs, METH_VARARGS),
@@ -795,6 +875,15 @@ static PyMethodDef module_methods[] = {
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 
+static void
+finalize(void) {
+    while(detached_windows.num_windows--) {
+        destroy_window(&detached_windows.windows[detached_windows.num_windows]);
+    }
+    if (detached_windows.windows) free(detached_windows.windows);
+    detached_windows.capacity = 0;
+}
+
 bool
 init_state(PyObject *module) {
     global_state.font_sz_in_pts = 11.0;
@@ -808,6 +897,10 @@ init_state(PyObject *module) {
     if (PyStructSequence_InitType2(&RegionType, &region_desc) != 0) return false;
     Py_INCREF((PyObject *) &RegionType);
     PyModule_AddObject(module, "Region", (PyObject *) &RegionType);
+    if (Py_AtExit(finalize) != 0) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to register the state at exit handler");
+        return false;
+    }
     return true;
 }
 // }}}

@@ -31,6 +31,7 @@
 #include "internal.h"
 #include "backend_utils.h"
 #include "linux_notify.h"
+#include "../kitty/monotonic.h"
 
 #include <X11/cursorfont.h>
 #include <X11/Xmd.h>
@@ -51,6 +52,10 @@
 #define Button6            6
 #define Button7            7
 
+// Motif WM hints flags
+#define MWM_HINTS_DECORATIONS   2
+#define MWM_DECOR_ALL           1
+
 #define _GLFW_XDND_VERSION 5
 
 
@@ -61,8 +66,8 @@
 static unsigned _glfwDispatchX11Events(void);
 
 static void
-handleEvents(double timeout) {
-    EVDBG("starting handleEvents(%.2f)", timeout);
+handleEvents(monotonic_t timeout) {
+    EVDBG("starting handleEvents(%.2f)", monotonic_t_to_s_double(timeout));
     int display_read_ok = pollForEvents(&_glfw.x11.eventLoopData, timeout);
     EVDBG("display_read_ok: %d", display_read_ok);
     if (display_read_ok) {
@@ -77,9 +82,9 @@ handleEvents(double timeout) {
 }
 
 static bool
-waitForX11Event(double timeout) {
+waitForX11Event(monotonic_t timeout) {
     // returns true if there is X11 data waiting to be read, does not run watches and timers
-    double end_time = glfwGetTime() + timeout;
+    monotonic_t end_time = glfwGetTime() + timeout;
     while(true) {
         if (timeout >= 0) {
             const int result = pollWithTimeout(_glfw.x11.eventLoopData.fds, 1, timeout);
@@ -109,7 +114,7 @@ static bool waitForVisibilityNotify(_GLFWwindow* window)
                                    VisibilityNotify,
                                    &dummy))
     {
-        if (!waitForX11Event(0.1))
+        if (!waitForX11Event(ms_to_monotonic_t(100ll)))
             return false;
     }
 
@@ -508,8 +513,8 @@ static bool createNativeWindow(_GLFWwindow* window,
 
     if (wndconfig->scaleToMonitor)
     {
-        width *= _glfw.x11.contentScaleX;
-        height *= _glfw.x11.contentScaleY;
+        width *= (int)_glfw.x11.contentScaleX;
+        height *= (int)_glfw.x11.contentScaleY;
     }
 
     // Create a colormap based on the visual used by the current context
@@ -880,7 +885,7 @@ static const char* getSelectionString(Atom selection)
         Atom actualType;
         int actualFormat;
         unsigned long itemCount, bytesAfter;
-        double start = glfwGetTime();
+        monotonic_t start = glfwGetTime();
         XEvent notification, dummy;
 
         XConvertSelection(_glfw.x11.display,
@@ -895,10 +900,10 @@ static const char* getSelectionString(Atom selection)
                                        SelectionNotify,
                                        &notification))
         {
-            double time = glfwGetTime();
-            if (time - start > 2)
+            monotonic_t time = glfwGetTime();
+            if (time - start > s_to_monotonic_t(2ll))
                 return "";
-            waitForX11Event(2.0 - (time - start));
+            waitForX11Event(s_to_monotonic_t(2ll) - (time - start));
         }
 
         if (notification.xselection.property == None)
@@ -935,10 +940,10 @@ static const char* getSelectionString(Atom selection)
                                       isSelPropNewValueNotify,
                                       (XPointer) &notification))
                 {
-                    double time = glfwGetTime();
-                    if (time - start > 2)
+                    monotonic_t time = glfwGetTime();
+                    if (time - start > s_to_monotonic_t(2ll))
                         return "";
-                    waitForX11Event(2.0 - (time - start));
+                    waitForX11Event(s_to_monotonic_t(2ll) - (time - start));
                 }
 
                 XFree(data);
@@ -2066,7 +2071,7 @@ void _glfwPlatformGetWindowFrameSize(_GLFWwindow* window,
                               isFrameExtentsEvent,
                               (XPointer) window))
         {
-            if (!waitForX11Event(0.5))
+            if (!waitForX11Event(ms_to_monotonic_t(500ll)))
             {
                 _glfwInputError(GLFW_PLATFORM_ERROR,
                                 "X11: The window manager has a broken _NET_REQUEST_FRAME_EXTENTS implementation; please report this issue");
@@ -2103,9 +2108,9 @@ void _glfwPlatformGetWindowContentScale(_GLFWwindow* window UNUSED,
         *yscale = _glfw.x11.contentScaleY;
 }
 
-double _glfwPlatformGetDoubleClickInterval(_GLFWwindow* window UNUSED)
+monotonic_t _glfwPlatformGetDoubleClickInterval(_GLFWwindow* window UNUSED)
 {
-    return 0.5;
+    return ms_to_monotonic_t(500ll);
 }
 
 void _glfwPlatformIconifyWindow(_GLFWwindow* window)
@@ -2350,33 +2355,24 @@ void _glfwPlatformSetWindowResizable(_GLFWwindow* window, bool enabled UNUSED)
 
 void _glfwPlatformSetWindowDecorated(_GLFWwindow* window, bool enabled)
 {
-    if (enabled)
+    struct
     {
-        XDeleteProperty(_glfw.x11.display,
-                        window->x11.handle,
-                        _glfw.x11.MOTIF_WM_HINTS);
-    }
-    else
-    {
-        struct
-        {
-            unsigned long flags;
-            unsigned long functions;
-            unsigned long decorations;
-            long input_mode;
-            unsigned long status;
-        } hints;
+        unsigned long flags;
+        unsigned long functions;
+        unsigned long decorations;
+        long input_mode;
+        unsigned long status;
+    } hints = {0};
 
-        hints.flags = 2;       // Set decorations
-        hints.decorations = 0; // No decorations
+    hints.flags = MWM_HINTS_DECORATIONS;
+    hints.decorations = enabled ? MWM_DECOR_ALL : 0;
 
-        XChangeProperty(_glfw.x11.display, window->x11.handle,
-                        _glfw.x11.MOTIF_WM_HINTS,
-                        _glfw.x11.MOTIF_WM_HINTS, 32,
-                        PropModeReplace,
-                        (unsigned char*) &hints,
-                        sizeof(hints) / sizeof(long));
-    }
+    XChangeProperty(_glfw.x11.display, window->x11.handle,
+                    _glfw.x11.MOTIF_WM_HINTS,
+                    _glfw.x11.MOTIF_WM_HINTS, 32,
+                    PropModeReplace,
+                    (unsigned char*) &hints,
+                    sizeof(hints) / sizeof(long));
 }
 
 void _glfwPlatformSetWindowFloating(_GLFWwindow* window, bool enabled)
@@ -2527,11 +2523,11 @@ void _glfwPlatformPollEvents(void)
 
 void _glfwPlatformWaitEvents(void)
 {
-    double timeout = _glfwDispatchX11Events() ? 0 : -1;
+    monotonic_t timeout = _glfwDispatchX11Events() ? 0 : -1;
     handleEvents(timeout);
 }
 
-void _glfwPlatformWaitEventsTimeout(double timeout)
+void _glfwPlatformWaitEventsTimeout(monotonic_t timeout)
 {
     if (_glfwDispatchX11Events()) timeout = 0;
     handleEvents(timeout);
@@ -2585,13 +2581,13 @@ void _glfwPlatformSetCursorMode(_GLFWwindow* window, int mode)
     XFlush(_glfw.x11.display);
 }
 
-const char* _glfwPlatformGetScancodeName(int scancode)
+const char* _glfwPlatformGetNativeKeyName(int native_key)
 {
 
-    return glfw_xkb_keysym_name(scancode);
+    return glfw_xkb_keysym_name(native_key);
 }
 
-int _glfwPlatformGetKeyScancode(int key)
+int _glfwPlatformGetNativeKeyForKey(int key)
 {
     return glfw_xkb_sym_for_key(key);
 }
@@ -2870,7 +2866,7 @@ GLFWAPI Window glfwGetX11Window(GLFWwindow* handle)
     return window->x11.handle;
 }
 
-GLFWAPI int glfwGetXKBScancode(const char* keyName, bool caseSensitive) {
+GLFWAPI int glfwGetNativeKeyForName(const char* keyName, bool caseSensitive) {
     return glfw_xkb_keysym_from_name(keyName, caseSensitive);
 }
 

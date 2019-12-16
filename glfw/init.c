@@ -27,6 +27,7 @@
 // Please use C89 style variable declarations in this file because VS 2010
 //========================================================================
 
+#define MONOTONIC_START_MODULE
 #include "internal.h"
 #include "mappings.h"
 
@@ -201,7 +202,7 @@ _glfwDebug(const char *format, ...) {
     {
         va_list vl;
 
-        fprintf(stderr, "[%.4f] ", glfwGetTime());
+        fprintf(stderr, "[%.4f] ", monotonic_t_to_s_double(glfwGetTime()));
         va_start(vl, format);
         vfprintf(stderr, format, vl);
         va_end(vl);
@@ -214,10 +215,11 @@ _glfwDebug(const char *format, ...) {
 //////                        GLFW public API                       //////
 //////////////////////////////////////////////////////////////////////////
 
-GLFWAPI int glfwInit(void)
+GLFWAPI int glfwInit(monotonic_t start_time)
 {
     if (_glfw.initialized)
         return true;
+    monotonic_start_time = start_time;
 
     memset(&_glfw, 0, sizeof(_glfw));
     _glfw.hints.init = _glfwInitHints;
@@ -350,13 +352,13 @@ GLFWAPI void glfwStopMainLoop(void) {
 }
 
 GLFWAPI unsigned long long glfwAddTimer(
-        double interval, bool repeats, GLFWuserdatafun callback,
+        monotonic_t interval, bool repeats, GLFWuserdatafun callback,
         void *callback_data, GLFWuserdatafun free_callback)
 {
     return _glfwPlatformAddTimer(interval, repeats, callback, callback_data, free_callback);
 }
 
-GLFWAPI void glfwUpdateTimer(unsigned long long timer_id, double interval, bool enabled) {
+GLFWAPI void glfwUpdateTimer(unsigned long long timer_id, monotonic_t interval, bool enabled) {
     _glfwPlatformUpdateTimer(timer_id, interval, enabled);
 }
 

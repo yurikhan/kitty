@@ -32,6 +32,7 @@
 #include "backend_utils.h"
 #include "memfd.h"
 #include "linux_notify.h"
+#include "../kitty/monotonic.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,12 +55,17 @@ static bool checkScaleChange(_GLFWwindow* window)
     if (_glfw.wl.compositorVersion < 3)
         return false;
 
-    // Get the scale factor from the highest scale monitor.
+    // Get the scale factor from the highest scale monitor that this window is on
     for (i = 0; i < window->wl.monitorsCount; ++i)
     {
         monitorScale = window->wl.monitors[i]->wl.scale;
         if (scale < monitorScale)
             scale = monitorScale;
+    }
+    if (window->wl.monitorsCount < 1 && _glfw.monitorCount > 0) {
+        // The window has not yet been assigned to any monitors, use the primary monitor
+        _GLFWmonitor *m = _glfw.monitors[0];
+        if (m && m->wl.scale > scale) scale = m->wl.scale;
     }
 
     // Only change the framebuffer size if the scale changed.
@@ -67,6 +73,10 @@ static bool checkScaleChange(_GLFWwindow* window)
     {
         window->wl.scale = scale;
         wl_surface_set_buffer_scale(window->wl.surface, scale);
+        return true;
+    }
+    if (window->wl.monitorsCount > 0 && !window->wl.initial_scale_notified) {
+        window->wl.initial_scale_notified = true;
         return true;
     }
     return false;
@@ -241,8 +251,8 @@ static struct wl_buffer* createShmBuffer(const GLFWimage* image)
     if (fd < 0)
     {
         _glfwInputError(GLFW_PLATFORM_ERROR,
-                        "Wayland: Creating a buffer file for %d B failed: %%m",
-                        length);
+                        "Wayland: Creating a buffer file for %d B failed: %s",
+                        length, strerror(errno));
         return NULL;
     }
 
@@ -250,7 +260,7 @@ static struct wl_buffer* createShmBuffer(const GLFWimage* image)
     if (data == MAP_FAILED)
     {
         _glfwInputError(GLFW_PLATFORM_ERROR,
-                        "Wayland: mmap failed: %%m");
+                        "Wayland: mmap failed: %s", strerror(errno));
         close(fd);
         return NULL;
     }
@@ -545,9 +555,9 @@ static void xdgToplevelHandleConfigure(void* data,
                 aspectRatio = (float)width / (float)height;
                 targetRatio = (float)window->numer / (float)window->denom;
                 if (aspectRatio < targetRatio)
-                    height = width / targetRatio;
+                    height = (int32_t)((float)width / targetRatio);
                 else if (aspectRatio > targetRatio)
-                    width = height * targetRatio;
+                    width = (int32_t)((float)height * targetRatio);
             }
         }
     }
@@ -684,7 +694,7 @@ setCursorImage(_GLFWcursorWayland* cursorWayland)
         image = cursorWayland->cursor->images[cursorWayland->currentImage];
         buffer = wl_cursor_image_get_buffer(image);
         if (image->delay) {
-            changeTimerInterval(&_glfw.wl.eventLoopData, _glfw.wl.cursorAnimationTimer, ((double)image->delay) / 1000.0);
+            changeTimerInterval(&_glfw.wl.eventLoopData, _glfw.wl.cursorAnimationTimer, ms_to_monotonic_t(image->delay));
             toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.cursorAnimationTimer, 1);
         } else {
             toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.cursorAnimationTimer, 0);
@@ -745,11 +755,11 @@ abortOnFatalError(int last_error) {
 }
 
 static void
-handleEvents(double timeout)
+handleEvents(monotonic_t timeout)
 {
     struct wl_display* display = _glfw.wl.display;
     errno = 0;
-    EVDBG("starting handleEvents(%.2f)", timeout);
+    EVDBG("starting handleEvents(%.2f)", monotonic_t_to_s_double(timeout));
 
     while (wl_display_prepare_read(display) != 0) {
         while(1) {
@@ -1052,9 +1062,9 @@ void _glfwPlatformGetWindowContentScale(_GLFWwindow* window,
         *yscale = (float) window->wl.scale;
 }
 
-double _glfwPlatformGetDoubleClickInterval(_GLFWwindow* window UNUSED)
+monotonic_t _glfwPlatformGetDoubleClickInterval(_GLFWwindow* window UNUSED)
 {
-    return 0.5;
+    return ms_to_monotonic_t(500ll);
 }
 
 void _glfwPlatformIconifyWindow(_GLFWwindow* window)
@@ -1227,11 +1237,11 @@ void _glfwPlatformPollEvents(void)
 
 void _glfwPlatformWaitEvents(void)
 {
-    double timeout = wl_display_dispatch_pending(_glfw.wl.display) > 0 ? 0 : -1;
+    monotonic_t timeout = wl_display_dispatch_pending(_glfw.wl.display) > 0 ? 0 : -1;
     handleEvents(timeout);
 }
 
-void _glfwPlatformWaitEventsTimeout(double timeout)
+void _glfwPlatformWaitEventsTimeout(monotonic_t timeout)
 {
     if (wl_display_dispatch_pending(_glfw.wl.display) > 0) timeout = 0;
     handleEvents(timeout);
@@ -1268,12 +1278,12 @@ void _glfwPlatformSetCursorMode(_GLFWwindow* window, int mode UNUSED)
     _glfwPlatformSetCursor(window, window->wl.currentCursor);
 }
 
-const char* _glfwPlatformGetScancodeName(int scancode)
+const char* _glfwPlatformGetNativeKeyName(int native_key)
 {
-    return glfw_xkb_keysym_name(scancode);
+    return glfw_xkb_keysym_name(native_key);
 }
 
-int _glfwPlatformGetKeyScancode(int key)
+int _glfwPlatformGetNativeKeyForKey(int key)
 {
     return glfw_xkb_sym_for_key(key);
 }
@@ -1462,8 +1472,8 @@ static void send_text(char *text, int fd)
 {
     if (text) {
         size_t len = strlen(text), pos = 0;
-        double start = glfwGetTime();
-        while (pos < len && glfwGetTime() - start < 2.0) {
+        monotonic_t start = glfwGetTime();
+        while (pos < len && glfwGetTime() - start < s_to_monotonic_t(2ll)) {
             ssize_t ret = write(fd, text + pos, len - pos);
             if (ret < 0) {
                 if (errno == EAGAIN || errno == EINTR) continue;
@@ -1496,7 +1506,7 @@ static char* read_offer_string(int data_pipe) {
     struct pollfd fds;
     fds.fd = data_pipe;
     fds.events = POLLIN;
-    double start = glfwGetTime();
+    monotonic_t start = glfwGetTime();
 #define bail(...) { \
     _glfwInputError(GLFW_PLATFORM_ERROR, __VA_ARGS__); \
     free(buf); buf = NULL; \
@@ -1504,7 +1514,7 @@ static char* read_offer_string(int data_pipe) {
     return NULL; \
 }
 
-    while (glfwGetTime() - start < 2) {
+    while (glfwGetTime() - start < s_to_monotonic_t(2ll)) {
         int ret = poll(&fds, 1, 2000);
         if (ret == -1) {
             if (errno == EINTR) continue;
@@ -2031,7 +2041,7 @@ GLFWAPI struct wl_surface* glfwGetWaylandWindow(GLFWwindow* handle)
     return window->wl.surface;
 }
 
-GLFWAPI int glfwGetXKBScancode(const char* keyName, bool caseSensitive) {
+GLFWAPI int glfwGetNativeKeyForName(const char* keyName, bool caseSensitive) {
     return glfw_xkb_keysym_from_name(keyName, caseSensitive);
 }
 

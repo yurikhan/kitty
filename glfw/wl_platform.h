@@ -156,6 +156,7 @@ typedef struct _GLFWwindowWayland
     // We need to track the monitors the window spans on to calculate the
     // optimal scaling factor.
     int                         scale;
+    bool                        initial_scale_notified;
     _GLFWmonitor**              monitors;
     int                         monitorsCount;
     int                         monitorsSize;
@@ -247,10 +248,11 @@ typedef struct _GLFWlibraryWayland
 
     struct wl_cursor_theme*     cursorTheme;
     struct wl_surface*          cursorSurface;
+    GLFWCursorShape             cursorPreviousShape;
     uint32_t                    pointerSerial;
 
     int32_t                     keyboardRepeatRate;
-    int32_t                     keyboardRepeatDelay;
+    monotonic_t                 keyboardRepeatDelay;
     struct {
         uint32_t                key;
         id_type                 keyRepeatTimer;

@@ -164,7 +164,10 @@ def open_cmd(cmd, arg=None, cwd=None):
     import subprocess
     if arg is not None:
         cmd = list(cmd)
-        cmd.append(arg)
+        if isinstance(arg, (list, tuple)):
+            cmd.extend(arg)
+        else:
+            cmd.append(arg)
     return subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd or None)
 
 
@@ -415,15 +418,12 @@ def get_editor():
     ans = getattr(get_editor, 'ans', False)
     if ans is False:
         import shlex
-        ans = os.environ.get('EDITOR')
-        if not ans or not exe_exists(shlex.split(ans)[0]):
-            for q in ('vim', 'nvim', 'vi', 'emacs', 'kak', 'micro', 'nano', 'vis'):
-                r = exe_exists(q)
-                if r:
-                    ans = r
-                    break
-            else:
-                ans = 'vim'
+        for ans in (os.environ.get('VISUAL'), os.environ.get('EDITOR'), 'vim',
+                    'nvim', 'vi', 'emacs', 'kak', 'micro', 'nano', 'vis'):
+            if ans and exe_exists(shlex.split(ans)[0]):
+                break
+        else:
+            ans = 'vim'
         ans = shlex.split(ans)
         get_editor.ans = ans
     return ans

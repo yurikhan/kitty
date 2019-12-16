@@ -4,9 +4,9 @@
 
 import fcntl
 import os
+import sys
 from collections import defaultdict
-from contextlib import contextmanager
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 
 import kitty.fast_data_types as fast_data_types
 
@@ -125,15 +125,24 @@ def remove_blocking(fd):
     os.set_blocking(fd, False)
 
 
+def process_env():
+    ans = os.environ
+    ssl_env_var = getattr(sys, 'kitty_ssl_env_var', None)
+    if ssl_env_var is not None:
+        ans = ans.copy()
+        ans.pop(ssl_env_var, None)
+    return ans
+
+
 def default_env():
     try:
         return default_env.env
     except AttributeError:
-        return os.environ
+        return process_env()
 
 
 def set_default_env(val=None):
-    env = os.environ.copy()
+    env = process_env().copy()
     if val:
         env.update(val)
     default_env.env = env
@@ -151,12 +160,8 @@ class Child:
     child_fd = pid = None
     forked = False
 
-    def __init__(self, argv, cwd, opts, stdin=None, env=None, cwd_from=None):
-        self.allow_remote_control = False
-        if argv and argv[0] == '@':
-            self.allow_remote_control = True
-            if len(argv) > 1:
-                argv = argv[1:]
+    def __init__(self, argv, cwd, opts, stdin=None, env=None, cwd_from=None, allow_remote_control=False):
+        self.allow_remote_control = allow_remote_control
         self.argv = argv
         if cwd_from is not None:
             try:
@@ -263,6 +268,13 @@ class Child:
             return list(self.argv)
 
     @property
+    def foreground_cmdline(self):
+        try:
+            return cmdline_of_process(self.pid_for_cwd) or self.cmdline
+        except Exception:
+            return self.cmdline
+
+    @property
     def environ(self):
         try:
             return environ_of_process(self.pid)
@@ -287,3 +299,14 @@ class Child:
     def foreground_cwd(self):
         with suppress(Exception):
             return cwd_of_process(self.pid_for_cwd) or None
+
+    @property
+    def foreground_environ(self):
+        try:
+            return environ_of_process(self.pid_for_cwd)
+        except Exception:
+            try:
+                return environ_of_process(self.pid)
+            except Exception:
+                pass
+        return {}

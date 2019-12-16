@@ -225,7 +225,7 @@ Run the :italic:`{appname}` terminal emulator. You can also specify the :italic:
 to run inside :italic:`{appname}` as normal arguments following the :italic:`options`.
 For example: {appname} /bin/sh
 
-For comprehensive documentation for kitty, please see: https://sw.kovidgoyal.net/kitty''').format(appname=appname)
+For comprehensive documentation for kitty, please see: https://sw.kovidgoyal.net/kitty/''').format(appname=appname)
 
 
 def print_help_for_seq(seq, usage, message, appname):
@@ -423,8 +423,8 @@ class Options:
 class Namespace:
 
     def __init__(self, kwargs):
-        for name in kwargs:
-            setattr(self, name, kwargs[name])
+        for name, val in kwargs.items():
+            setattr(self, name, val)
 
 
 def parse_cmdline(oc, disabled, args=None):

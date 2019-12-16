@@ -7,10 +7,16 @@ import os
 import sys
 from contextlib import suppress
 
-from .cli import parse_args, parse_option_spec, get_defaults_from_seq
+from .cli import (
+    Namespace, get_defaults_from_seq, parse_args, parse_option_spec
+)
 from .config import parse_config, parse_send_text_bytes
 from .constants import appname
 from .fast_data_types import focus_os_window
+from .launch import (
+    launch as do_launch, options_spec as launch_options_spec,
+    parse_launch_args
+)
 from .tabs import SpecialWindow
 from .utils import natsort_ints
 
@@ -375,6 +381,100 @@ def set_tab_title(boss, window, payload):
 # }}}
 
 
+# detach_window {{{
+@cmd(
+    'Detach a window and place it in a different/new tab',
+    'Detach the specified window and either move it into a new tab, a new OS window'
+    ' or add it to the specified tab. Use the special value :code:`new` for --target-tab'
+    ' to move to a new tab. If no target tab is specified the window is moved to a new OS window.',
+    options_spec=MATCH_WINDOW_OPTION + '\n\n' + MATCH_TAB_OPTION.replace('--match -m', '--target-tab -t') + '''\n
+--self
+type=bool-set
+If specified detach the window this command is run in, rather than the active window.
+''',
+    argspec=''
+)
+def cmd_detach_window(global_opts, opts, args):
+    '''
+    match: Which window to detach
+    target: Which tab to move the detached window to
+    self: Boolean indicating whether to detach the window the command is run in
+    '''
+    return {'match': opts.match, 'target': opts.target_tab, 'self': opts.self}
+
+
+def detach_window(boss, window, payload):
+    pg = cmd_detach_window.payload_get
+    match = pg(payload, 'match')
+    if match:
+        windows = tuple(boss.match_windows(match))
+        if not windows:
+            raise MatchError(match)
+    else:
+        windows = [window if window and pg(payload, 'self') else boss.active_window]
+    match = pg(payload, 'target_tab')
+    kwargs = {}
+    if match:
+        if match == 'new':
+            kwargs['target_tab_id'] = 'new'
+        else:
+            tabs = tuple(boss.match_tabs(match))
+            if not tabs:
+                raise MatchError(match, 'tabs')
+            kwargs['target_tab_id'] = tabs[0].id
+    if not kwargs:
+        kwargs['target_os_window_id'] = 'new'
+
+    for window in windows:
+        boss._move_window_to(window=window, **kwargs)
+
+# }}}
+
+
+# detach_tab {{{
+@cmd(
+    'Detach a tab and place it in a different/new OS Window',
+    'Detach the specified tab and either move it into a new OS window'
+    ' or add it to the OS Window containing the tab specified by --target-tab',
+    options_spec=MATCH_TAB_OPTION + '\n\n' + MATCH_TAB_OPTION.replace('--match -m', '--target-tab -t') + '''\n
+--self
+type=bool-set
+If specified detach the tab this command is run in, rather than the active tab.
+''',
+    argspec=''
+)
+def cmd_detach_tab(global_opts, opts, args):
+    '''
+    match: Which tab to detach
+    target: Which OS Window to move the detached tab to
+    self: Boolean indicating whether to detach the tab the command is run in
+    '''
+    return {'match': opts.match, 'target': opts.target_tab, 'self': opts.self}
+
+
+def detach_tab(boss, window, payload):
+    pg = cmd_detach_tab.payload_get
+    match = pg(payload, 'match')
+    if match:
+        tabs = tuple(boss.match_tabs(match))
+        if not tabs:
+            raise MatchError(match)
+    else:
+        tabs = [window.tabref() if pg(payload, 'self') and window and window.tabref() else boss.active_tab]
+    match = pg(payload, 'target_tab')
+    kwargs = {}
+    if match:
+        targets = tuple(boss.match_tabs(match))
+        if not targets:
+            raise MatchError(match, 'tabs')
+        kwargs['target_os_window_id'] = targets[0].os_window_id
+
+    for tab in tabs:
+        boss._move_tab_to(tab=tab, **kwargs)
+
+# }}}
+
+
 # goto_layout {{{
 @cmd(
     'Set the window layout',
@@ -675,6 +775,76 @@ def new_window(boss, window, payload):
 # }}}
 
 
+# launch {{{
+@cmd(
+    'Run an arbitrary process in a new window/tab',
+    ' Prints out the id of the newly opened window. Any command line arguments'
+    ' are assumed to be the command line used to run in the new window, if none'
+    ' are provided, the default shell is run. For example:'
+    ' :italic:`kitty @ launch --title Email mutt`.',
+    options_spec=MATCH_TAB_OPTION + '\n\n' + '''\
+--no-response
+type=bool-set
+Do not print out the id of the newly created window.
+
+
+--self
+type=bool-set
+If specified the tab containing the window this command is run in is used
+instead of the active tab
+    ''' + '\n\n' + launch_options_spec().replace(':option:`launch', ':option:`kitty @ launch'),
+    argspec='[CMD ...]'
+)
+def cmd_launch(global_opts, opts, args):
+    '''
+    args+: The command line to run in the new window, as a list, use an empty list to run the default shell
+    match: The tab to open the new window in
+    window_title: Title for the new window
+    cwd: Working directory for the new window
+    env: List of environment varibles of the form NAME=VALUE
+    tab_title: Title for the new tab
+    type: The type of window to open
+    keep_focus: Boolean indicating whether the current window should retain focus or not
+    copy_colors: Boolean indicating whether to copy the colors from the current window
+    copy_cmdline: Boolean indicating whether to copy the cmdline from the current window
+    copy_env: Boolean indicating whether to copy the environ from the current window
+    location: Where in the tab to open the new window
+    allow_remote_control: Boolean indicating whether to allow remote control from the new window
+    stdin_source: Where to get stdin for thew process from
+    stdin_add_formatting: Boolean indicating whether to add formatting codes to stdin
+    stdin_add_line_wrap_markers: Boolean indicating whether to add line wrap markers to stdin
+    no_response: Boolean indicating whether to send back the window id
+    '''
+    if opts.no_response:
+        global_opts.no_command_response = True
+    ans = {'args': args or []}
+    for attr, val in opts.__dict__.items():
+        ans[attr] = val
+    return ans
+
+
+def launch(boss, window, payload):
+    pg = cmd_launch.payload_get
+    default_opts = parse_launch_args()[0]
+    opts = {}
+    for key, default_value in default_opts.__dict__.items():
+        opts[key] = payload.get(key, default_value)
+    opts = Namespace(opts)
+    match = pg(payload, 'match')
+    if match:
+        tabs = tuple(boss.match_tabs(match))
+        if not tabs:
+            raise MatchError(match, 'tabs')
+    else:
+        tabs = [boss.active_tab]
+        if pg(payload, 'self') and window and window.tabref():
+            tabs = [window.tabref()]
+    tab = tabs[0]
+    w = do_launch(boss, opts, pg(payload, 'args') or None, target_tab=tab)
+    return None if pg(payload, 'no_response') else str(getattr(w, 'id', 0))
+# }}}
+
+
 # focus_window {{{
 @cmd(
     'Focus the specified window',
@@ -882,7 +1052,7 @@ this option, any color arguments are ignored and --configured and --all are impl
 def cmd_set_colors(global_opts, opts, args):
     '''
     colors+: An object mapping names to colors as 24-bit RGB integers
-    cursor_text_color: A 24-bit clor for text under the cursor
+    cursor_text_color: A 24-bit color for text under the cursor
     match_window: Window to change colors in
     match_tab: Tab to change colors in
     all: Boolean indicating change colors everywhere or not

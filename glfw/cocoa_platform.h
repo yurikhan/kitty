@@ -36,6 +36,9 @@ typedef void* id;
 typedef void* CVDisplayLinkRef;
 #endif
 
+// NOTE: Many Cocoa enum values have been renamed and we need to build across
+//       SDK versions where one is unavailable or the other deprecated
+//       We use the newer names in code and these macros to handle compatibility
 #if MAC_OS_X_VERSION_MAX_ALLOWED < 101200
  #define NSBitmapFormatAlphaNonpremultiplied NSAlphaNonpremultipliedBitmapFormat
  #define NSEventMaskAny NSAnyEventMask
@@ -64,8 +67,9 @@ typedef void* CVDisplayLinkRef;
 
 typedef VkFlags VkMacOSSurfaceCreateFlagsMVK;
 typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int, unsigned long);
-typedef int (* GLFWapplicationshouldhandlereopenfun)(int);
-typedef int (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
+typedef bool (* GLFWapplicationshouldhandlereopenfun)(int);
+typedef void (* GLFWapplicationwillfinishlaunchingfun)(void);
+typedef bool (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
 typedef void (* GLFWcocoarenderframefun)(GLFWwindow*);
 
 typedef struct VkMacOSSurfaceCreateInfoMVK
@@ -144,7 +148,7 @@ typedef struct _GLFWDisplayLinkNS
 {
     CVDisplayLinkRef displayLink;
     CGDirectDisplayID displayID;
-    double lastRenderFrameRequestedAt;
+    monotonic_t lastRenderFrameRequestedAt;
 } _GLFWDisplayLinkNS;
 
 // Cocoa-specific global data
@@ -153,6 +157,7 @@ typedef struct _GLFWlibraryNS
 {
     CGEventSourceRef    eventSource;
     id                  delegate;
+    bool                finishedLaunching;
     bool                cursorHidden;
     TISInputSourceRef   inputSource;
     IOHIDManagerRef     hidManager;
@@ -160,11 +165,12 @@ typedef struct _GLFWlibraryNS
     id                  helper;
     id                  keyUpMonitor;
     id                  keyDownMonitor;
+    id                  nibObjects;
 
     char                keyName[64];
     char                text[256];
     short int           keycodes[256];
-    short int           scancodes[GLFW_KEY_LAST + 1];
+    short int           key_to_keycode[GLFW_KEY_LAST + 1];
     char*               clipboardString;
     CGPoint             cascadePoint;
     // Where to place the cursor when re-enabled

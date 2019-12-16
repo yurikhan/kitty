@@ -328,7 +328,7 @@ void _glfwPollMonitorsNS(void)
         if (!name)
             name = _glfw_strdup("Unknown");
 
-        _GLFWmonitor* monitor = _glfwAllocMonitor(name, size.width, size.height);
+        _GLFWmonitor* monitor = _glfwAllocMonitor(name, (int)size.width, (int)size.height);
         monitor->ns.displayID  = displays[i];
         monitor->ns.unitNumber = unitNumber;
         createDisplayLink(monitor->ns.displayID);
@@ -354,8 +354,9 @@ void _glfwPollMonitorsNS(void)
 void _glfwSetVideoModeNS(_GLFWmonitor* monitor, const GLFWvidmode* desired)
 {
     GLFWvidmode current;
-    const GLFWvidmode* best = _glfwChooseVideoMode(monitor, desired);
     _glfwPlatformGetVideoMode(monitor, &current);
+
+    const GLFWvidmode* best = _glfwChooseVideoMode(monitor, desired);
     if (_glfwCompareVideoModes(&current, best) == 0)
         return;
 
@@ -454,13 +455,13 @@ void _glfwPlatformGetMonitorWorkarea(_GLFWmonitor* monitor,
     const NSRect frameRect = [monitor->ns.screen visibleFrame];
 
     if (xpos)
-        *xpos = frameRect.origin.x;
+        *xpos = (int)frameRect.origin.x;
     if (ypos)
-        *ypos = _glfwTransformYNS(frameRect.origin.y + frameRect.size.height - 1);
+        *ypos = (int)_glfwTransformYNS(frameRect.origin.y + frameRect.size.height - 1);
     if (width)
-        *width = frameRect.size.width;
+        *width = (int)frameRect.size.width;
     if (height)
-        *height = frameRect.size.height;
+        *height = (int)frameRect.size.height;
 
 }
 
@@ -505,7 +506,6 @@ GLFWvidmode* _glfwPlatformGetVideoModes(_GLFWmonitor* monitor, int* count)
 void _glfwPlatformGetVideoMode(_GLFWmonitor* monitor, GLFWvidmode *mode)
 {
     CVDisplayLinkRef link;
-
     CVDisplayLinkCreateWithCGDisplay(monitor->ns.displayID, &link);
 
     CGDisplayModeRef native = CGDisplayCopyDisplayMode(monitor->ns.displayID);
