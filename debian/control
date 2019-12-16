@@ -10,7 +10,6 @@ Vcs-Browser: https://salsa.debian.org/jamessan/kitty
 Build-Depends:
  debhelper-compat (= 12),
  dh-python,
- libcanberra-dev,
  libdbus-1-dev,
  libfontconfig1-dev,
  libfreetype6-dev,
@@ -39,7 +38,9 @@ Depends:
  ${python3:Depends},
  ${shlibs:Depends},
 Recommends:
- kitty-doc
+ kitty-doc,
+# To play the "beep" sound for the terminal
+ libcanberra0
 Suggests:
 # For tui kitten
  imagemagick
