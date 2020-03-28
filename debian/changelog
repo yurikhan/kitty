@@ -1,8 +1,10 @@
-kitty (0.17.1-1) UNRELEASED; urgency=medium
+kitty (0.17.1-1) unstable; urgency=medium
 
   * New upstream release
+  * Bump python3-dev Build-Depends to 3.6
+  * Declare compliance with Policy 4.5.0, no changes needed
 
- -- James McCoy <jamessan@debian.org>  Sat, 28 Mar 2020 09:43:24 -0400
+ -- James McCoy <jamessan@debian.org>  Sat, 28 Mar 2020 10:02:27 -0400
 
 kitty (0.15.0-1) unstable; urgency=medium
 
