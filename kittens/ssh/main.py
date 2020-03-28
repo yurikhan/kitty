@@ -7,12 +7,13 @@ import re
 import shlex
 import subprocess
 import sys
+from typing import List, NoReturn, Set, Tuple
 
 SHELL_SCRIPT = '''\
 #!/bin/sh
 # macOS ships with an ancient version of tic that cannot read from stdin, so we
 # create a temp file for it
-tmp=$(mktemp /tmp/terminfo.XXXXXX)
+tmp=$(mktemp)
 cat >$tmp << 'TERMEOF'
 TERMINFO
 TERMEOF
@@ -42,9 +43,12 @@ exec -a "-$shell_name" "$0"
 '''
 
 
-def get_ssh_cli():
-    other_ssh_args, boolean_ssh_args = [], []
-    raw = subprocess.Popen(['ssh'], stderr=subprocess.PIPE).stderr.read().decode('utf-8')
+def get_ssh_cli() -> Tuple[Set[str], Set[str]]:
+    other_ssh_args: List[str] = []
+    boolean_ssh_args: List[str] = []
+    stderr = subprocess.Popen(['ssh'], stderr=subprocess.PIPE).stderr
+    assert stderr is not None
+    raw = stderr.read().decode('utf-8')
     for m in re.finditer(r'\[(.+?)\]', raw):
         q = m.group(1)
         if len(q) < 2 or q[0] != '-':
@@ -56,11 +60,11 @@ def get_ssh_cli():
     return set('-' + x for x in boolean_ssh_args), set('-' + x for x in other_ssh_args)
 
 
-def parse_ssh_args(args):
+def parse_ssh_args(args: List[str]) -> Tuple[List[str], List[str], bool]:
     boolean_ssh_args, other_ssh_args = get_ssh_cli()
     passthrough_args = {'-' + x for x in 'Nnf'}
     ssh_args = []
-    server_args = []
+    server_args: List[str] = []
     expecting_option_val = False
     passthrough = False
     for arg in args:
@@ -97,7 +101,7 @@ def parse_ssh_args(args):
     return ssh_args, server_args, passthrough
 
 
-def quote(x):
+def quote(x: str) -> str:
     # we have to escape unbalanced quotes and other unparsable
     # args as they will break the shell script
     # But we do not want to quote things like * or 'echo hello'
@@ -109,7 +113,7 @@ def quote(x):
     return x
 
 
-def main(args):
+def main(args: List[str]) -> NoReturn:
     ssh_args, server_args, passthrough = parse_ssh_args(args[1:])
     if passthrough:
         cmd = ['ssh'] + ssh_args + server_args
@@ -117,8 +121,8 @@ def main(args):
         terminfo = subprocess.check_output(['infocmp']).decode('utf-8')
         sh_script = SHELL_SCRIPT.replace('TERMINFO', terminfo, 1)
         if len(server_args) > 1:
-            command_to_execute = [quote(c) for c in server_args[1:]]
-            command_to_execute = 'exec ' + ' '.join(command_to_execute)
+            command_to_executeg = (quote(c) for c in server_args[1:])
+            command_to_execute = 'exec ' + ' '.join(command_to_executeg)
         else:
             command_to_execute = ''
         sh_script = sh_script.replace('EXEC_CMD', command_to_execute)

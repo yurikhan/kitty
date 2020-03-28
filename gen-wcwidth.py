@@ -12,6 +12,10 @@ from functools import partial
 from html.entities import html5
 from itertools import groupby
 from operator import itemgetter
+from typing import (
+    Callable, DefaultDict, Dict, FrozenSet, Generator, Iterable, List,
+    Optional, Set, Tuple, Union
+)
 from urllib.request import urlopen
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -24,7 +28,7 @@ if len(non_characters) != 66:
 emoji_skin_tone_modifiers = frozenset(range(0x1f3fb, 0x1F3FF + 1))
 
 
-def get_data(fname, folder='UCD'):
+def get_data(fname: str, folder: str = 'UCD') -> Iterable[str]:
     url = f'https://www.unicode.org/Public/{folder}/latest/{fname}'
     bn = os.path.basename(url)
     local = os.path.join('/tmp', bn)
@@ -42,24 +46,24 @@ def get_data(fname, folder='UCD'):
 
 
 # Map of class names to set of codepoints in class
-class_maps = {}
-all_symbols = set()
-name_map = {}
-word_search_map = defaultdict(set)
+class_maps: Dict[str, Set[int]] = {}
+all_symbols: Set[int] = set()
+name_map: Dict[int, str] = {}
+word_search_map: DefaultDict[str, Set[int]] = defaultdict(set)
 zwj = 0x200d
 marks = set(emoji_skin_tone_modifiers) | {zwj}
 not_assigned = set(range(0, sys.maxunicode))
 
 
-def parse_ucd():
+def parse_ucd() -> None:
 
-    def add_word(w, c):
+    def add_word(w: str, c: int) -> None:
         if c <= 32 or c == 127 or 128 <= c <= 159:
             return
         if len(w) > 1:
             word_search_map[w.lower()].add(c)
 
-    first = None
+    first: Optional[int] = None
     for word, c in html5.items():
         if len(c) == 1:
             add_word(word.rstrip(';'), ord(c))
@@ -77,7 +81,7 @@ def parse_ucd():
         category = parts[2]
         s = class_maps.setdefault(category, set())
         desc = parts[1]
-        codepoints = (codepoint,)
+        codepoints: Union[Tuple[int, ...], Iterable[int]] = (codepoint,)
         if first is None:
             if desc.endswith(', First>'):
                 first = codepoint
@@ -99,43 +103,45 @@ def parse_ucd():
     word_search_map['lamda'] |= word_search_map['lambda']
 
 
-def split_two(line):
+def split_two(line: str) -> Tuple[Set[int], str]:
     spec, rest = line.split(';', 1)
     spec, rest = spec.strip(), rest.strip().split(' ', 1)[0].strip()
     if '..' in spec:
-        chars = tuple(map(lambda x: int(x, 16), filter(None, spec.split('.'))))
-        chars = set(range(chars[0], chars[1] + 1))
+        chars_ = tuple(map(lambda x: int(x, 16), filter(None, spec.split('.'))))
+        chars = set(range(chars_[0], chars_[1] + 1))
     else:
         chars = {int(spec, 16)}
     return chars, rest
 
 
-all_emoji = set()
-emoji_categories = {}
-emoji_presentation_bases = set()
+all_emoji: Set[int] = set()
+emoji_categories: Dict[str, Set[int]] = {}
+emoji_presentation_bases: Set[int] = set()
 
 
-def parse_emoji():
+def parse_emoji() -> None:
     for line in get_data('emoji-data.txt', 'emoji'):
         chars, rest = split_two(line)
         s = emoji_categories.setdefault(rest, set())
         s.update(chars)
         all_emoji.update(chars)
     for line in get_data('emoji-variation-sequences.txt', 'emoji'):
-        base, var, *rest = line.split()
+        parts = line.split()
+        base, var = parts[0], parts[1]
         if base.startswith('#'):
             continue
-        base = int(base, 16)
         if var.upper() == 'FE0F':
-            emoji_presentation_bases.add(base)
+            ibase = int(base, 16)
+            emoji_presentation_bases.add(ibase)
 
 
-doublewidth, ambiguous = set(), set()
+doublewidth: Set[int] = set()
+ambiguous: Set[int] = set()
 
 
-def parse_eaw():
+def parse_eaw() -> None:
     global doublewidth, ambiguous
-    seen = set()
+    seen: Set[int] = set()
     for line in get_data('ucd/EastAsianWidth.txt'):
         chars, eaw = split_two(line)
         if eaw == 'A':
@@ -151,7 +157,7 @@ def parse_eaw():
     doublewidth |= set(range(0x30000, 0x3FFFD + 1)) - seen
 
 
-def get_ranges(items):
+def get_ranges(items: List[int]) -> Generator[Union[int, Tuple[int, int]], None, None]:
     items.sort()
     for k, g in groupby(enumerate(items), lambda m: m[0]-m[1]):
         group = tuple(map(itemgetter(1), g))
@@ -162,7 +168,7 @@ def get_ranges(items):
             yield a, b
 
 
-def write_case(spec, p):
+def write_case(spec: Union[Tuple, int], p: Callable) -> None:
     if isinstance(spec, tuple):
         p('\t\tcase 0x{:x} ... 0x{:x}:'.format(*spec))
     else:
@@ -170,7 +176,7 @@ def write_case(spec, p):
 
 
 @contextmanager
-def create_header(path, include_data_types=True):
+def create_header(path: str, include_data_types: bool = True) -> Generator[Callable, None, None]:
     with open(path, 'w') as f:
         p = partial(print, file=f)
         p('// unicode data, built from the unicode standard on:', date.today())
@@ -187,7 +193,7 @@ def create_header(path, include_data_types=True):
             p('END_ALLOW_CASE_RANGE')
 
 
-def gen_emoji():
+def gen_emoji() -> None:
     with create_header('kitty/emoji.h') as p:
         p('static inline bool\nis_emoji(char_type code) {')
         p('\tswitch(code) {')
@@ -217,9 +223,17 @@ def gen_emoji():
         p('\treturn false;\n}')
 
 
-def category_test(name, p, classes, comment, static=False, extra_chars=frozenset(), exclude=frozenset()):
-    static = 'static inline ' if static else ''
-    chars = set()
+def category_test(
+    name: str,
+    p: Callable,
+    classes: Iterable[str],
+    comment: str,
+    use_static: bool = False,
+    extra_chars: Union[FrozenSet[int], Set[int]] = frozenset(),
+    exclude: Union[Set[int], FrozenSet[int]] = frozenset()
+) -> None:
+    static = 'static inline ' if use_static else ''
+    chars: Set[int] = set()
     for c in classes:
         chars |= class_maps[c]
     chars |= extra_chars
@@ -234,7 +248,7 @@ def category_test(name, p, classes, comment, static=False, extra_chars=frozenset
     p('\treturn false;\n}\n')
 
 
-def codepoint_to_mark_map(p, mark_map):
+def codepoint_to_mark_map(p: Callable, mark_map: List[int]) -> Dict[int, int]:
     p('\tswitch(c) { // {{{')
     rmap = {c: m for m, c in enumerate(mark_map)}
     for spec in get_ranges(mark_map):
@@ -249,14 +263,14 @@ def codepoint_to_mark_map(p, mark_map):
     return rmap
 
 
-def classes_to_regex(classes, exclude=''):
-    chars = set()
+def classes_to_regex(classes: Iterable[str], exclude: str = '') -> Iterable[str]:
+    chars: Set[int] = set()
     for c in classes:
         chars |= class_maps[c]
-    for c in map(ord, exclude):
-        chars.discard(c)
+    for x in map(ord, exclude):
+        chars.discard(x)
 
-    def as_string(codepoint):
+    def as_string(codepoint: int) -> str:
         if codepoint < 256:
             return r'\x{:02x}'.format(codepoint)
         if codepoint <= 0xffff:
@@ -270,7 +284,7 @@ def classes_to_regex(classes, exclude=''):
             yield as_string(spec)
 
 
-def gen_ucd():
+def gen_ucd() -> None:
     cz = {c for c in class_maps if c[0] in 'CZ'}
     with create_header('kitty/unicode-data.c') as p:
         p('#include "unicode-data.h"')
@@ -298,7 +312,9 @@ def gen_ucd():
         p('}\n')
         with open('kitty/unicode-data.h') as f:
             unicode_data = f.read()
-        expected = int(re.search(r'^#define VS15 (\d+)', unicode_data, re.M).group(1))
+        m = re.search(r'^#define VS15 (\d+)', unicode_data, re.M)
+        if m is not None:
+            expected = int(m.group(1))
         if rmap[0xfe0e] != expected:
             raise ValueError('The mark for 0xfe0e has changed, you have to update VS15 to {} and VS16 to {} in unicode-data.h'.format(
                 rmap[0xfe0e], rmap[0xfe0f]
@@ -307,7 +323,7 @@ def gen_ucd():
         f.write("url_delimiters = '{}'  # noqa".format(''.join(classes_to_regex(cz, exclude='\n'))))
 
 
-def gen_names():
+def gen_names() -> None:
     with create_header('kittens/unicode_input/names.h') as p:
         mark_to_cp = list(sorted(name_map))
         cp_to_mark = {cp: m for m, cp in enumerate(mark_to_cp)}
@@ -362,28 +378,28 @@ def gen_names():
 
         # The trie
         p(f'typedef struct {{ uint32_t children_offset; uint32_t match_offset; }} word_trie;\n')
-        all_trie_nodes = []
+        all_trie_nodes: List['TrieNode'] = []
 
         class TrieNode:
 
-            def __init__(self):
+            def __init__(self) -> None:
                 self.match_offset = 0
                 self.children_offset = 0
-                self.children = {}
+                self.children: Dict[int, int] = {}
 
-            def add_letter(self, letter):
+            def add_letter(self, letter: int) -> int:
                 if letter not in self.children:
                     self.children[letter] = len(all_trie_nodes)
                     all_trie_nodes.append(TrieNode())
                 return self.children[letter]
 
-            def __str__(self):
+            def __str__(self) -> str:
                 return f'{{ .children_offset={self.children_offset}, .match_offset={self.match_offset} }}'
 
         root = TrieNode()
         all_trie_nodes.append(root)
 
-        def add_word(word_idx, word):
+        def add_word(word_idx: int, word: str) -> None:
             parent = root
             for letter in map(ord, word):
                 idx = parent.add_letter(letter)
@@ -408,10 +424,10 @@ def gen_names():
         p('}; // }}}\n')
 
 
-def gen_wcwidth():
-    seen = set()
+def gen_wcwidth() -> None:
+    seen: Set[int] = set()
 
-    def add(p, comment, chars_, ret):
+    def add(p: Callable, comment: str, chars_: Set[int], ret: int) -> None:
         chars = chars_ - seen
         seen.update(chars)
         p(f'\t\t// {comment} ({len(chars)} codepoints)' + ' {{' '{')

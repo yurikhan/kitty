@@ -10,65 +10,83 @@ import re
 import selectors
 import signal
 import sys
-from collections import namedtuple
 from contextlib import contextmanager
 from functools import partial
+from typing import Any, Callable, Dict, Generator, List, NamedTuple, Optional
 
 from kitty.constants import is_macos
 from kitty.fast_data_types import (
     close_tty, normal_tty, open_tty, parse_input_from_terminal, raw_tty
 )
 from kitty.key_encoding import (
-    ALT, CTRL, PRESS, RELEASE, REPEAT, SHIFT, C, D, backspace_key,
-    decode_key_event, enter_key
+    ALT, CTRL, PRESS, RELEASE, REPEAT, SHIFT, backspace_key, decode_key_event,
+    enter_key, key_defs as K
 )
-from kitty.utils import screen_size_function, write_all
+from kitty.typing import ImageManagerType, KeyEventType, Protocol
+from kitty.utils import ScreenSizeGetter, screen_size_function, write_all
 
 from .handler import Handler
 from .operations import init_state, reset_state
 
+C, D = K['C'], K['D']
 
-def debug(*a, **kw):
-    from base64 import standard_b64encode
-    buf = io.StringIO()
-    kw['file'] = buf
-    print(*a, **kw)
-    text = buf.getvalue()
-    text = b'\x1bP@kitty-print|' + standard_b64encode(text.encode('utf-8')) + b'\x1b\\'
-    fobj = getattr(debug, 'fobj', sys.stdout.buffer)
-    fobj.write(text)
-    if hasattr(fobj, 'flush'):
+
+class BinaryWrite(Protocol):
+
+    def write(self, data: bytes) -> None:
+        pass
+
+    def flush(self) -> None:
+        pass
+
+
+class Debug:
+
+    fobj: Optional[BinaryWrite] = None
+
+    def __call__(self, *a: Any, **kw: Any) -> None:
+        from base64 import standard_b64encode
+        buf = io.StringIO()
+        kw['file'] = buf
+        print(*a, **kw)
+        stext = buf.getvalue()
+        text = b'\x1bP@kitty-print|' + standard_b64encode(stext.encode('utf-8')) + b'\x1b\\'
+        fobj = self.fobj or sys.stdout.buffer
+        fobj.write(text)
         fobj.flush()
+
+
+debug = Debug()
 
 
 class TermManager:
 
-    def __init__(self):
-        self.extra_finalize = None
+    def __init__(self) -> None:
+        self.extra_finalize: Optional[str] = None
 
-    def set_state_for_loop(self, set_raw=True):
+    def set_state_for_loop(self, set_raw: bool = True) -> None:
         if set_raw:
             raw_tty(self.tty_fd, self.original_termios)
         write_all(self.tty_fd, init_state())
 
-    def reset_state_to_original(self):
+    def reset_state_to_original(self) -> None:
         normal_tty(self.tty_fd, self.original_termios)
         if self.extra_finalize:
             write_all(self.tty_fd, self.extra_finalize)
         write_all(self.tty_fd, reset_state())
 
     @contextmanager
-    def suspend(self):
+    def suspend(self) -> Generator['TermManager', None, None]:
         self.reset_state_to_original()
         yield self
         self.set_state_for_loop()
 
-    def __enter__(self):
+    def __enter__(self) -> 'TermManager':
         self.tty_fd, self.original_termios = open_tty()
         self.set_state_for_loop(set_raw=False)
         return self
 
-    def __exit__(self, *a):
+    def __exit__(self, *a: object) -> None:
         self.reset_state_to_original()
         close_tty(self.tty_fd, self.original_termios)
         del self.tty_fd, self.original_termios
@@ -76,7 +94,6 @@ class TermManager:
 
 LEFT, MIDDLE, RIGHT, FOURTH, FIFTH = 1, 2, 4, 8, 16
 DRAG = REPEAT
-MouseEvent = namedtuple('MouseEvent', 'x y type buttons mods')
 bmap = {0: LEFT, 1: MIDDLE, 2: RIGHT}
 MOTION_INDICATOR = 1 << 5
 EXTRA_BUTTON_INDICATOR = 1 << 6
@@ -85,10 +102,18 @@ ALT_INDICATOR = 1 << 3
 CTRL_INDICATOR = 1 << 4
 
 
-def decode_sgr_mouse(text):
-    cb, x, y = text.split(';')
-    m, y = y[-1], y[:-1]
-    cb, x, y = map(int, (cb, x, y))
+class MouseEvent(NamedTuple):
+    x: int
+    y: int
+    type: int
+    buttons: int
+    mods: int
+
+
+def decode_sgr_mouse(text: str) -> MouseEvent:
+    cb_, x_, y_ = text.split(';')
+    m, y_ = y_[-1], y_[:-1]
+    cb, x, y = map(int, (cb_, x_, y_))
     typ = RELEASE if m == 'm' else (DRAG if cb & MOTION_INDICATOR else PRESS)
     buttons = 0
     cb3 = cb & 3
@@ -109,10 +134,10 @@ def decode_sgr_mouse(text):
 
 class UnhandledException(Handler):
 
-    def __init__(self, tb):
+    def __init__(self, tb: str) -> None:
         self.tb = tb
 
-    def initialize(self):
+    def initialize(self) -> None:
         self.cmd.clear_screen()
         self.cmd.set_scrolling_region()
         self.cmd.set_cursor_visible(True)
@@ -121,41 +146,49 @@ class UnhandledException(Handler):
         self.write('\r\n')
         self.write('Press the Enter key to quit')
 
-    def on_key(self, key_event):
+    def on_key(self, key_event: KeyEventType) -> None:
         if key_event is enter_key:
             self.quit_loop(1)
 
-    def on_interrupt(self):
+    def on_interrupt(self) -> None:
         self.quit_loop(1)
     on_eot = on_term = on_interrupt
 
 
 class SignalManager:
 
-    def __init__(self, loop, on_winch, on_interrupt, on_term):
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        on_winch: Callable,
+        on_interrupt: Callable,
+        on_term: Callable
+    ) -> None:
         self.asycio_loop = loop
         self.on_winch, self.on_interrupt, self.on_term = on_winch, on_interrupt, on_term
 
-    def __enter__(self):
+    def __enter__(self) -> None:
         tuple(map(lambda x: self.asycio_loop.add_signal_handler(*x), (
             (signal.SIGWINCH, self.on_winch),
             (signal.SIGINT, self.on_interrupt),
             (signal.SIGTERM, self.on_term)
         )))
 
-    def __exit__(self, *a):
+    def __exit__(self, *a: Any) -> None:
         tuple(map(self.asycio_loop.remove_signal_handler, (
             signal.SIGWINCH, signal.SIGINT, signal.SIGTERM)))
 
 
 class Loop:
 
-    def __init__(self,
-                 sanitize_bracketed_paste='[\x03\x04\x0e\x0f\r\x07\x7f\x8d\x8e\x8f\x90\x9b\x9d\x9e\x9f]'):
+    def __init__(
+        self,
+        sanitize_bracketed_paste: str = '[\x03\x04\x0e\x0f\r\x07\x7f\x8d\x8e\x8f\x90\x9b\x9d\x9e\x9f]'
+    ):
         if is_macos:
             # On macOS PTY devices are not supported by the KqueueSelector and
             # the PollSelector is broken, causes 100% CPU usage
-            self.asycio_loop = asyncio.SelectorEventLoop(selectors.SelectSelector())
+            self.asycio_loop: asyncio.AbstractEventLoop = asyncio.SelectorEventLoop(selectors.SelectSelector())
             asyncio.set_event_loop(self.asycio_loop)
         else:
             self.asycio_loop = asyncio.get_event_loop()
@@ -173,14 +206,14 @@ class Loop:
         if self.sanitize_bracketed_paste:
             self.sanitize_ibp_pat = re.compile(sanitize_bracketed_paste)
 
-    def _read_ready(self, handler, fd):
+    def _read_ready(self, handler: Handler, fd: int) -> None:
         try:
-            data = os.read(fd, io.DEFAULT_BUFFER_SIZE)
+            bdata = os.read(fd, io.DEFAULT_BUFFER_SIZE)
         except BlockingIOError:
             return
-        if not data:
+        if not bdata:
             raise EOFError('The input stream is closed')
-        data = self.decoder.decode(data)
+        data = self.decoder.decode(bdata)
         if self.read_buf:
             data = self.read_buf + data
         self.read_buf = data
@@ -194,7 +227,7 @@ class Loop:
             del self.handler
 
     # terminal input callbacks {{{
-    def _on_text(self, text):
+    def _on_text(self, text: str) -> None:
         if self.in_bracketed_paste and self.sanitize_bracketed_paste:
             text = self.sanitize_ibp_pat.sub('', text)
 
@@ -213,8 +246,7 @@ class Loop:
             elif chunk:
                 self.handler.on_text(chunk, self.in_bracketed_paste)
 
-    def _on_dcs(self, dcs):
-        debug(dcs)
+    def _on_dcs(self, dcs: str) -> None:
         if dcs.startswith('@kitty-cmd'):
             import json
             self.handler.on_kitty_cmd_response(json.loads(dcs[len('@kitty-cmd'):]))
@@ -229,7 +261,7 @@ class Loop:
                     continue
                 self.handler.on_capability_response(name, val)
 
-    def _on_csi(self, csi):
+    def _on_csi(self, csi: str) -> None:
         q = csi[-1]
         if q in 'mM':
             if csi.startswith('<'):
@@ -246,10 +278,10 @@ class Loop:
             elif csi == '201~':
                 self.in_bracketed_paste = False
 
-    def _on_pm(self, pm):
+    def _on_pm(self, pm: str) -> None:
         pass
 
-    def _on_osc(self, osc):
+    def _on_osc(self, osc: str) -> None:
         m = re.match(r'(\d+);', osc)
         if m is not None:
             code = int(m.group(1))
@@ -260,7 +292,7 @@ class Loop:
                 from base64 import standard_b64decode
                 self.handler.on_clipboard_response(standard_b64decode(rest).decode('utf-8'), from_primary)
 
-    def _on_apc(self, apc):
+    def _on_apc(self, apc: str) -> None:
         if apc.startswith('K'):
             try:
                 k = decode_key_event(apc)
@@ -280,7 +312,7 @@ class Loop:
                 self.handler.image_manager.handle_response(apc)
     # }}}
 
-    def _write_ready(self, handler, fd):
+    def _write_ready(self, handler: Handler, fd: int) -> None:
         if len(self.write_buf) > self.iov_limit:
             self.write_buf[self.iov_limit - 1] = b''.join(self.write_buf[self.iov_limit - 1:])
             del self.write_buf[self.iov_limit:]
@@ -292,7 +324,7 @@ class Loop:
         if not written:
             raise EOFError('The output stream is closed')
         if written >= sum(sizes):
-            self.write_buf = []
+            self.write_buf: List[bytes] = []
             self.asycio_loop.remove_writer(fd)
             self.waiting_for_writes = False
         else:
@@ -308,24 +340,24 @@ class Loop:
                 break
             del self.write_buf[:consumed]
 
-    def quit(self, return_code=None):
+    def quit(self, return_code: Optional[int] = None) -> None:
         if return_code is not None:
             self.return_code = return_code
         self.asycio_loop.stop()
 
-    def loop_impl(self, handler, term_manager, image_manager=None):
+    def loop_impl(self, handler: Handler, term_manager: TermManager, image_manager: Optional[ImageManagerType] = None) -> Optional[str]:
         self.write_buf = []
         tty_fd = term_manager.tty_fd
         tb = None
         self.waiting_for_writes = True
 
-        def schedule_write(data):
+        def schedule_write(data: bytes) -> None:
             self.write_buf.append(data)
             if not self.waiting_for_writes:
                 self.asycio_loop.add_writer(tty_fd, self._write_ready, handler, tty_fd)
                 self.waiting_for_writes = True
 
-        def handle_exception(loop, context):
+        def handle_exception(loop: asyncio.AbstractEventLoop, context: Dict[str, Any]) -> None:
             nonlocal tb
             loop.stop()
             tb = context['message']
@@ -347,17 +379,17 @@ class Loop:
                 self.asycio_loop.remove_writer(tty_fd)
         return tb
 
-    def loop(self, handler):
-        tb = None
+    def loop(self, handler: Handler) -> None:
+        tb: Optional[str] = None
 
-        def _on_sigwinch():
+        def _on_sigwinch() -> None:
             self._get_screen_size.changed = True
             handler.screen_size = self._get_screen_size()
             handler.on_resize(handler.screen_size)
 
         signal_manager = SignalManager(self.asycio_loop, _on_sigwinch, handler.on_interrupt, handler.on_term)
         with TermManager() as term_manager, signal_manager:
-            self._get_screen_size = screen_size_function(term_manager.tty_fd)
+            self._get_screen_size: ScreenSizeGetter = screen_size_function(term_manager.tty_fd)
             image_manager = None
             if handler.image_manager_class is not None:
                 image_manager = handler.image_manager_class(handler)
@@ -372,5 +404,5 @@ class Loop:
                 self.return_code = 1
                 self._report_error_loop(tb, term_manager)
 
-    def _report_error_loop(self, tb, term_manager):
+    def _report_error_loop(self, tb: str, term_manager: TermManager) -> None:
         self.loop_impl(UnhandledException(tb), term_manager)

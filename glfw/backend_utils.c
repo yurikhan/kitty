@@ -163,6 +163,14 @@ prepareForPoll(EventLoopData *eld, monotonic_t timeout) {
     return timeout;
 }
 
+static inline struct timespec
+calc_time(monotonic_t nsec) {
+    struct timespec result;
+    result.tv_sec  = nsec / (1000LL * 1000LL * 1000LL);
+    result.tv_nsec = nsec % (1000LL * 1000LL * 1000LL);
+    return result;
+}
+
 int
 pollWithTimeout(struct pollfd *fds, nfds_t nfds, monotonic_t timeout) {
     struct timespec tv = calc_time(timeout);
@@ -284,7 +292,7 @@ finalizePollData(EventLoopData *eld) {
 }
 
 int
-pollForEvents(EventLoopData *eld, monotonic_t timeout) {
+pollForEvents(EventLoopData *eld, monotonic_t timeout, watch_callback_func display_callback) {
     int read_ok = 0;
     timeout = prepareForPoll(eld, timeout);
     EVDBG("pollForEvents final timeout: %.3f", monotonic_t_to_s_double(timeout));
@@ -297,6 +305,7 @@ pollForEvents(EventLoopData *eld, monotonic_t timeout) {
             errno = 0;
             result = pollWithTimeout(eld->fds, eld->watches_count, timeout);
             int saved_errno = errno;
+            if (display_callback) display_callback(result, eld->fds[0].revents && eld->watches[0].events, NULL);
             dispatchTimers(eld);
             if (result > 0) {
                 dispatchEvents(eld);
@@ -311,6 +320,7 @@ pollForEvents(EventLoopData *eld, monotonic_t timeout) {
             errno = 0;
             result = poll(eld->fds, eld->watches_count, -1);
             int saved_errno = errno;
+            if (display_callback) display_callback(result, eld->fds[0].revents && eld->watches[0].events, NULL);
             dispatchTimers(eld);
             if (result > 0) {
                 dispatchEvents(eld);
@@ -321,55 +331,4 @@ pollForEvents(EventLoopData *eld, monotonic_t timeout) {
         }
     }
     return read_ok;
-}
-
-// Splits and translates a text/uri-list into separate file paths
-// NOTE: This function destroys the provided string
-//
-char** parseUriList(char* text, int* count)
-{
-    const char* prefix = "file://";
-    char** paths = NULL;
-    char* line;
-
-    *count = 0;
-
-    while ((line = strtok(text, "\r\n")))
-    {
-        text = NULL;
-
-        if (line[0] == '#')
-            continue;
-
-        if (strncmp(line, prefix, strlen(prefix)) == 0)
-        {
-            line += strlen(prefix);
-            // TODO: Validate hostname
-            while (*line != '/')
-                line++;
-        }
-
-        (*count)++;
-
-        char* path = calloc(strlen(line) + 1, 1);
-        paths = realloc(paths, *count * sizeof(char*));
-        paths[*count - 1] = path;
-
-        while (*line)
-        {
-            if (line[0] == '%' && line[1] && line[2])
-            {
-                const char digits[3] = { line[1], line[2], '\0' };
-                *path = strtol(digits, NULL, 16);
-                line += 2;
-            }
-            else
-                *path = *line;
-
-            path++;
-            line++;
-        }
-    }
-
-    return paths;
 }

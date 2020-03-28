@@ -26,10 +26,7 @@
 #include "charsets.h"
 
 static const ScreenModes empty_modes = {0, .mDECAWM=true, .mDECTCEM=true, .mDECARM=true};
-static Selection EMPTY_SELECTION = {0};
-typedef struct {
-    unsigned int x; int y;
-} FullSelectionBoundary;
+static Selection EMPTY_SELECTION = {{0}};
 
 // Constructor/destructor {{{
 
@@ -90,6 +87,7 @@ new(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
             Py_CLEAR(self); PyErr_Format(PyExc_RuntimeError, "Failed to create Screen write_buf_lock mutex: %s", strerror(ret));
             return NULL;
         }
+        self->reload_all_gpu_data = true;
         self->cell_size.width = cell_width; self->cell_size.height = cell_height;
         self->columns = columns; self->lines = lines;
         self->write_buf = PyMem_RawMalloc(BUFSIZ);
@@ -111,11 +109,16 @@ new(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
         self->historybuf = alloc_historybuf(MAX(scrollback, lines), columns, OPT(scrollback_pager_history_size));
         self->main_grman = grman_alloc();
         self->alt_grman = grman_alloc();
+
         self->grman = self->main_grman;
         self->pending_mode.wait_time = 2.0;
         self->disable_ligatures = OPT(disable_ligatures);
         self->main_tabstops = PyMem_Calloc(2 * self->columns, sizeof(bool));
-        if (self->cursor == NULL || self->main_linebuf == NULL || self->alt_linebuf == NULL || self->main_tabstops == NULL || self->historybuf == NULL || self->main_grman == NULL || self->alt_grman == NULL || self->color_profile == NULL) {
+        if (
+            self->cursor == NULL || self->main_linebuf == NULL || self->alt_linebuf == NULL ||
+            self->main_tabstops == NULL || self->historybuf == NULL || self->main_grman == NULL ||
+            self->alt_grman == NULL || self->color_profile == NULL
+        ) {
             Py_CLEAR(self); return NULL;
         }
         self->alt_tabstops = self->main_tabstops + self->columns * sizeof(bool);
@@ -238,7 +241,6 @@ screen_resize(Screen *self, unsigned int lines, unsigned int columns) {
     self->is_dirty = true;
     self->selection = EMPTY_SELECTION;
     self->url_range = EMPTY_SELECTION;
-    self->selection_updated_once = false;
     /* printf("old_cursor: (%u, %u) new_cursor: (%u, %u) beyond_content: %d\n", self->cursor->x, self->cursor->y, cursor_x, cursor_y, cursor_is_beyond_content); */
     self->cursor->x = MIN(cursor_x, self->columns - 1);
     self->cursor->y = MIN(cursor_y, self->lines - 1);
@@ -278,6 +280,7 @@ dealloc(Screen* self) {
     Py_CLEAR(self->alt_linebuf);
     Py_CLEAR(self->historybuf);
     Py_CLEAR(self->color_profile);
+    Py_CLEAR(self->marker);
     PyMem_Free(self->overlay_line.cpu_cells);
     PyMem_Free(self->overlay_line.gpu_cells);
     PyMem_Free(self->main_tabstops);
@@ -341,10 +344,16 @@ move_widened_char(Screen *self, CPUCell* cpu_cell, GPUCell *gpu_cell, index_type
 }
 
 static inline bool
+is_selection_empty(Selection *s) {
+    int start_y = (int)s->start.y - (int)s->start_scrolled_by, end_y = (int)s->end.y - (int)s->end_scrolled_by;
+    return s->start.x == s->end.x && s->start.in_left_half_of_cell == s->end.in_left_half_of_cell && start_y == end_y;
+}
+
+static inline bool
 selection_has_screen_line(Selection *s, int y) {
-    if (s->start_scrolled_by == s->end_scrolled_by && s->start_x == s->end_x && s->start_y == s->end_y) return false;
-    int top = (int)s->start_y - s->start_scrolled_by;
-    int bottom = (int)s->end_y - s->end_scrolled_by;
+    if (is_selection_empty(s)) return false;
+    int top = (int)s->start.y - s->start_scrolled_by;
+    int bottom = (int)s->end.y - s->end_scrolled_by;
     return top <= y && y <= bottom;
 }
 
@@ -849,17 +858,17 @@ screen_cursor_to_column(Screen *self, unsigned int column) {
 
 static inline void
 index_selection(Screen *self, Selection *s, bool up) {
-    if (s->start_scrolled_by == s->end_scrolled_by && s->start_x == s->end_x && s->start_y == s->end_y) return;
+    if (is_selection_empty(s)) return;
     if (up) {
-        if (s->start_y == 0) s->start_scrolled_by += 1;
-        else s->start_y--;
-        if (s->end_y == 0) s->end_scrolled_by += 1;
-        else s->end_y--;
+        if (s->start.y == 0) s->start_scrolled_by += 1;
+        else s->start.y--;
+        if (s->end.y == 0) s->end_scrolled_by += 1;
+        else s->end.y--;
     } else {
-        if (s->start_y >= self->lines - 1) s->start_scrolled_by -= 1;
-        else s->start_y++;
-        if (s->end_y >= self->lines - 1) s->end_scrolled_by -= 1;
-        else s->end_y++;
+        if (s->start.y >= self->lines - 1) s->start_scrolled_by -= 1;
+        else s->start.y++;
+        if (s->end.y >= self->lines - 1) s->end_scrolled_by -= 1;
+        else s->end.y++;
     }
 }
 
@@ -1503,6 +1512,12 @@ screen_reset_dirty(Screen *self) {
     self->history_line_added_count = 0;
 }
 
+static inline bool
+screen_has_marker(Screen *self) {
+    return self->marker != NULL;
+}
+
+
 void
 screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE fonts_data, bool cursor_has_moved) {
     unsigned int history_line_added_count = self->history_line_added_count;
@@ -1516,6 +1531,7 @@ screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE fonts_dat
         historybuf_init_line(self->historybuf, lnum, self->historybuf->line);
         if (self->historybuf->line->has_dirty_text) {
             render_line(fonts_data, self->historybuf->line, lnum, self->cursor, self->disable_ligatures);
+            if (screen_has_marker(self)) mark_text_in_line(self->marker, self->historybuf->line);
             historybuf_mark_line_clean(self->historybuf, lnum);
         }
         update_line_data(self->historybuf->line, y, address);
@@ -1524,8 +1540,10 @@ screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE fonts_dat
         lnum = y - self->scrolled_by;
         linebuf_init_line(self->linebuf, lnum);
         if (self->linebuf->line->has_dirty_text ||
-            (cursor_has_moved && (self->cursor->y == lnum || self->last_rendered_cursor_y == lnum))) {
+            (cursor_has_moved && (self->cursor->y == lnum || self->last_rendered.cursor_y == lnum))) {
             render_line(fonts_data, self->linebuf->line, lnum, self->cursor, self->disable_ligatures);
+            if (self->linebuf->line->has_dirty_text && screen_has_marker(self)) mark_text_in_line(self->marker, self->linebuf->line);
+
             linebuf_mark_line_clean(self->linebuf, lnum);
         }
         update_line_data(self->linebuf->line, y, address);
@@ -1537,50 +1555,20 @@ screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE fonts_dat
 
 
 static inline bool
-is_selection_empty(Screen *self, unsigned int start_x, unsigned int start_y, unsigned int end_x, unsigned int end_y) {
-    return start_x >= self->columns || start_y >= self->lines || end_x >= self->columns || end_y >= self->lines || (start_x == end_x && start_y == end_y);
+selection_boundary_less_than(SelectionBoundary *a, SelectionBoundary *b) {
+    if (a->y < b->y) return true;
+    if (a->y > b->y) return false;
+    if (a->x < b->x) return true;
+    if (a->x > b->x) return false;
+    if (a->in_left_half_of_cell && !b->in_left_half_of_cell) return true;
+    return false;
 }
 
-static inline void
-selection_coord(Screen *self, unsigned int x, unsigned int y, unsigned int ydelta, SelectionBoundary *ans) {
-    if (y + self->scrolled_by < ydelta) {
-        ans->x = 0; ans->y = 0;
-    } else {
-        y = y - ydelta + self->scrolled_by;
-        if (y >= self->lines) {
-            ans->x = self->columns - 1; ans->y = self->lines - 1;
-        } else {
-            ans->x = x; ans->y = y;
-        }
-    }
-}
-
-static inline void
-full_selection_coord(Screen *self, unsigned int x, unsigned int y, unsigned int ydelta, FullSelectionBoundary *ans) {
-    ans->x = MIN(x, self->columns - 1);
-    ans->y = y - ydelta;
-    if (y >= self->lines) { ans->x = self->columns - 1; ans->y = self->lines - 1; }
-}
-
-#define selection_limits_(which, left, right) { \
-    SelectionBoundary a, b; \
-    selection_coord(self, self->which.start_x, self->which.start_y, self->which.start_scrolled_by, &a); \
-    selection_coord(self, self->which.end_x, self->which.end_y, self->which.end_scrolled_by, &b); \
-    if (a.y < b.y || (a.y == b.y && a.x <= b.x)) { *(left) = a; *(right) = b; } \
-    else { *(left) = b; *(right) = a; } \
-}
-
-#define full_selection_limits_(which, left, right) { \
-    FullSelectionBoundary a, b; \
-    full_selection_coord(self, self->which.start_x, self->which.start_y, self->which.start_scrolled_by, &a); \
-    full_selection_coord(self, self->which.end_x, self->which.end_y, self->which.end_scrolled_by, &b); \
-    if (a.y < b.y || (a.y == b.y && a.x <= b.x)) { *(left) = a; *(right) = b; } \
-    else { *(left) = b; *(right) = a; } \
-}
-
+typedef Line*(linefunc_t)(Screen*, int);
 
 static inline Line*
-visual_line_(Screen *self, index_type y) {
+visual_line_(Screen *self, int y_) {
+    index_type y = MAX(0, y_);
     if (self->scrolled_by) {
         if (y < self->scrolled_by) {
             historybuf_init_line(self->historybuf, self->scrolled_by - 1 - y, self->historybuf->line);
@@ -1602,101 +1590,169 @@ range_line_(Screen *self, int y) {
     return self->linebuf->line;
 }
 
-static inline int
-clamp_for_range_line(Screen *self, int y) {
-    if (y < 0) {
-        unsigned int idx = -(y + 1);
-        if (idx >= self->historybuf->count) {
-            y += idx - self->historybuf->count + 1;
-        }
-        return y;
-    }
-    return MIN((unsigned int)y, self->lines - 1);
+static inline bool
+selection_is_left_to_right(const Selection *self) {
+    return self->input_start.x < self->input_current.x || (self->input_start.x == self->input_current.x && self->input_start.in_left_half_of_cell);
 }
 
-#define iterate_over_rectangle(start, end, line_func, y_type) { \
-    y_type min_y = MIN(start->y, end->y), max_y = MAX(start->y, end->y); \
-    index_type min_x = MIN(start->x, end->x), max_x = MAX(start->x, end->x); \
-    for (y_type y = min_y; y <= max_y; y++) { \
-        Line *line = line_func(self, y); \
-        index_type xlimit = xlimit_for_line(line); \
-        xlimit = MIN(max_x + 1, xlimit); \
-        index_type x_start = min_x;
+static void
+iteration_data(const Screen *self, const Selection *sel, IterationData *ans, int min_y, bool add_scrolled_by) {
+    memset(ans, 0, sizeof(IterationData));
+    const SelectionBoundary *start = &sel->start, *end = &sel->end;
+    int start_y = (int)start->y - sel->start_scrolled_by, end_y = (int)end->y - sel->end_scrolled_by;
+    // empty selection
+    if (start->x == end->x && start_y == end_y && start->in_left_half_of_cell == end->in_left_half_of_cell) return;
 
-#define iterate_over_region(start, end, line_func, y_type) { \
-    for (y_type y = start->y; y <= end->y; y++) { \
-        Line *line = line_func(self, y); \
-        index_type xlimit = xlimit_for_line(line); \
-        if (y == end->y) xlimit = MIN(end->x + 1, xlimit); \
-        index_type x_start = y == start->y ? start->x : 0;
+    if (sel->rectangle_select) {
+        // empty selection
+        if (start->x == end->x && (!start->in_left_half_of_cell || end->in_left_half_of_cell)) return;
 
+        ans->y = MIN(start_y, end_y); ans->y_limit = MAX(start_y, end_y) + 1;
+        index_type x, x_limit;
+        bool left_to_right = selection_is_left_to_right(sel);
+
+        if (start->x == end->x) {
+            x = start->x; x_limit = start->x + 1;
+        } else {
+            if (left_to_right) {
+                x = start->x + (start->in_left_half_of_cell ? 0 : 1);
+                x_limit = 1 + end->x + (end->in_left_half_of_cell ? -1: 0);
+            } else {
+                x = end->x + (end->in_left_half_of_cell ? 0 : 1);
+                x_limit = 1 + start->x + (start->in_left_half_of_cell ? -1 : 0);
+            }
+        }
+        ans->first.x = x; ans->body.x = x; ans->last.x = x;
+        ans->first.x_limit = x_limit; ans->body.x_limit = x_limit; ans->last.x_limit = x_limit;
+    } else {
+        index_type line_limit = self->columns;
+
+        if (start_y == end_y) {
+            if (start->x == end->x) {
+                if (start->in_left_half_of_cell && !end->in_left_half_of_cell) {
+                    // single cell selection
+                    ans->first.x = start->x; ans->body.x = start->x; ans->last.x = start->x;
+                    ans->first.x_limit = start->x + 1; ans->body.x_limit = start->x + 1; ans->last.x_limit = start->x + 1;
+                } else return; // empty selection
+            }
+            // single line selection
+            else if (start->x <= end->x) {
+                ans->first.x = start->x + (start->in_left_half_of_cell ? 0 : 1);
+                ans->first.x_limit = 1 + end->x + (end->in_left_half_of_cell ? -1 : 0);
+            } else {
+                ans->first.x = end->x + (end->in_left_half_of_cell ? 0 : 1);
+                ans->first.x_limit = 1 + start->x + (start->in_left_half_of_cell ? -1 : 0);
+            }
+        } else if (start_y < end_y) { // downwards
+            ans->body.x_limit = line_limit;
+            ans->first.x_limit = line_limit;
+            ans->first.x = start->x + (start->in_left_half_of_cell ? 0 : 1);
+            ans->last.x_limit = 1 + end->x + (end->in_left_half_of_cell ? -1 : 0);
+        } else { // upwards
+            ans->body.x_limit = line_limit;
+            ans->first.x_limit = line_limit;
+            ans->first.x = end->x + (end->in_left_half_of_cell ? 0 : 1);
+            ans->last.x_limit = 1 + start->x + (start->in_left_half_of_cell ? -1 : 0);
+        }
+        ans->y = MIN(start_y, end_y); ans->y_limit = MAX(start_y, end_y) + 1;
+
+    }
+    if (add_scrolled_by) {
+        ans->y += self->scrolled_by; ans->y_limit += self->scrolled_by;
+    }
+    ans->y = MAX(ans->y, min_y);
+}
+
+static inline XRange
+xrange_for_iteration(const IterationData *idata, const int y, const Line *line) {
+    XRange ans = {.x_limit=xlimit_for_line(line)};
+    if (y == idata->y) {
+        ans.x_limit = MIN(idata->first.x_limit, ans.x_limit);
+        ans.x = idata->first.x;
+    } else if (y == idata->y_limit - 1) {
+        ans.x_limit = MIN(idata->last.x_limit, ans.x_limit);
+        ans.x = idata->last.x;
+    } else {
+        ans.x_limit = MIN(idata->body.x_limit, ans.x_limit);
+        ans.x = idata->body.x;
+    }
+    return ans;
+}
+
+static inline bool
+iteration_data_is_empty(const Screen *self, const IterationData *idata) {
+    if (idata->y >= idata->y_limit) return true;
+    index_type xl = MIN(idata->first.x_limit, self->columns);
+    if (idata->first.x < xl) return false;
+    xl = MIN(idata->body.x_limit, self->columns);
+    if (idata->body.x < xl) return false;
+    xl = MIN(idata->last.x_limit, self->columns);
+    if (idata->last.x < xl) return false;
+    return true;
+}
 
 static inline void
-apply_selection(Screen *self, uint8_t *data, SelectionBoundary *start, SelectionBoundary *end, uint8_t set_mask, bool rectangle_select) {
-    if (is_selection_empty(self, start->x, start->y, end->x, end->y)) return;
-    if (rectangle_select) {
-        iterate_over_rectangle(start, end, visual_line_, index_type)
-            uint8_t *line_start = data + self->columns * y;
-            for (index_type x = x_start; x < xlimit; x++) line_start[x] |= set_mask;
-        }}
-    } else {
-        iterate_over_region(start, end, visual_line_, index_type)
-            uint8_t *line_start = data + self->columns * y;
-            for (index_type x = x_start; x < xlimit; x++) line_start[x] |= set_mask;
-        }}
-    }
+apply_selection(Screen *self, uint8_t *data, const Selection *s, IterationData *last_rendered, uint8_t set_mask) {
+    iteration_data(self, s, last_rendered, -self->historybuf->count, true);
 
+    for (int y = MAX(0, last_rendered->y); y < last_rendered->y_limit && y < (int)self->lines; y++) {
+        Line *line = visual_line_(self, y);
+        uint8_t *line_start = data + self->columns * y;
+        XRange xr = xrange_for_iteration(last_rendered, y, line);
+        for (index_type x = xr.x; x < xr.x_limit; x++) line_start[x] |= set_mask;
+    }
+    last_rendered->y = MAX(0, last_rendered->y);
 }
 
 bool
 screen_has_selection(Screen *self) {
-    SelectionBoundary start, end;
-    selection_limits_(selection, &start, &end);
-    return !is_selection_empty(self, start.x, start.y, end.x, end.y);
+    if (is_selection_empty(&self->selection)) return false;
+    IterationData idata;
+    iteration_data(self, &self->selection, &idata, -self->historybuf->count, true);
+    if (iteration_data_is_empty(self, &idata)) return false;
+    return true;
 }
 
 void
 screen_apply_selection(Screen *self, void *address, size_t size) {
     memset(address, 0, size);
-    self->last_selection_scrolled_by = self->scrolled_by;
-    self->selection_updated_once = true;
-    selection_limits_(selection, &self->last_rendered_selection_start, &self->last_rendered_selection_end);
-    apply_selection(self, address, &self->last_rendered_selection_start, &self->last_rendered_selection_end, 1, self->selection.rectangle_select);
-    selection_limits_(url_range, &self->last_rendered_url_start, &self->last_rendered_url_end);
-    apply_selection(self, address, &self->last_rendered_url_start, &self->last_rendered_url_end, 2, false);
+    apply_selection(self, address, &self->selection, &self->last_rendered.selection, 1);
+    apply_selection(self, address, &self->url_range, &self->last_rendered.url, 2);
 }
 
-#define text_for_range_action(ans, insert_newlines) { \
-    char leading_char = (i > 0 && insert_newlines && !line->continued) ? '\n' : 0; \
-    PyObject *text = unicode_in_range(line, x_start, xlimit, true, leading_char); \
-    if (text == NULL) { Py_DECREF(ans); return PyErr_NoMemory(); } \
-    PyTuple_SET_ITEM(ans, i++, text); \
+static inline PyObject*
+text_for_range(Screen *self, const Selection *sel, bool insert_newlines) {
+    IterationData idata;
+    iteration_data(self, sel, &idata, -self->historybuf->count, false);
+    PyObject *ans = PyTuple_New(idata.y_limit - idata.y);
+    if (!ans) return NULL;
+    for (int i = 0, y = idata.y; y < idata.y_limit && y < (int)self->lines; y++, i++) {
+        Line *line = range_line_(self, y);
+        XRange xr = xrange_for_iteration(&idata, y, line);
+        char leading_char = (i > 0 && insert_newlines && !line->continued) ? '\n' : 0;
+        PyObject *text = unicode_in_range(line, xr.x, xr.x_limit, true, leading_char);
+        if (text == NULL) { Py_DECREF(ans); return PyErr_NoMemory(); }
+        PyTuple_SET_ITEM(ans, i, text);
+    }
+    return ans;
 }
-
-#define text_for_range(ans, start, end, rectangle_select, insert_newlines, line_func, y_type) { \
-    int num_of_lines = end.y - start.y + 1, i = 0; \
-    ans = PyTuple_New(num_of_lines); \
-    if (ans == NULL) return PyErr_NoMemory(); \
-    if (rectangle_select) { \
-        iterate_over_rectangle((&start), (&end), line_func, y_type) \
-            text_for_range_action(ans, insert_newlines); \
-    } }} else { \
-        iterate_over_region((&start), (&end), line_func, y_type) \
-            text_for_range_action(ans, insert_newlines); \
-    } }} \
-}
-
 
 bool
 screen_open_url(Screen *self) {
-    SelectionBoundary start, end;
-    selection_limits_(url_range, &start, &end);
-    if (is_selection_empty(self, start.x, start.y, end.x, end.y)) return false;
-    PyObject *url;
-    text_for_range(url, start, end, false, false, visual_line_, index_type);
-    if (url) { call_boss(open_url_lines, "(O)", url); Py_CLEAR(url); }
-    else PyErr_Print();
-    return true;
+    if (is_selection_empty(&self->url_range)) return false;
+    PyObject *lines = text_for_range(self, &self->url_range, false);
+    bool ret = false;
+    if (lines) {
+        PyObject *joiner = PyUnicode_FromString("");
+        if (joiner) {
+            PyObject *url = PyUnicode_Join(joiner, lines);
+            if (url) { call_boss(open_url_lines, "(O)", url); Py_CLEAR(url); ret = true; }
+            Py_CLEAR(joiner);
+        }
+        Py_CLEAR(lines);
+    }
+    if (PyErr_Occurred()) PyErr_Print();
+    return ret;
 }
 
 static void
@@ -1734,26 +1790,29 @@ set_pending_timeout(Screen *self, PyObject *val) {
     return ans;
 }
 
+static Line* get_visual_line(void *x, int y) { return visual_line_(x, y); }
+static Line* get_range_line(void *x, int y) { return range_line_(x, y); }
+
 static PyObject*
 as_text(Screen *self, PyObject *args) {
-    as_text_generic(args, self, visual_line_, self->lines, self->columns);
+    return as_text_generic(args, self, get_visual_line, self->lines, self->columns);
 }
 
 static PyObject*
 as_text_non_visual(Screen *self, PyObject *args) {
-    as_text_generic(args, self, range_line_, self->lines, self->columns);
+    return as_text_generic(args, self, get_range_line, self->lines, self->columns);
 }
 
 static inline PyObject*
-as_text_generic_wrapper(Screen *self, PyObject *args, Line*(get_line)(Screen *, int)) {
-    as_text_generic(args, self, get_line, self->lines, self->columns);
+as_text_generic_wrapper(Screen *self, PyObject *args, get_line_func get_line) {
+    return as_text_generic(args, self, get_line, self->lines, self->columns);
 }
 
 static PyObject*
 as_text_alternate(Screen *self, PyObject *args) {
     LineBuf *original = self->linebuf;
     self->linebuf = original == self->main_linebuf ? self->alt_linebuf : self->main_linebuf;
-    PyObject *ans = as_text_generic_wrapper(self, args, range_line_);
+    PyObject *ans = as_text_generic_wrapper(self, args, get_range_line);
     self->linebuf = original;
     return ans;
 }
@@ -1808,7 +1867,7 @@ screen_wcswidth(PyObject UNUSED *self, PyObject *str) {
 static PyObject*
 screen_truncate_point_for_length(PyObject UNUSED *self, PyObject *args) {
     PyObject *str; unsigned int num_cells, start_pos = 0;
-    if (!PyArg_ParseTuple(args, "OI|I", &str, &num_cells, &start_pos)) return NULL;
+    if (!PyArg_ParseTuple(args, "UI|I", &str, &num_cells, &start_pos)) return NULL;
     if (PyUnicode_READY(str) != 0) return NULL;
     int kind = PyUnicode_KIND(str);
     void *data = PyUnicode_DATA(str);
@@ -1981,6 +2040,21 @@ cursor_up(Screen *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject*
+update_selection(Screen *self, PyObject *args) {
+    unsigned int x, y;
+    int in_left_half_of_cell = 0, ended = 1;
+    if (!PyArg_ParseTuple(args, "II|pp", &x, &y, &in_left_half_of_cell, &ended)) return NULL;
+    screen_update_selection(self, x, y, in_left_half_of_cell, ended, false);
+    Py_RETURN_NONE;
+}
+
+static PyObject*
+clear_selection(Screen *self, PyObject *args UNUSED) {
+    self->selection = EMPTY_SELECTION;
+    Py_RETURN_NONE;
+}
+
 WRAP0x(index)
 WRAP0(reverse_index)
 WRAP0(reset)
@@ -1993,14 +2067,13 @@ WRAP0(carriage_return)
 WRAP2(resize, 1, 1)
 WRAP2(set_margins, 1, 1)
 WRAP0(rescale_images)
-WRAP2B(update_selection)
 
 static PyObject*
 start_selection(Screen *self, PyObject *args) {
     unsigned int x, y;
-    int rectangle_select = 0, extend_mode = EXTEND_CELL;
-    if (!PyArg_ParseTuple(args, "II|pi", &x, &y, &rectangle_select, &extend_mode)) return NULL;
-    screen_start_selection(self, x, y, rectangle_select, extend_mode);
+    int rectangle_select = 0, extend_mode = EXTEND_CELL, in_left_half_of_cell = 1;
+    if (!PyArg_ParseTuple(args, "II|pip", &x, &y, &rectangle_select, &extend_mode, &in_left_half_of_cell)) return NULL;
+    screen_start_selection(self, x, y, in_left_half_of_cell, rectangle_select, extend_mode);
     Py_RETURN_NONE;
 }
 
@@ -2019,14 +2092,7 @@ copy_colors_from(Screen *self, Screen *other) {
 
 static PyObject*
 text_for_selection(Screen *self, PyObject *a UNUSED) {
-    FullSelectionBoundary start, end;
-    full_selection_limits_(selection, &start, &end);
-    PyObject *ans = NULL;
-    start.y = clamp_for_range_line(self, start.y);
-    end.y = clamp_for_range_line(self, end.y);
-    if (start.y == end.y && start.x == end.x) ans = PyTuple_New(0);
-    else text_for_range(ans, start, end, self->selection.rectangle_select, true, range_line_, int);
-    return ans;
+    return text_for_range(self, &self->selection, true);
 }
 
 bool
@@ -2049,11 +2115,12 @@ is_opt_word_char(char_type ch) {
 }
 
 bool
-screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, index_type *y2, index_type *s, index_type *e, bool initial_selection) {
-    if (*y1 >= self->lines || x >= self->columns) return false;
+screen_selection_range_for_word(Screen *self, const index_type x, const index_type y, index_type *y1, index_type *y2, index_type *s, index_type *e, bool initial_selection) {
+    if (y >= self->lines || x >= self->columns) return false;
     index_type start, end;
-    Line *line = visual_line_(self, *y1);
-    *y2 = *y1;
+    Line *line = visual_line_(self, y);
+    *y1 = y;
+    *y2 = y;
 #define is_ok(x) (is_word_char((line->cpu_cells[x].ch)) || is_opt_word_char(line->cpu_cells[x].ch))
     if (!is_ok(x)) {
         if (initial_selection) return false;
@@ -2121,87 +2188,85 @@ scroll(Screen *self, PyObject *args) {
 
 bool
 screen_is_selection_dirty(Screen *self) {
-    SelectionBoundary start, end;
-    selection_limits_(selection, &start, &end);
-    if (self->last_selection_scrolled_by != self->scrolled_by || start.x != self->last_rendered_selection_start.x || start.y != self->last_rendered_selection_start.y || end.x != self->last_rendered_selection_end.x || end.y != self->last_rendered_selection_end.y || !self->selection_updated_once) return true;
-    selection_limits_(url_range, &start, &end);
-    if (start.x != self->last_rendered_url_start.x || start.y != self->last_rendered_url_start.y || end.x != self->last_rendered_url_end.x || end.y != self->last_rendered_url_end.y) return true;
+    IterationData q;
+    if (self->scrolled_by != self->last_rendered.scrolled_by) return true;
+    iteration_data(self, &self->selection, &q, 0, true);
+    if (memcmp(&q, &self->last_rendered.selection, sizeof(IterationData)) != 0) return true;
+    iteration_data(self, &self->url_range, &q, 0, true);
+    if (memcmp(&q, &self->last_rendered.url, sizeof(IterationData)) != 0) return true;
     return false;
 }
 
 void
-screen_start_selection(Screen *self, index_type x, index_type y, bool rectangle_select, SelectionExtendMode extend_mode) {
+screen_start_selection(Screen *self, index_type x, index_type y, bool in_left_half_of_cell, bool rectangle_select, SelectionExtendMode extend_mode) {
 #define A(attr, val) self->selection.attr = val;
-    A(start_x, x); A(end_x, x); A(start_y, y); A(end_y, y); A(start_scrolled_by, self->scrolled_by); A(end_scrolled_by, self->scrolled_by);
-    A(in_progress, true); A(rectangle_select, rectangle_select); A(extend_mode, extend_mode);
+    A(start.x, x); A(end.x, x); A(start.y, y); A(end.y, y); A(start_scrolled_by, self->scrolled_by); A(end_scrolled_by, self->scrolled_by);
+    A(in_progress, true); A(rectangle_select, rectangle_select); A(extend_mode, extend_mode); A(start.in_left_half_of_cell, in_left_half_of_cell); A(end.in_left_half_of_cell, in_left_half_of_cell);
+    A(input_start.x, x); A(input_start.y, y); A(input_start.in_left_half_of_cell, in_left_half_of_cell);
+    A(input_current.x, x); A(input_current.y, y); A(input_current.in_left_half_of_cell, in_left_half_of_cell);
 #undef A
 }
 
 void
 screen_mark_url(Screen *self, index_type start_x, index_type start_y, index_type end_x, index_type end_y) {
 #define A(attr, val) self->url_range.attr = val;
-    A(start_x, start_x); A(end_x, end_x); A(start_y, start_y); A(end_y, end_y); A(start_scrolled_by, self->scrolled_by); A(end_scrolled_by, self->scrolled_by);
+    A(start.x, start_x); A(end.x, end_x); A(start.y, start_y); A(end.y, end_y); A(start_scrolled_by, self->scrolled_by); A(end_scrolled_by, self->scrolled_by);
+    A(start.in_left_half_of_cell, true); A(end.in_left_half_of_cell, start_x == end_x && start_y == end_y);
 #undef A
 }
 
 void
-screen_update_selection(Screen *self, index_type x, index_type y, bool ended) {
-    index_type orig_x = self->selection.end_x, orig_y = self->selection.end_y, orig_scrolled_by = self->selection.end_scrolled_by;
-    self->selection.end_x = x; self->selection.end_y = y; self->selection.end_scrolled_by = self->scrolled_by;
-    if (ended) self->selection.in_progress = false;
-    index_type start, end;
-    bool found = false;
-    bool extending_leftwards = self->selection.end_y < self->selection.start_y || (self->selection.end_y == self->selection.start_y && self->selection.end_x < self->selection.start_x);
+screen_update_selection(Screen *self, index_type x, index_type y, bool in_left_half_of_cell, bool ended, bool start_extended_selection) {
+    self->selection.in_progress = !ended;
+    self->selection.input_current.x = x; self->selection.input_current.y = y;
+    self->selection.input_current.in_left_half_of_cell = in_left_half_of_cell;
+    self->selection.end_scrolled_by = self->scrolled_by;
+    SelectionBoundary start, end, *a, *b;
+    a = &self->selection.start, b = &self->selection.end;
+
     switch(self->selection.extend_mode) {
         case EXTEND_WORD: {
-            index_type y1 = y, y2;
-            found = screen_selection_range_for_word(self, x, &y1, &y2, &start, &end, false);
-            if (found) {
-                if (extending_leftwards) {
-                    self->selection.end_x = start; self->selection.end_y = y1;
-                    y1 = self->selection.start_y;
-                    found = screen_selection_range_for_word(self, self->selection.start_x, &y1, &y2, &start, &end, false);
-                    if (found) {
-                        self->selection.start_x = end; self->selection.start_y = y2;
-                    }
-                } else {
-                    self->selection.end_x = end; self->selection.end_y = y2;
-                    y1 = self->selection.start_y;
-                    found = screen_selection_range_for_word(self, self->selection.start_x, &y1, &y2, &start, &end, false);
-                    if (found) {
-                        self->selection.start_x = start; self->selection.start_y = y1;
-                    }
-
-                }
+            SelectionBoundary *before = &self->selection.input_start, *after = &self->selection.input_current;
+            if (selection_boundary_less_than(after, before)) { before = after; after = &self->selection.input_start; }
+            bool found_at_start = screen_selection_range_for_word(self, before->x, before->y, &start.y, &end.y, &start.x, &end.x, true);
+            if (found_at_start) {
+                a->x = start.x; a->y = start.y; a->in_left_half_of_cell = true;
+                b->x = end.x; b->y = end.y; b->in_left_half_of_cell = false;
             } else {
-                self->selection.end_x = orig_x; self->selection.end_y = orig_y; self->selection.end_scrolled_by = orig_scrolled_by;
+                a->x = before->x; a->y = before->y; a->in_left_half_of_cell = before->in_left_half_of_cell;
+                b->x = a->x; b->y = a->y; b->in_left_half_of_cell = a->in_left_half_of_cell;
             }
+            bool found_at_end = screen_selection_range_for_word(self, after->x, after->y, &start.y, &end.y, &start.x, &end.x, false);
+            if (found_at_end) { b->x = end.x; b->y = end.y; b->in_left_half_of_cell = false; }
             break;
         }
         case EXTEND_LINE: {
-            index_type top_line = extending_leftwards ? self->selection.end_y : self->selection.start_y;
-            index_type bottom_line = extending_leftwards ? self->selection.start_y : self->selection.end_y;
-            while(top_line > 0 && visual_line_(self, top_line)->continued) top_line--;
-            while(bottom_line < self->lines - 1 && visual_line_(self, bottom_line + 1)->continued) bottom_line++;
-            found = screen_selection_range_for_line(self, top_line, &start, &end);
-            if (found) {
-                if (extending_leftwards) {
-                    self->selection.end_x = start; self->selection.end_y = top_line;
-                } else {
-                    self->selection.start_x = start; self->selection.start_y = top_line;
-                }
+            index_type top_line, bottom_line;
+            if (start_extended_selection || y == self->selection.start.y) {
+                top_line = y; bottom_line = y;
+            } else if (y < self->selection.start.y) {
+                top_line = y; bottom_line = self->selection.start.y;
+                a = &self->selection.end; b = &self->selection.start;
+            } else if (y > self->selection.start.y) {
+                bottom_line = y; top_line = self->selection.start.y;
+            } else break;
+            while (top_line > 0 && visual_line_(self, top_line)->continued) {
+                if (!screen_selection_range_for_line(self, top_line - 1, &start.x, &end.x)) break;
+                top_line--;
             }
-            found = screen_selection_range_for_line(self, bottom_line, &start, &end);
-            if (found) {
-                if (extending_leftwards) {
-                    self->selection.start_x = end; self->selection.start_y = bottom_line;
-                } else {
-                    self->selection.end_x = end; self->selection.end_y = bottom_line;
-                }
+            while (bottom_line < self->lines - 1 && visual_line_(self, bottom_line + 1)->continued) {
+                if (!screen_selection_range_for_line(self, bottom_line + 1, &start.x, &end.x)) break;
+                bottom_line++;
+            }
+            if (screen_selection_range_for_line(self, top_line, &start.x, &start.y) && screen_selection_range_for_line(self, bottom_line, &end.x, &end.y)) {
+                bool multiline = top_line != bottom_line;
+                a->x = multiline ? 0 : start.x; a->y = top_line; a->in_left_half_of_cell = true;
+                b->x = end.y; b->y = bottom_line; b->in_left_half_of_cell = false;
             }
             break;
         }
         case EXTEND_CELL:
+            self->selection.end.x = x; self->selection.end.y = y; self->selection.end.in_left_half_of_cell = in_left_half_of_cell;
             break;
     }
     if (!self->selection.in_progress) call_boss(set_primary_selection, NULL);
@@ -2241,13 +2306,114 @@ send_escape_code_to_child(Screen *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static inline void
+screen_mark_all(Screen *self) {
+    for (index_type y = 0; y < self->main_linebuf->ynum; y++) {
+        linebuf_init_line(self->main_linebuf, y);
+        mark_text_in_line(self->marker, self->main_linebuf->line);
+    }
+    for (index_type y = 0; y < self->alt_linebuf->ynum; y++) {
+        linebuf_init_line(self->alt_linebuf, y);
+        mark_text_in_line(self->marker, self->alt_linebuf->line);
+    }
+    for (index_type y = 0; y < self->historybuf->count; y++) {
+        historybuf_init_line(self->historybuf, y, self->historybuf->line);
+        mark_text_in_line(self->marker, self->historybuf->line);
+    }
+    self->is_dirty = true;
+}
+
+static PyObject*
+set_marker(Screen *self, PyObject *args) {
+    PyObject *marker = NULL;
+    if (!PyArg_ParseTuple(args, "|O", &marker)) return NULL;
+    if (!marker) {
+        if (self->marker) {
+            Py_CLEAR(self->marker);
+            screen_mark_all(self);
+        }
+        Py_RETURN_NONE;
+    }
+    if (!PyCallable_Check(marker)) {
+        PyErr_SetString(PyExc_TypeError, "marker must be a callable");
+        return NULL;
+    }
+    self->marker = marker;
+    Py_INCREF(marker);
+    screen_mark_all(self);
+    Py_RETURN_NONE;
+}
+
+
+static PyObject*
+scroll_to_next_mark(Screen *self, PyObject *args) {
+    int backwards = 1;
+    unsigned int mark = 0;
+    if (!PyArg_ParseTuple(args, "|Ip", &mark, &backwards)) return NULL;
+    if (!screen_has_marker(self) || self->linebuf == self->alt_linebuf) Py_RETURN_FALSE;
+    if (backwards) {
+        for (unsigned int y = self->scrolled_by; y < self->historybuf->count; y++) {
+            historybuf_init_line(self->historybuf, y, self->historybuf->line);
+            if (line_has_mark(self->historybuf->line, mark)) {
+                screen_history_scroll(self, y - self->scrolled_by + 1, true);
+                Py_RETURN_TRUE;
+            }
+        }
+    } else {
+        Line *line;
+        for (unsigned int y = self->scrolled_by; y > 0; y--) {
+            if (y > self->lines) {
+                historybuf_init_line(self->historybuf, y - self->lines, self->historybuf->line);
+                line = self->historybuf->line;
+            } else {
+                linebuf_init_line(self->linebuf, self->lines - y);
+                line = self->linebuf->line;
+            }
+            if (line_has_mark(line, mark)) {
+                screen_history_scroll(self, self->scrolled_by - y + 1, false);
+                Py_RETURN_TRUE;
+            }
+        }
+    }
+    Py_RETURN_FALSE;
+}
+
+static PyObject*
+marked_cells(Screen *self, PyObject *o UNUSED) {
+    PyObject *ans = PyList_New(0);
+    if (!ans) return ans;
+    for (index_type y = 0; y < self->lines; y++) {
+        linebuf_init_line(self->linebuf, y);
+        for (index_type x = 0; x < self->columns; x++) {
+            GPUCell *gpu_cell = self->linebuf->line->gpu_cells + x;
+            unsigned int mark = (gpu_cell->attrs >> MARK_SHIFT) & MARK_MASK;
+            if (mark) {
+                PyObject *t = Py_BuildValue("III", x, y, mark);
+                if (!t) { Py_DECREF(ans); return NULL; }
+                if (PyList_Append(ans, t) != 0) { Py_DECREF(t); Py_DECREF(ans); return NULL; }
+                Py_DECREF(t);
+            }
+        }
+    }
+    return ans;
+}
+
 static PyObject*
 paste(Screen *self, PyObject *bytes) {
+    if (!PyBytes_Check(bytes)) { PyErr_SetString(PyExc_TypeError, "Must paste() bytes"); return NULL; }
     if (self->modes.mBRACKETED_PASTE) write_escape_code_to_child(self, CSI, BRACKETED_PASTE_START);
     write_to_child(self, PyBytes_AS_STRING(bytes), PyBytes_GET_SIZE(bytes));
     if (self->modes.mBRACKETED_PASTE) write_escape_code_to_child(self, CSI, BRACKETED_PASTE_END);
     Py_RETURN_NONE;
 }
+
+static PyObject*
+paste_bytes(Screen *self, PyObject *bytes) {
+    if (!PyBytes_Check(bytes)) { PyErr_SetString(PyExc_TypeError, "Must paste() bytes"); return NULL; }
+    write_to_child(self, PyBytes_AS_STRING(bytes), PyBytes_GET_SIZE(bytes));
+    Py_RETURN_NONE;
+}
+
 
 WRAP2(cursor_position, 1, 1)
 
@@ -2317,6 +2483,7 @@ static PyMethodDef methods[] = {
     MND(clear_tab_stop, METH_VARARGS)
     MND(start_selection, METH_VARARGS)
     MND(update_selection, METH_VARARGS)
+    MND(clear_selection, METH_NOARGS)
     MND(reverse_index, METH_NOARGS)
     MND(mark_as_dirty, METH_NOARGS)
     MND(resize, METH_VARARGS)
@@ -2329,7 +2496,11 @@ static PyMethodDef methods[] = {
     MND(toggle_alt_screen, METH_NOARGS)
     MND(reset_callbacks, METH_NOARGS)
     MND(paste, METH_O)
+    MND(paste_bytes, METH_O)
     MND(copy_colors_from, METH_O)
+    MND(set_marker, METH_VARARGS)
+    MND(marked_cells, METH_NOARGS)
+    MND(scroll_to_next_mark, METH_VARARGS)
     {"select_graphic_rendition", (PyCFunction)_select_graphic_rendition, METH_VARARGS, ""},
 
     {NULL}  /* Sentinel */

@@ -7,38 +7,50 @@ import os
 import re
 import sys
 import types
-from functools import partial
 from contextlib import suppress
+from functools import partial
+from typing import (
+    Any, Dict, Generator, Iterable, List, Optional, Tuple,
+    Union, cast
+)
 
 from .cli import emph, parse_args
-from .cmds import cmap, parse_subcommand_cli
+from .cli_stub import RCOptions
 from .constants import appname, version
 from .fast_data_types import read_command_response
+from .rc.base import (
+    PayloadGetter, all_command_names, command_for_name,
+    no_response as no_response_sentinel, parse_subcommand_cli
+)
+from .typing import BossType, WindowType
 from .utils import TTYIO, parse_address_spec
 
 
-def handle_cmd(boss, window, cmd):
-    cmd = json.loads(cmd)
+def handle_cmd(boss: BossType, window: Optional[WindowType], serialized_cmd: str) -> Optional[Dict[str, Any]]:
+    cmd = json.loads(serialized_cmd)
     v = cmd['version']
     no_response = cmd.get('no_response', False)
     if tuple(v)[:2] > version[:2]:
         if no_response:
-            return
+            return None
         return {'ok': False, 'error': 'The kitty client you are using to send remote commands is newer than this kitty instance. This is not supported.'}
-    c = cmap[cmd['cmd']]
-    func = partial(c.impl(), boss, window)
-    payload = cmd.get('payload')
+    c = command_for_name(cmd['cmd'])
+    payload = cmd.get('payload') or {}
+
     try:
-        ans = func() if payload is None else func(payload)
+        ans = c.response_from_kitty(boss, window, PayloadGetter(c, payload))
     except Exception:
         if no_response:  # don't report errors if --no-response was used
-            return
+            return None
         raise
-    response = {'ok': True}
+    if ans is no_response_sentinel:
+        return None
+    response: Dict[str, Any] = {'ok': True}
     if ans is not None:
         response['data'] = ans
     if not c.no_response and not no_response:
         return response
+    return None
 
 
 global_options_spec = partial('''\
@@ -50,29 +62,29 @@ will only work if this process is run within an existing kitty window.
 '''.format, appname=appname)
 
 
-def encode_send(send):
-    send = ('@kitty-cmd' + json.dumps(send)).encode('ascii')
-    return b'\x1bP' + send + b'\x1b\\'
+def encode_send(send: Any) -> bytes:
+    es = ('@kitty-cmd' + json.dumps(send)).encode('ascii')
+    return b'\x1bP' + es + b'\x1b\\'
 
 
 class SocketIO:
 
-    def __init__(self, to):
+    def __init__(self, to: str):
         self.family, self.address = parse_address_spec(to)[:2]
 
-    def __enter__(self):
+    def __enter__(self) -> None:
         import socket
         self.socket = socket.socket(self.family)
         self.socket.setblocking(True)
         self.socket.connect(self.address)
 
-    def __exit__(self, *a):
+    def __exit__(self, *a: Any) -> None:
         import socket
-        with suppress(EnvironmentError):  # on some OSes such as macOS the socket is already closed at this point
+        with suppress(OSError):  # on some OSes such as macOS the socket is already closed at this point
             self.socket.shutdown(socket.SHUT_RDWR)
         self.socket.close()
 
-    def send(self, data):
+    def send(self, data: Union[bytes, Iterable[Union[str, bytes]]]) -> None:
         import socket
         with self.socket.makefile('wb') as out:
             if isinstance(data, bytes):
@@ -85,7 +97,7 @@ class SocketIO:
                     out.flush()
         self.socket.shutdown(socket.SHUT_WR)
 
-    def recv(self, timeout):
+    def simple_recv(self, timeout: float) -> bytes:
         dcs = re.compile(br'\x1bP@kitty-cmd([^\x1b]+)\x1b\\')
         self.socket.settimeout(timeout)
         with self.socket.makefile('rb') as src:
@@ -93,40 +105,39 @@ class SocketIO:
         m = dcs.search(data)
         if m is None:
             raise TimeoutError('Timed out while waiting to read cmd response')
-        return m.group(1)
+        return bytes(m.group(1))
 
 
 class RCIO(TTYIO):
 
-    def recv(self, timeout):
-        ans = []
+    def simple_recv(self, timeout: float) -> bytes:
+        ans: List[bytes] = []
         read_command_response(self.tty_fd, timeout, ans)
         return b''.join(ans)
 
 
-def do_io(to, send, no_response):
+def do_io(to: Optional[str], send: Dict, no_response: bool) -> Dict[str, Any]:
     payload = send.get('payload')
     if not isinstance(payload, types.GeneratorType):
-        send_data = encode_send(send)
+        send_data: Union[bytes, Iterable[bytes]] = encode_send(send)
     else:
-        def send_generator():
+        def send_generator() -> Generator[bytes, None, None]:
+            assert payload is not None
             for chunk in payload:
                 send['payload'] = chunk
                 yield encode_send(send)
         send_data = send_generator()
 
-    io = SocketIO(to) if to else RCIO()
+    io: Union[SocketIO, RCIO] = SocketIO(to) if to else RCIO()
     with io:
         io.send(send_data)
         if no_response:
             return {'ok': True}
-        received = io.recv(timeout=10)
+        received = io.simple_recv(timeout=10)
 
-    response = json.loads(received.decode('ascii'))
-    return response
+    return cast(Dict[str, Any], json.loads(received.decode('ascii')))
 
 
-all_commands = tuple(sorted(cmap))
 cli_msg = (
         'Control {appname} by sending it commands. Set the'
         ' :opt:`allow_remote_control` option to yes in :file:`kitty.conf` for this'
@@ -134,31 +145,32 @@ cli_msg = (
 ).format(appname=appname)
 
 
-def parse_rc_args(args):
-    cmds = ('  :green:`{}`\n    {}'.format(cmap[c].name, cmap[c].short_desc) for c in all_commands)
+def parse_rc_args(args: List[str]) -> Tuple[RCOptions, List[str]]:
+    cmap = {name: command_for_name(name) for name in sorted(all_command_names())}
+    cmds = ('  :green:`{}`\n    {}'.format(cmd.name, cmd.short_desc) for c, cmd in cmap.items())
     msg = cli_msg + (
             '\n\n:title:`Commands`:\n{cmds}\n\n'
             'You can get help for each individual command by using:\n'
             '{appname} @ :italic:`command` -h').format(appname=appname, cmds='\n'.join(cmds))
-    return parse_args(args[1:], global_options_spec, 'command ...', msg, '{} @'.format(appname))
+    return parse_args(args[1:], global_options_spec, 'command ...', msg, '{} @'.format(appname), result_class=RCOptions)
 
 
-def main(args):
+def main(args: List[str]) -> None:
     global_opts, items = parse_rc_args(args)
     global_opts.no_command_response = None
 
     if not items:
-        from kitty.shell import main
-        main(global_opts)
+        from kitty.shell import main as smain
+        smain(global_opts)
         return
     cmd = items[0]
     try:
-        func = cmap[cmd]
+        c = command_for_name(cmd)
     except KeyError:
         raise SystemExit('{} is not a known command. Known commands are: {}'.format(
-            emph(cmd), ', '.join(all_commands)))
-    opts, items = parse_subcommand_cli(func, items)
-    payload = func(global_opts, opts, items)
+            emph(cmd), ', '.join(x.replace('_', '-') for x in all_command_names())))
+    opts, items = parse_subcommand_cli(c, items)
+    payload = c.message_to_kitty(global_opts, opts, items)
     send = {
         'cmd': cmd,
         'version': version,
@@ -166,9 +178,9 @@ def main(args):
     if payload is not None:
         send['payload'] = payload
     if global_opts.no_command_response is not None:
-        no_response = global_opts.no_command_response
+        no_response = global_opts.no_command_response  # type: ignore
     else:
-        no_response = func.no_response
+        no_response = c.no_response
     send['no_response'] = no_response
     if not global_opts.to and 'KITTY_LISTEN_ON' in os.environ:
         global_opts.to = os.environ['KITTY_LISTEN_ON']
@@ -181,6 +193,6 @@ def main(args):
         raise SystemExit(response['error'])
     data = response.get('data')
     if data is not None:
-        if func.string_return_is_error and isinstance(data, str):
+        if c.string_return_is_error and isinstance(data, str):
             raise SystemExit(data)
         print(data)

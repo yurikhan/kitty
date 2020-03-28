@@ -4,7 +4,6 @@
 
 import argparse
 import glob
-import importlib
 import json
 import os
 import re
@@ -15,49 +14,84 @@ import subprocess
 import sys
 import sysconfig
 import time
-from functools import partial
-from collections import namedtuple
 from contextlib import suppress
+from functools import partial
 from pathlib import Path
+from typing import (
+    Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional,
+    Sequence, Set, Tuple, Union
+)
 
+from glfw import glfw  # noqa
+
+if sys.version_info[:2] < (3, 6):
+    raise SystemExit('kitty requires python >= 3.6')
 base = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, 'glfw')
-glfw = importlib.import_module('glfw')
-verbose = False
+sys.path.insert(0, base)
 del sys.path[0]
+
+verbose = False
 build_dir = 'build'
 constants = os.path.join('kitty', 'constants.py')
 with open(constants, 'rb') as f:
     constants = f.read().decode('utf-8')
-appname = re.search(r"^appname = '([^']+)'", constants, re.MULTILINE).group(1)
+appname = re.search(r"^appname: str = '([^']+)'", constants, re.MULTILINE).group(1)  # type: ignore
 version = tuple(
     map(
         int,
-        re.search(
-            r"^version = \((\d+), (\d+), (\d+)\)", constants, re.MULTILINE
+        re.search(  # type: ignore
+            r"^version: Version = Version\((\d+), (\d+), (\d+)\)", constants, re.MULTILINE
         ).group(1, 2, 3)
     )
 )
 _plat = sys.platform.lower()
 is_macos = 'darwin' in _plat
-env = None
-
+Env = glfw.Env
+env = Env()
 PKGCONFIG = os.environ.get('PKGCONFIG_EXE', 'pkg-config')
 
 
-def emphasis(text):
+class Options(argparse.Namespace):
+    action: str = 'build'
+    debug: bool = False
+    verbose: int = 0
+    sanitize: bool = False
+    prefix: str = './linux-package'
+    incremental: bool = True
+    profile: bool = False
+    for_freeze: bool = False
+    libdir_name: str = 'lib'
+    extra_logging: List[str] = []
+    update_check_interval: float = 24
+
+
+class CompileKey(NamedTuple):
+    src: str
+    dest: str
+
+
+class Command(NamedTuple):
+    desc: str
+    cmd: Sequence[str]
+    is_newer_func: Callable[[], bool]
+    on_success: Callable[[], None]
+    key: Optional[CompileKey]
+    keyfile: Optional[str]
+
+
+def emphasis(text: str) -> str:
     if sys.stdout.isatty():
         text = '\033[32m' + text + '\033[39m'
     return text
 
 
-def error(text):
+def error(text: str) -> str:
     if sys.stdout.isatty():
         text = '\033[91m' + text + '\033[39m'
     return text
 
 
-def pkg_config(pkg, *args):
+def pkg_config(pkg: str, *args: str) -> List[str]:
     try:
         return list(
             filter(
@@ -72,17 +106,19 @@ def pkg_config(pkg, *args):
         raise SystemExit('The package {} was not found on your system'.format(error(pkg)))
 
 
-def at_least_version(package, major, minor=0):
+def at_least_version(package: str, major: int, minor: int = 0) -> None:
     q = '{}.{}'.format(major, minor)
     if subprocess.run([PKGCONFIG, package, '--atleast-version=' + q]
                       ).returncode != 0:
+        qmajor = qminor = 0
         try:
             ver = subprocess.check_output([PKGCONFIG, package, '--modversion']
                                           ).decode('utf-8').strip()
-            qmajor, qminor = map(int, re.match(r'(\d+).(\d+)', ver).groups())
+            m = re.match(r'(\d+).(\d+)', ver)
+            if m is not None:
+                qmajor, qminor = map(int, m.groups())
         except Exception:
             ver = 'not found'
-            qmajor = qminor = 0
         if qmajor < major or (qmajor == major and qminor < minor):
             raise SystemExit(
                 '{} >= {}.{} is required, found version: {}'.format(
@@ -91,7 +127,7 @@ def at_least_version(package, major, minor=0):
             )
 
 
-def cc_version():
+def cc_version() -> Tuple[str, Tuple[int, int]]:
     if 'CC' in os.environ:
         cc = os.environ['CC']
     else:
@@ -105,27 +141,34 @@ def cc_version():
             else:
                 cc = 'cc'
     raw = subprocess.check_output([cc, '-dumpversion']).decode('utf-8')
-    ver = raw.split('.')[:2]
+    ver_ = raw.strip().split('.')[:2]
     try:
-        ver = tuple(map(int, ver))
+        if len(ver_) == 1:
+            ver = int(ver_[0]), 0
+        else:
+            ver = int(ver_[0]), int(ver_[1])
     except Exception:
         ver = (0, 0)
     return cc, ver
 
 
-def get_python_include_paths():
+def get_python_include_paths() -> List[str]:
     ans = []
     for name in sysconfig.get_path_names():
         if 'include' in name:
             ans.append(name)
-    return sorted(frozenset(map(sysconfig.get_path, sorted(ans))))
+
+    def gp(x: str) -> Optional[str]:
+        return sysconfig.get_path(x)
+
+    return sorted(frozenset(filter(None, map(gp, sorted(ans)))))
 
 
-def get_python_flags(cflags):
+def get_python_flags(cflags: List[str]) -> List[str]:
     cflags.extend('-I' + x for x in get_python_include_paths())
-    libs = []
-    libs += sysconfig.get_config_var('LIBS').split()
-    libs += sysconfig.get_config_var('SYSLIBS').split()
+    libs: List[str] = []
+    libs += (sysconfig.get_config_var('LIBS') or '').split()
+    libs += (sysconfig.get_config_var('SYSLIBS') or '').split()
     fw = sysconfig.get_config_var('PYTHONFRAMEWORK')
     if fw:
         for var in 'data include stdlib'.split():
@@ -139,19 +182,21 @@ def get_python_flags(cflags):
                     break
         else:
             raise SystemExit('Failed to find Python framework')
-        libs.append(
-            os.path.join(framework_dir, sysconfig.get_config_var('LDLIBRARY'))
-        )
+        ldlib = sysconfig.get_config_var('LDLIBRARY')
+        if ldlib:
+            libs.append(os.path.join(framework_dir, ldlib))
     else:
-        libs += ['-L' + sysconfig.get_config_var('LIBDIR')]
-        libs += [
-            '-lpython' + sysconfig.get_config_var('VERSION') + sys.abiflags
-        ]
-        libs += sysconfig.get_config_var('LINKFORSHARED').split()
+        ldlib = sysconfig.get_config_var('LIBDIR')
+        if ldlib:
+            libs += ['-L' + ldlib]
+        ldlib = sysconfig.get_config_var('VERSION')
+        if ldlib:
+            libs += ['-lpython' + ldlib + sys.abiflags]
+        libs += (sysconfig.get_config_var('LINKFORSHARED') or '').split()
     return libs
 
 
-def get_sanitize_args(cc, ccver):
+def get_sanitize_args(cc: str, ccver: Tuple[int, int]) -> List[str]:
     sanitize_args = ['-fsanitize=address']
     if ccver >= (5, 0):
         sanitize_args.append('-fsanitize=undefined')
@@ -161,37 +206,33 @@ def get_sanitize_args(cc, ccver):
     return sanitize_args
 
 
-def test_compile(cc, *cflags, src=None):
+def test_compile(cc: str, *cflags: str, src: Optional[str] = None) -> bool:
     src = src or 'int main(void) { return 0; }'
     p = subprocess.Popen([cc] + list(cflags) + ['-x', 'c', '-o', os.devnull, '-'], stdin=subprocess.PIPE)
+    stdin = p.stdin
+    assert stdin is not None
     try:
-        p.stdin.write(src.encode('utf-8')), p.stdin.close()
+        stdin.write(src.encode('utf-8'))
+        stdin.close()
     except BrokenPipeError:
         return False
     return p.wait() == 0
 
 
-def first_successful_compile(cc, *cflags, src=None):
+def first_successful_compile(cc: str, *cflags: str, src: Optional[str] = None) -> str:
     for x in cflags:
         if test_compile(cc, *shlex.split(x), src=src):
             return x
     return ''
 
 
-class Env:
-
-    def __init__(self, cc, cppflags, cflags, ldflags, ldpaths=None, ccver=None):
-        self.cc, self.cppflags, self.cflags, self.ldflags, self.ldpaths = cc, cppflags, cflags, ldflags, [] if ldpaths is None else ldpaths
-        self.ccver = ccver
-
-    def copy(self):
-        return Env(self.cc, list(self.cppflags), list(self.cflags), list(self.ldflags), list(self.ldpaths), self.ccver)
-
-
 def init_env(
-    debug=False, sanitize=False, native_optimizations=True, profile=False,
-    extra_logging=()
-):
+    debug: bool = False,
+    sanitize: bool = False,
+    native_optimizations: bool = True,
+    profile: bool = False,
+    extra_logging: Iterable[str] = ()
+) -> Env:
     native_optimizations = native_optimizations and not sanitize and not debug
     cc, ccver = cc_version()
     print('CC:', cc, ccver)
@@ -204,44 +245,45 @@ def init_env(
     if ccver >= (5, 0):
         df += ' -Og'
         float_conversion = '-Wfloat-conversion'
+    fortify_source = '-D_FORTIFY_SOURCE=2'
     optimize = df if debug or sanitize else '-O3'
     sanitize_args = get_sanitize_args(cc, ccver) if sanitize else set()
-    cppflags = os.environ.get(
+    cppflags_ = os.environ.get(
         'OVERRIDE_CPPFLAGS', '-D{}DEBUG'.format('' if debug else 'N'),
     )
-    cppflags = shlex.split(cppflags)
+    cppflags = shlex.split(cppflags_)
     for el in extra_logging:
         cppflags.append('-DDEBUG_{}'.format(el.upper().replace('-', '_')))
-    # gnu11 is needed to get monotonic.h to build on older Linux distros
-    std = 'c' if is_macos or ccver[0] >= 5 else 'gnu'
-    cflags = os.environ.get(
+    cflags_ = os.environ.get(
         'OVERRIDE_CFLAGS', (
-            '-Wextra {} -Wno-missing-field-initializers -Wall -Wstrict-prototypes -std={}11'
-            ' -pedantic-errors -Werror {} {} -fwrapv {} {} -pipe {} -fvisibility=hidden'
+            '-Wextra {} -Wno-missing-field-initializers -Wall -Wstrict-prototypes -std=c11'
+            ' -pedantic-errors -Werror {} {} -fwrapv {} {} -pipe {} -fvisibility=hidden {}'
         ).format(
-            float_conversion, std,
+            float_conversion,
             optimize,
             ' '.join(sanitize_args),
             stack_protector,
             missing_braces,
             '-march=native' if native_optimizations else '',
+            fortify_source
         )
     )
-    cflags = shlex.split(cflags) + shlex.split(
-        sysconfig.get_config_var('CCSHARED')
+    cflags = shlex.split(cflags_) + shlex.split(
+        sysconfig.get_config_var('CCSHARED') or ''
     )
-    ldflags = os.environ.get(
+    ldflags_ = os.environ.get(
         'OVERRIDE_LDFLAGS',
         '-Wall ' + ' '.join(sanitize_args) + ('' if debug else ' -O3')
     )
-    ldflags = shlex.split(ldflags)
+    ldflags = shlex.split(ldflags_)
     ldflags.append('-shared')
     cppflags += shlex.split(os.environ.get('CPPFLAGS', ''))
     cflags += shlex.split(os.environ.get('CFLAGS', ''))
     ldflags += shlex.split(os.environ.get('LDFLAGS', ''))
     if not debug and not sanitize:
         # See https://github.com/google/sanitizers/issues/647
-        cflags.append('-flto'), ldflags.append('-flto')
+        cflags.append('-flto')
+        ldflags.append('-flto')
 
     if profile:
         cppflags.append('-DWITH_PROFILER')
@@ -250,7 +292,7 @@ def init_env(
     return Env(cc, cppflags, cflags, ldflags, ccver=ccver)
 
 
-def kitty_env():
+def kitty_env() -> Env:
     ans = env.copy()
     cflags = ans.cflags
     cflags.append('-pthread')
@@ -289,11 +331,11 @@ def kitty_env():
     return ans
 
 
-def define(x):
+def define(x: str) -> str:
     return '-D' + x
 
 
-def run_tool(cmd, desc=None):
+def run_tool(cmd: Union[str, List[str]], desc: Optional[str] = None) -> None:
     if isinstance(cmd, str):
         cmd = shlex.split(cmd[0])
     if verbose:
@@ -307,7 +349,7 @@ def run_tool(cmd, desc=None):
         raise SystemExit(ret)
 
 
-def get_vcs_rev_defines():
+def get_vcs_rev_defines() -> List[str]:
     ans = []
     if os.path.exists('.git'):
         try:
@@ -326,24 +368,25 @@ def get_vcs_rev_defines():
     return ans
 
 
-SPECIAL_SOURCES = {
+SPECIAL_SOURCES: Dict[str, Tuple[str, Union[List[str], Callable[[], Union[List[str], Iterator[str]]]]]] = {
     'kitty/parser_dump.c': ('kitty/parser.c', ['DUMP_COMMANDS']),
     'kitty/data-types.c': ('kitty/data-types.c', get_vcs_rev_defines),
 }
 
 
-def newer(dest, *sources):
+def newer(dest: str, *sources: str) -> bool:
     try:
         dtime = os.path.getmtime(dest)
-    except EnvironmentError:
+    except OSError:
         return True
     for s in sources:
-        if os.path.getmtime(s) >= dtime:
-            return True
+        with suppress(FileNotFoundError):
+            if os.path.getmtime(s) >= dtime:
+                return True
     return False
 
 
-def dependecies_for(src, obj, all_headers):
+def dependecies_for(src: str, obj: str, all_headers: Iterable[str]) -> Iterable[str]:
     dep_file = obj.rpartition('.')[0] + '.d'
     try:
         with open(dep_file) as f:
@@ -368,23 +411,25 @@ def dependecies_for(src, obj, all_headers):
                     yield path
 
 
-def parallel_run(items):
+def parallel_run(items: List[Command]) -> None:
     try:
-        num_workers = max(2, os.cpu_count())
+        num_workers = max(2, os.cpu_count() or 1)
     except Exception:
         num_workers = 2
     items = list(reversed(items))
-    workers = {}
+    workers: Dict[int, Tuple[Optional[Command], Optional[subprocess.Popen]]] = {}
     failed = None
     num, total = 0, len(items)
 
-    def wait():
+    def wait() -> None:
         nonlocal failed
         if not workers:
             return
         pid, s = os.wait()
         compile_cmd, w = workers.pop(pid, (None, None))
-        if compile_cmd is not None and ((s & 0xff) != 0 or ((s >> 8) & 0xff) != 0):
+        if compile_cmd is None:
+            return
+        if ((s & 0xff) != 0 or ((s >> 8) & 0xff) != 0):
             if failed is None:
                 failed = compile_cmd
         elif compile_cmd.on_success is not None:
@@ -409,26 +454,33 @@ def parallel_run(items):
         print(' done')
     if failed:
         print(failed.desc)
-        run_tool(failed.cmd)
-
-
-CompileKey = namedtuple('CompileKey', 'src dest')
-Command = namedtuple('Command', 'desc cmd is_newer_func on_success key keyfile')
+        run_tool(list(failed.cmd))
 
 
 class CompilationDatabase:
 
-    def __init__(self, incremental):
+    def __init__(self, incremental: bool):
         self.incremental = incremental
-        self.compile_commands = []
-        self.link_commands = []
+        self.compile_commands: List[Command] = []
+        self.link_commands: List[Command] = []
 
-    def add_command(self, desc, cmd, is_newer_func, key=None, on_success=None, keyfile=None):
+    def add_command(
+        self,
+        desc: str,
+        cmd: List[str],
+        is_newer_func: Callable,
+        key: Optional[CompileKey] = None,
+        on_success: Optional[Callable] = None,
+        keyfile: Optional[str] = None
+    ) -> None:
+        def no_op() -> None:
+            pass
+
         queue = self.link_commands if keyfile is None else self.compile_commands
-        queue.append(Command(desc, cmd, is_newer_func, on_success, key, keyfile))
+        queue.append(Command(desc, cmd, is_newer_func, on_success or no_op, key, keyfile))
 
-    def build_all(self):
-        def sort_key(compile_cmd):
+    def build_all(self) -> None:
+        def sort_key(compile_cmd: Command) -> int:
             if compile_cmd.keyfile:
                 return os.path.getsize(compile_cmd.keyfile)
             return 0
@@ -446,12 +498,12 @@ class CompilationDatabase:
                 items.append(compile_cmd)
         parallel_run(items)
 
-    def cmd_changed(self, compile_cmd):
+    def cmd_changed(self, compile_cmd: Command) -> bool:
         key, cmd = compile_cmd.key, compile_cmd.cmd
-        return self.db.get(key) != cmd
+        return bool(self.db.get(key) != cmd)
 
-    def __enter__(self):
-        self.all_keys = set()
+    def __enter__(self) -> 'CompilationDatabase':
+        self.all_keys: Set[CompileKey] = set()
         self.dbpath = os.path.abspath('compile_commands.json')
         self.linkdbpath = os.path.join(os.path.dirname(self.dbpath), 'link_commands.json')
         try:
@@ -468,15 +520,15 @@ class CompilationDatabase:
             CompileKey(k['file'], k['output']): k['arguments'] for k in compilation_database
         }
         self.db = compilation_database
-        self.linkdb = {k['output']: k['arguments'] for k in link_database}
+        self.linkdb = {tuple(k['output']): k['arguments'] for k in link_database}
         return self
 
-    def __exit__(self, *a):
+    def __exit__(self, *a: object) -> None:
         cdb = self.db
         for key in set(cdb) - self.all_keys:
             del cdb[key]
         compilation_database = [
-            {'file': c.key.src, 'arguments': c.cmd, 'directory': base, 'output': c.key.dest} for c in self.compile_commands
+            {'file': c.key.src, 'arguments': c.cmd, 'directory': base, 'output': c.key.dest} for c in self.compile_commands if c.key is not None
         ]
         with open(self.dbpath, 'w') as f:
             json.dump(compilation_database, f, indent=2, sort_keys=True)
@@ -484,7 +536,14 @@ class CompilationDatabase:
             json.dump([{'output': c.key, 'arguments': c.cmd, 'directory': base} for c in self.link_commands], f, indent=2, sort_keys=True)
 
 
-def compile_c_extension(kenv, module, compilation_database, sources, headers, desc_prefix=''):
+def compile_c_extension(
+    kenv: Env,
+    module: str,
+    compilation_database: CompilationDatabase,
+    sources: List[str],
+    headers: List[str],
+    desc_prefix: str = ''
+) -> None:
     prefix = os.path.basename(module)
     objects = [
         os.path.join(build_dir, prefix + '-' + os.path.basename(src) + '.o')
@@ -496,10 +555,12 @@ def compile_c_extension(kenv, module, compilation_database, sources, headers, de
         cppflags = kenv.cppflags[:]
         is_special = src in SPECIAL_SOURCES
         if is_special:
-            src, defines = SPECIAL_SOURCES[src]
-            if callable(defines):
-                defines = defines()
-            cppflags.extend(map(define, defines))
+            src, defines_ = SPECIAL_SOURCES[src]
+            if callable(defines_):
+                defines = defines_()
+                cppflags.extend(map(define, defines))
+            else:
+                cppflags.extend(map(define, defines_))
 
         cmd = [kenv.cc, '-MMD'] + cppflags + kenv.cflags
         cmd += ['-c', src] + ['-o', dest]
@@ -517,13 +578,13 @@ def compile_c_extension(kenv, module, compilation_database, sources, headers, de
     linker_cflags = list(filter(lambda x: x not in unsafe, kenv.cflags))
     cmd = [kenv.cc] + linker_cflags + kenv.ldflags + objects + kenv.ldpaths + ['-o', dest]
 
-    def on_success():
+    def on_success() -> None:
         os.rename(dest, real_dest)
 
-    compilation_database.add_command(desc, cmd, partial(newer, real_dest, *objects), on_success=on_success, key=module + '.so')
+    compilation_database.add_command(desc, cmd, partial(newer, real_dest, *objects), on_success=on_success, key=CompileKey('', module + '.so'))
 
 
-def find_c_files():
+def find_c_files() -> Tuple[List[str], List[str]]:
     ans, headers = [], []
     d = 'kitty'
     exclude = {'fontconfig.c', 'freetype.c', 'desktop.c'} if is_macos else {'core_text.m', 'cocoa_window.m', 'macos_process_info.c'}
@@ -534,10 +595,10 @@ def find_c_files():
         elif ext == '.h':
             headers.append(os.path.join('kitty', x))
     ans.append('kitty/parser_dump.c')
-    return tuple(ans), tuple(headers)
+    return ans, headers
 
 
-def compile_glfw(compilation_database):
+def compile_glfw(compilation_database: CompilationDatabase) -> None:
     modules = 'cocoa' if is_macos else 'x11 wayland'
     for module in modules.split():
         try:
@@ -562,7 +623,7 @@ def compile_glfw(compilation_database):
             sources, all_headers, desc_prefix='[{}] '.format(module))
 
 
-def kittens_env():
+def kittens_env() -> Env:
     kenv = env.copy()
     cflags = kenv.cflags
     cflags.append('-pthread')
@@ -572,13 +633,19 @@ def kittens_env():
     return kenv
 
 
-def compile_kittens(compilation_database):
+def compile_kittens(compilation_database: CompilationDatabase) -> None:
     kenv = kittens_env()
 
-    def list_files(q):
+    def list_files(q: str) -> List[str]:
         return sorted(glob.glob(q))
 
-    def files(kitten, output, extra_headers=(), extra_sources=(), filter_sources=None):
+    def files(
+            kitten: str,
+            output: str,
+            extra_headers: Sequence[str] = (),
+            extra_sources: Sequence[str] = (),
+            filter_sources: Optional[Callable[[str], bool]] = None
+    ) -> Tuple[List[str], List[str], str]:
         sources = list(filter(filter_sources, list(extra_sources) + list_files(os.path.join('kittens', kitten, '*.c'))))
         headers = list_files(os.path.join('kittens', kitten, '*.h')) + list(extra_headers)
         return (sources, headers, 'kittens/{}/{}'.format(kitten, output))
@@ -596,24 +663,25 @@ def compile_kittens(compilation_database):
             kenv, dest, compilation_database, sources, all_headers + ['kitty/data-types.h'])
 
 
-def build(args, native_optimizations=True):
+def build(args: Options, native_optimizations: bool = True) -> None:
     global env
     env = init_env(args.debug, args.sanitize, native_optimizations, args.profile, args.extra_logging)
+    sources, headers = find_c_files()
     compile_c_extension(
-        kitty_env(), 'kitty/fast_data_types', args.compilation_database, *find_c_files()
+        kitty_env(), 'kitty/fast_data_types', args.compilation_database, sources, headers
     )
     compile_glfw(args.compilation_database)
     compile_kittens(args.compilation_database)
 
 
-def safe_makedirs(path):
+def safe_makedirs(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
-def build_launcher(args, launcher_dir='.', bundle_type='source'):
+def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 'source') -> None:
     cflags = '-Wall -Werror -fpie'.split()
     cppflags = []
-    libs = []
+    libs: List[str] = []
     if args.profile or args.sanitize:
         if args.sanitize:
             cflags.append('-g3')
@@ -660,7 +728,7 @@ def build_launcher(args, launcher_dir='.', bundle_type='source'):
 # Packaging {{{
 
 
-def copy_man_pages(ddir):
+def copy_man_pages(ddir: str) -> None:
     mandir = os.path.join(ddir, 'share', 'man')
     safe_makedirs(mandir)
     with suppress(FileNotFoundError):
@@ -675,7 +743,7 @@ make && make docs
     shutil.copytree(src, os.path.join(mandir, 'man1'))
 
 
-def copy_html_docs(ddir):
+def copy_html_docs(ddir: str) -> None:
     htmldir = os.path.join(ddir, 'share', 'doc', appname, 'html')
     safe_makedirs(os.path.dirname(htmldir))
     with suppress(FileNotFoundError):
@@ -690,25 +758,30 @@ make && make docs
     shutil.copytree(src, htmldir)
 
 
-def compile_python(base_path):
+def compile_python(base_path: str) -> None:
     import compileall
     import py_compile
     try:
-        num_workers = max(1, os.cpu_count())
+        num_workers = max(1, os.cpu_count() or 1)
     except Exception:
         num_workers = 1
     for root, dirs, files in os.walk(base_path):
         for f in files:
             if f.rpartition('.')[-1] in ('pyc', 'pyo'):
                 os.remove(os.path.join(root, f))
+
+    def c(base_path: str, **kw: object) -> None:
+        try:
+            kw['invalidation_mode'] = py_compile.PycInvalidationMode.UNCHECKED_HASH
+        except AttributeError:
+            pass
+        compileall.compile_dir(base_path, **kw)  # type: ignore
+
     for optimize in (0, 1, 2):
-        kwargs = dict(ddir='', force=True, optimize=optimize, quiet=1, workers=num_workers)
-        if hasattr(py_compile, 'PycInvalidationMode'):
-            kwargs['invalidation_mode'] = py_compile.PycInvalidationMode.UNCHECKED_HASH
-        compileall.compile_dir(base_path, **kwargs)
+        c(base_path, ddir='', force=True, optimize=optimize, quiet=1, workers=num_workers)
 
 
-def create_linux_bundle_gunk(ddir, libdir_name):
+def create_linux_bundle_gunk(ddir: str, libdir_name: str) -> None:
     if not os.path.exists('docs/_build/html'):
         run_tool(['make', 'docs'])
     copy_man_pages(ddir)
@@ -733,16 +806,17 @@ Icon=kitty
 Categories=System;TerminalEmulator;
 '''
             )
-    ddir = Path(ddir)
-    in_src_launcher = ddir / (libdir_name + '/kitty/kitty/launcher/kitty')
-    launcher = ddir / 'bin/kitty'
+
+    base = Path(ddir)
+    in_src_launcher = base / (libdir_name + '/kitty/kitty/launcher/kitty')
+    launcher = base / 'bin/kitty'
     if os.path.exists(in_src_launcher):
         os.remove(in_src_launcher)
     os.makedirs(os.path.dirname(in_src_launcher), exist_ok=True)
     os.symlink(os.path.relpath(launcher, os.path.dirname(in_src_launcher)), in_src_launcher)
 
 
-def macos_info_plist():
+def macos_info_plist() -> bytes:
     import plistlib
     VERSION = '.'.join(map(str, version))
     pl = dict(
@@ -786,20 +860,34 @@ def macos_info_plist():
     return plistlib.dumps(pl)
 
 
-def create_macos_app_icon(where='Resources'):
-    logo_dir = os.path.abspath(os.path.join('logo', appname + '.iconset'))
-    subprocess.check_call([
-        'iconutil', '-c', 'icns', logo_dir, '-o',
-        os.path.join(where, os.path.basename(logo_dir).partition('.')[0] + '.icns')
-    ])
+def create_macos_app_icon(where: str = 'Resources') -> None:
+    iconset_dir = os.path.abspath(os.path.join('logo', appname + '.iconset'))
+    icns_dir = os.path.join(where, appname + '.icns')
+    try:
+        subprocess.check_call([
+            'iconutil', '-c', 'icns', iconset_dir, '-o', icns_dir
+        ])
+    except FileNotFoundError:
+        print(error('iconutil not found') + ', using png2icns (without retina support) to convert the logo', file=sys.stderr)
+        subprocess.check_call([
+            'png2icns', icns_dir
+        ] + [os.path.join(iconset_dir, logo) for logo in [
+            # png2icns does not support retina icons, so only pass the non-retina icons
+            'icon_16x16.png',
+            'icon_32x32.png',
+            'icon_128x128.png',
+            'icon_256x256.png',
+            'icon_512x512.png',
+        ]])
 
 
-def create_minimal_macos_bundle(args, where):
+def create_minimal_macos_bundle(args: Options, where: str) -> None:
     if os.path.exists(where):
         shutil.rmtree(where)
     bin_dir = os.path.join(where, 'kitty.app/Contents/MacOS')
     resources_dir = os.path.join(where, 'kitty.app/Contents/Resources')
-    os.makedirs(resources_dir), os.makedirs(bin_dir)
+    os.makedirs(resources_dir)
+    os.makedirs(bin_dir)
     with open(os.path.join(where, 'kitty.app/Contents/Info.plist'), 'wb') as f:
         f.write(macos_info_plist())
     build_launcher(args, bin_dir)
@@ -809,8 +897,8 @@ def create_minimal_macos_bundle(args, where):
     create_macos_app_icon(resources_dir)
 
 
-def create_macos_bundle_gunk(ddir):
-    ddir = Path(ddir)
+def create_macos_bundle_gunk(dest: str) -> None:
+    ddir = Path(dest)
     os.mkdir(ddir / 'Contents')
     with open(ddir / 'Contents/Info.plist', 'wb') as fp:
         fp.write(macos_info_plist())
@@ -827,7 +915,7 @@ def create_macos_bundle_gunk(ddir):
     create_macos_app_icon(os.path.join(ddir, 'Contents', 'Resources'))
 
 
-def package(args, bundle_type):
+def package(args: Options, bundle_type: str) -> None:
     ddir = args.prefix
     if bundle_type == 'linux-freeze':
         args.libdir_name = 'lib'
@@ -849,7 +937,7 @@ def package(args, bundle_type):
     shutil.copy2('logo/beam-cursor.png', os.path.join(libdir, 'logo'))
     shutil.copy2('logo/beam-cursor@2x.png', os.path.join(libdir, 'logo'))
 
-    def src_ignore(parent, entries):
+    def src_ignore(parent: str, entries: Iterable[str]) -> List[str]:
         return [
             x for x in entries
             if '.' in x and x.rpartition('.')[2] not in
@@ -867,9 +955,9 @@ def package(args, bundle_type):
             f.seek(0), f.truncate(), f.write(nraw)
     compile_python(libdir)
     for root, dirs, files in os.walk(libdir):
-        for f in files:
-            path = os.path.join(root, f)
-            os.chmod(path, 0o755 if f.endswith('.so') else 0o644)
+        for f_ in files:
+            path = os.path.join(root, f_)
+            os.chmod(path, 0o755 if f_.endswith('.so') else 0o644)
     if not is_macos:
         create_linux_bundle_gunk(ddir, args.libdir_name)
 
@@ -878,9 +966,9 @@ def package(args, bundle_type):
 # }}}
 
 
-def clean():
+def clean() -> None:
 
-    def safe_remove(*entries):
+    def safe_remove(*entries: str) -> None:
         for x in entries:
             if os.path.exists(x):
                 if os.path.isdir(x):
@@ -896,7 +984,9 @@ def clean():
     for root, dirs, files in os.walk('.', topdown=True):
         dirs[:] = [d for d in dirs if d not in exclude]
         remove_dirs = {d for d in dirs if d == '__pycache__' or d.endswith('.dSYM')}
-        [(shutil.rmtree(os.path.join(root, d)), dirs.remove(d)) for d in remove_dirs]
+        for d in remove_dirs:
+            shutil.rmtree(os.path.join(root, d))
+            dirs.remove(d)
         for f in files:
             ext = f.rpartition('.')[-1]
             if ext in ('so', 'dylib', 'pyc', 'pyo'):
@@ -905,66 +995,66 @@ def clean():
         os.unlink(x)
 
 
-def option_parser():  # {{{
+def option_parser() -> argparse.ArgumentParser:  # {{{
     p = argparse.ArgumentParser()
     p.add_argument(
         'action',
         nargs='?',
-        default='build',
+        default=Options.action,
         choices='build test linux-package kitty.app linux-freeze macos-freeze clean'.split(),
         help='Action to perform (default is build)'
     )
     p.add_argument(
         '--debug',
-        default=False,
+        default=Options.debug,
         action='store_true',
         help='Build extension modules with debugging symbols'
     )
     p.add_argument(
         '-v', '--verbose',
-        default=0,
+        default=Options.verbose,
         action='count',
         help='Be verbose'
     )
     p.add_argument(
         '--sanitize',
-        default=False,
+        default=Options.sanitize,
         action='store_true',
         help='Turn on sanitization to detect memory access errors and undefined behavior. This is a big performance hit.'
     )
     p.add_argument(
         '--prefix',
-        default='./linux-package',
+        default=Options.prefix,
         help='Where to create the linux package'
     )
     p.add_argument(
         '--full',
         dest='incremental',
-        default=True,
+        default=Options.incremental,
         action='store_false',
         help='Do a full build, even for unchanged files'
     )
     p.add_argument(
         '--profile',
-        default=False,
+        default=Options.profile,
         action='store_true',
         help='Use the -pg compile flag to add profiling information'
     )
     p.add_argument(
         '--for-freeze',
-        default=False,
+        default=Options.for_freeze,
         action='store_true',
         help='Internal use'
     )
     p.add_argument(
         '--libdir-name',
-        default='lib',
+        default=Options.libdir_name,
         help='The name of the directory inside --prefix in which to store compiled files. Defaults to "lib"'
     )
     p.add_argument(
         '--extra-logging',
         action='append',
-        default=[],
+        default=Options.extra_logging,
         choices=('event-loop',),
         help='Turn on extra logging for debugging in this build. Can be specified multiple times, to turn'
         ' on different types of logging.'
@@ -972,7 +1062,7 @@ def option_parser():  # {{{
     p.add_argument(
         '--update-check-interval',
         type=float,
-        default=24,
+        default=Options.update_check_interval,
         help='When building a package, the default value for the update_check_interval setting will'
         ' be set to this number. Use zero to disable update checking.'
     )
@@ -980,11 +1070,11 @@ def option_parser():  # {{{
 # }}}
 
 
-def main():
+def main() -> None:
     global verbose
     if sys.version_info < (3, 5):
         raise SystemExit('python >= 3.5 required')
-    args = option_parser().parse_args()
+    args = option_parser().parse_args(namespace=Options())
     verbose = args.verbose > 0
     args.prefix = os.path.abspath(args.prefix)
     os.chdir(base)

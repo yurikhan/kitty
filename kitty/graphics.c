@@ -29,9 +29,8 @@ static bool send_to_gpu = true;
 GraphicsManager*
 grman_alloc() {
     GraphicsManager *self = (GraphicsManager *)GraphicsManager_Type.tp_alloc(&GraphicsManager_Type, 0);
-    self->images_capacity = 64;
+    self->images_capacity = self->capacity = 64;
     self->images = calloc(self->images_capacity, sizeof(Image));
-    self->capacity = 64;
     self->render_data = calloc(self->capacity, sizeof(ImageRenderData));
     if (self->images == NULL || self->render_data == NULL) {
         PyErr_NoMemory();
@@ -248,6 +247,50 @@ add_trim_predicate(Image *img) {
     return !img->data_loaded || (!img->client_id && !img->refcnt);
 }
 
+bool
+png_path_to_bitmap(const char* path, uint8_t** data, unsigned int* width, unsigned int* height, size_t* sz) {
+    FILE* fp = fopen(path, "r");
+    if (fp == NULL) {
+        log_error("The PNG image: %s could not be opened with error: %s", path, strerror(errno));
+        return false;
+    }
+    size_t capacity = 16*1024, pos = 0;
+    unsigned char *buf = malloc(capacity);
+    if (!buf) { log_error("Out of memory reading PNG file at: %s", path); fclose(fp); return false; }
+    while (!feof(fp)) {
+        if (pos - capacity < 1024) {
+            capacity *= 2;
+            unsigned char *new_buf = realloc(buf, capacity);
+            if (!new_buf) {
+                free(buf);
+                log_error("Out of memory reading PNG file at: %s", path); fclose(fp); return false;
+            }
+            buf = new_buf;
+        }
+        pos += fread(buf + pos, sizeof(char), capacity - pos, fp);
+        int saved_errno = errno;
+        if (ferror(fp) && saved_errno != EINTR) {
+            log_error("Failed while reading from file: %s with error: %s", path, strerror(saved_errno));
+            fclose(fp);
+            free(buf);
+            return false;
+        }
+    }
+    fclose(fp); fp = NULL;
+    png_read_data d = {0};
+    inflate_png_inner(&d, buf, pos);
+    free(buf);
+    if (!d.ok) {
+        log_error("Failed to decode PNG image at: %s", path);
+        return false;
+    }
+    *data = d.decompressed;
+    *sz = d.sz;
+    *height = d.height; *width = d.width;
+    return true;
+}
+
+
 static inline Image*
 find_or_create_image(GraphicsManager *self, uint32_t id, bool *existing) {
     if (id) {
@@ -421,7 +464,7 @@ handle_add_command(GraphicsManager *self, const GraphicsCommand *g, const uint8_
     size_t required_sz = (img->load_data.is_opaque ? 3 : 4) * img->width * img->height;
     if (img->load_data.data_sz != required_sz) ABRT(EINVAL, "Image dimensions: %ux%u do not match data size: %zu, expected size: %zu", img->width, img->height, img->load_data.data_sz, required_sz);
     if (LIKELY(img->data_loaded && send_to_gpu)) {
-        send_image_to_gpu(&img->texture_id, img->load_data.data, img->width, img->height, img->load_data.is_opaque, img->load_data.is_4byte_aligned);
+        send_image_to_gpu(&img->texture_id, img->load_data.data, img->width, img->height, img->load_data.is_opaque, img->load_data.is_4byte_aligned, false, REPEAT_CLAMP);
         free_load_data(&img->load_data);
         self->used_storage += required_sz;
         img->used_storage = required_sz;
@@ -544,7 +587,9 @@ grman_update_layers(GraphicsManager *self, unsigned int scrolled_by, float scree
     if (!self->layers_dirty) return false;
     self->layers_dirty = false;
     size_t i, j;
-    self->num_of_negative_refs = 0; self->num_of_positive_refs = 0;
+    self->num_of_below_refs = 0;
+    self->num_of_negative_refs = 0;
+    self->num_of_positive_refs = 0;
     Image *img; ImageRef *ref;
     ImageRect r;
     float screen_width = dx * num_cols, screen_height = dy * num_rows;
@@ -565,7 +610,12 @@ grman_update_layers(GraphicsManager *self, unsigned int scrolled_by, float scree
         if (ref->num_cols > 0) r.right = screen_left + (ref->start_column + (int32_t)ref->num_cols) * dx;
         else r.right = r.left + screen_width * (float)ref->src_width / screen_width_px;
 
-        if (ref->z_index < 0) self->num_of_negative_refs++; else self->num_of_positive_refs++;
+        if (ref->z_index < ((int32_t)INT32_MIN/2))
+            self->num_of_below_refs++;
+        else if (ref->z_index < 0)
+            self->num_of_negative_refs++;
+        else
+            self->num_of_positive_refs++;
         ensure_space_for(self, render_data, ImageRenderData, self->count + 1, capacity, 64, true);
         ImageRenderData *rd = self->render_data + self->count;
         zero_at_ptr(rd);
@@ -739,6 +789,7 @@ handle_delete_command(GraphicsManager *self, const GraphicsCommand *g, Cursor *c
 #undef D
 #undef I
     }
+    if (!self->image_count && self->count) self->count = 0;
 }
 
 // }}}

@@ -3,7 +3,7 @@
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
 import string
-from collections import namedtuple
+from typing import Dict, NamedTuple, Optional
 
 from . import fast_data_types as defines
 from .key_names import key_name_aliases
@@ -192,7 +192,8 @@ ENCODING = {
     'CYRILLIC E': 'CJ',
     'CYRILLIC YU': 'CK',
     'CYRILLIC YA': 'CL',
-    'CYRILLIC IO': 'CM'
+    'CYRILLIC IO': 'CM',
+    'CIRCUMFLEX': 'CN'
 }
 KEY_MAP = {
     32: 'A',
@@ -254,6 +255,7 @@ KEY_MAP = {
     91: 's',
     92: 't',
     93: 'u',
+    94: 'CN',
     95: 'Bj',
     96: 'v',
     161: 'w',
@@ -388,19 +390,19 @@ text_keys = (
 )
 
 
-def text_match(key):
+def text_match(key: str) -> Optional[str]:
     if key.upper() == 'SPACE':
         return ' '
     if key not in text_keys:
-        return
+        return None
     return key
 
 
 def encode(
-    integer,
-    chars=string.ascii_uppercase + string.ascii_lowercase + string.digits +
+    integer: int,
+    chars: str = string.ascii_uppercase + string.ascii_lowercase + string.digits +
     '.-:+=^!/*?&<>()[]{}@%$#'
-):
+) -> str:
     ans = ''
     d = len(chars)
     while True:
@@ -411,11 +413,11 @@ def encode(
     return ans
 
 
-def symbolic_name(glfw_name):
+def symbolic_name(glfw_name: str) -> str:
     return glfw_name[9:].replace('_', ' ')
 
 
-def update_encoding():
+def update_encoding() -> None:
     import re
     import subprocess
     keys = {a for a in dir(defines) if a.startswith('GLFW_KEY_')}
@@ -449,15 +451,22 @@ def update_encoding():
     subprocess.check_call(['yapf', '-i', __file__])
 
 
-PRESS, REPEAT, RELEASE = 1, 2, 4
+class KeyEvent(NamedTuple):
+    type: int
+    mods: int
+    key: str
+
+
+PRESS: int = 1
+REPEAT: int = 2
+RELEASE: int = 4
 SHIFT, ALT, CTRL, SUPER = 1, 2, 4, 8
-KeyEvent = namedtuple('KeyEvent', 'type mods key')
 type_map = {'p': PRESS, 't': REPEAT, 'r': RELEASE}
 rtype_map = {v: k for k, v in type_map.items()}
 mod_map = {c: i for i, c in enumerate('ABCDEFGHIJKLMNOP')}
 rmod_map = {v: k for k, v in mod_map.items()}
 key_rmap = {}
-g = globals()
+key_defs: Dict[str, str] = {}
 config_key_map = {}
 config_mod_map = {
     'SHIFT': SHIFT,
@@ -472,23 +481,24 @@ config_mod_map = {
 }
 for key_name, enc in ENCODING.items():
     key_name = key_name.replace(' ', '_')
-    g[key_name] = config_key_map[key_name] = key_name
+    key_defs[key_name] = config_key_map[key_name] = key_name
     key_rmap[enc] = key_name
-config_key_map.update({k: g[v] for k, v in key_name_aliases.items() if v in g})
+config_key_map.update({k: key_defs[v] for k, v in key_name_aliases.items() if v in key_defs})
 
-enter_key = KeyEvent(PRESS, 0, g['ENTER'])
-backspace_key = KeyEvent(PRESS, 0, g['BACKSPACE'])
-del key_name, enc, g
+enter_key = KeyEvent(PRESS, 0, key_defs['ENTER'])
+backspace_key = KeyEvent(PRESS, 0, key_defs['BACKSPACE'])
+globals().update(key_defs)
+del key_name, enc
 
 
-def decode_key_event(text):
+def decode_key_event(text: str) -> KeyEvent:
     typ = type_map[text[1]]
     mods = mod_map[text[2]]
     key = key_rmap[text[3:5]]
     return KeyEvent(typ, mods, key)
 
 
-def encode_key_event(key_event):
+def encode_key_event(key_event: KeyEvent) -> str:
     typ = rtype_map[key_event.type]
     mods = rmod_map[key_event.mods]
     key = ENCODING[key_event.key.replace('_', ' ')]

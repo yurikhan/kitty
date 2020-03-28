@@ -1,4 +1,5 @@
 
+#define GFW_EXTERN
 #include "data-types.h"
 #include "glfw-wrapper.h"
 #include <dlfcn.h>
@@ -136,6 +137,9 @@ load_glfw(const char* path) {
 
     *(void **) (&glfwSetWindowSizeLimits_impl) = dlsym(handle, "glfwSetWindowSizeLimits");
     if (glfwSetWindowSizeLimits_impl == NULL) fail("Failed to load glfw function glfwSetWindowSizeLimits with error: %s", dlerror());
+
+    *(void **) (&glfwSetWindowSizeIncrements_impl) = dlsym(handle, "glfwSetWindowSizeIncrements");
+    if (glfwSetWindowSizeIncrements_impl == NULL) fail("Failed to load glfw function glfwSetWindowSizeIncrements with error: %s", dlerror());
 
     *(void **) (&glfwSetWindowAspectRatio_impl) = dlsym(handle, "glfwSetWindowAspectRatio");
     if (glfwSetWindowAspectRatio_impl == NULL) fail("Failed to load glfw function glfwSetWindowAspectRatio with error: %s", dlerror());
@@ -343,15 +347,6 @@ load_glfw(const char* path) {
 
     *(void **) (&glfwGetTime_impl) = dlsym(handle, "glfwGetTime");
     if (glfwGetTime_impl == NULL) fail("Failed to load glfw function glfwGetTime with error: %s", dlerror());
-
-    *(void **) (&glfwSetTime_impl) = dlsym(handle, "glfwSetTime");
-    if (glfwSetTime_impl == NULL) fail("Failed to load glfw function glfwSetTime with error: %s", dlerror());
-
-    *(void **) (&glfwGetTimerValue_impl) = dlsym(handle, "glfwGetTimerValue");
-    if (glfwGetTimerValue_impl == NULL) fail("Failed to load glfw function glfwGetTimerValue with error: %s", dlerror());
-
-    *(void **) (&glfwGetTimerFrequency_impl) = dlsym(handle, "glfwGetTimerFrequency");
-    if (glfwGetTimerFrequency_impl == NULL) fail("Failed to load glfw function glfwGetTimerFrequency with error: %s", dlerror());
 
     *(void **) (&glfwMakeContextCurrent_impl) = dlsym(handle, "glfwMakeContextCurrent");
     if (glfwMakeContextCurrent_impl == NULL) fail("Failed to load glfw function glfwMakeContextCurrent with error: %s", dlerror());

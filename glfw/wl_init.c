@@ -137,6 +137,7 @@ static void pointerHandleLeave(void* data UNUSED,
     _glfw.wl.pointerSerial = serial;
     _glfw.wl.pointerFocus = NULL;
     _glfwInputCursorEnter(window, false);
+    _glfw.wl.cursorPreviousShape = GLFW_INVALID_CURSOR;
 }
 
 static void setCursor(GLFWCursorShape shape)
@@ -192,6 +193,7 @@ static void pointerHandleMotion(void* data UNUSED,
             window->wl.cursorPosX = x;
             window->wl.cursorPosY = y;
             _glfwInputCursorPos(window, x, y);
+            _glfw.wl.cursorPreviousShape = GLFW_INVALID_CURSOR;
             return;
         case topDecoration:
             if (y < _GLFW_DECORATION_WIDTH)
@@ -764,7 +766,6 @@ int _glfwPlatformInit(void)
     }
 #endif
 
-    _glfwInitTimerPOSIX();
     if (!_glfw.wl.wmBase)
     {
         _glfwInputError(GLFW_PLATFORM_ERROR,
@@ -851,7 +852,7 @@ void _glfwPlatformTerminate(void)
         wl_data_source_destroy(_glfw.wl.dataSourceForClipboard);
     for (size_t doi=0; doi < arraysz(_glfw.wl.dataOffers); doi++) {
         if (_glfw.wl.dataOffers[doi].id) {
-            wl_data_offer_destroy(_glfw.wl.dataOffers[doi].id);
+            destroy_data_offer(&_glfw.wl.dataOffers[doi]);
         }
     }
     if (_glfw.wl.dataDevice)

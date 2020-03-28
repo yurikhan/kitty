@@ -4,6 +4,184 @@ Changelog
 |kitty| is a feature full, cross-platform, *fast*, GPU based terminal emulator.
 To update |kitty|, :doc:`follow the instructions <binary>`.
 
+0.17.1 [2020-03-24]
+--------------------
+
+- Fix :opt:`cursor_underline_thickness` not working (:iss:`2465`)
+
+- Fix a regression in 0.17 that caused tab bar background to be rendered after
+  the last tab as well (:iss:`2464`)
+
+- macOS: Fix a regression in 0.17 that caused incorrect variants to be
+  automatically selected for some fonts (:iss:`2462`)
+
+- Fix a regression in 0.17 that caused kitty @ set-colors to require setting
+  cursor_text_color (:iss:`2470`)
+
+
+0.17.0 [2020-03-24]
+--------------------
+
+- :ref:`splits_layout` to arrange windows in arbitrary splits
+  (:iss:`2308`)
+
+- Add support for specifying a background image, see :opt:`background_image`
+  (:iss:`163` and :pull:`2326`; thanks to Fredrick Brennan.)
+
+- A new :opt:`background_tint` option to darken the background under the text
+  area when using background images and/or transparent windows.
+
+- Allow selection of single cells with the mouse. Also improve mouse selection
+  to follow semantics common to most programs (:iss:`945`)
+
+- New options :opt:`cursor_beam_thickness` and :opt:`cursor_underline_thickness` to control the thickness of the
+  beam and underline cursors (:iss:`2337` and :pull:`2342`)
+
+- When the application running in the terminal grabs the mouse, pass middle
+  clicks to the application unless :opt:`terminal_select_modifiers` are
+  pressed (:iss:`2368`)
+
+- A new ``copy_and_clear_or_interrupt`` function (:iss:`2403`)
+
+- X11: Fix arrow mouse cursor using right pointing instead of the default left
+  pointing arrow (:iss:`2341`)
+
+- Allow passing the currently active kitty window id in the launch command
+  (:iss:`2391`)
+
+- unicode input kitten: Allow pressing :kbd:`ctrl+tab` to change the input mode
+  (:iss:`2343`)
+
+- Fix a bug that prevented using custom functions with the new marks feature
+  (:iss:`2344`)
+
+- Make the set of URL prefixes that are recognized while hovering with the
+  mouse configurable (:iss:`2416`)
+
+- Fix border/margin/padding sizes not being recalculated on DPI change
+  (:iss:`2346`)
+
+- diff kitten: Fix directory diffing with removed binary files failing
+  (:iss:`2378`)
+
+- macOS: Fix menubar title not updating on OS Window focus change (:iss:`2350`)
+
+- Fix rendering of combining characters with fonts that have glyphs for
+  precomposed characters but not decomposed versions (:iss:`2365`)
+
+- Fix incorrect rendering of selection when using rectangular select and
+  scrolling (:iss:`2351`)
+
+- Allow setting WM_CLASS and WM_NAME when creating new OS windows with the
+  launch command (:option:`launch --os-window-class`)
+
+- macOS: When switching input method while a pending multi-key input is in
+  progress, clear the pending input (:iss:`2358`)
+
+- Fix a regression in the previous release that broke switching to neighboring windows
+  in the Grid layout when there are less than four windows (:iss:`2377`)
+
+- Fix colors in scrollback pager off if the window has redefined terminal
+  colors using escape codes (:iss:`2381`)
+
+- Fix selection not updating properly while scrolling (:iss:`2442`)
+
+- Allow extending selections by dragging with right button pressed
+  (:iss:`2445`)
+
+- Workaround for bug in less that causes colors to reset at wrapped lines
+  (:iss:`2381`)
+
+- X11/Wayland: Allow drag and drop of text/plain in addition to text/uri-list
+  (:iss:`2441`)
+
+- Dont strip :code:`&` and :code:`-` from the end of URLs (:iss:`2436`)
+
+- Fix ``@selection`` placeholder not working with launch command (:iss:`2417`)
+
+- Drop support for python 3.5
+
+- Wayland: Fix a crash when drag and dropping into kitty (:iss:`2432`)
+
+- diff kitten: Fix images lingering as blank rectangles after the kitten quits
+  (:iss:`2449`)
+
+- diff kitten: Fix images losing position when scrolling using mouse
+  wheel/touchpad
+
+
+0.16.0 [2020-01-28]
+--------------------
+
+- A new :doc:`marks` feature that allows highlighting and scrolling to arbitrary
+  text in the terminal window.
+
+- hints kitten: Allow pressing :sc:`goto_file_line` to quickly open
+  the selected file at the selected line in vim or a configurable editor (:iss:`2268`)
+
+- Allow having more than one full height window in the :code:`tall` layout
+  (:iss:`2276`)
+
+- Allow choosing OpenType features for individual fonts via the
+  :opt:`font_features` option. (:pull:`2248`)
+
+- Wayland: Fix a freeze in rare circumstances when having multiple OS Windows
+  (:iss:`2307` and :iss:`1722`)
+
+- Wayland: Fix window titles being set to very long strings on the order of 8KB
+  causing a crash (:iss:`1526`)
+
+- Add an option :opt:`force_ltr` to turn off the display of text in RTL scripts
+  in right-to-left order (:pull:`2293`)
+
+- Allow opening new tabs/windows before the current tab/window as well as after
+  it with the :option:`launch --location` option.
+
+- Add a :opt:`resize_in_steps` option that can be used to resize the OS window
+  in steps as large as character cells (:pull:`2131`)
+
+- When triple-click+dragging to select multiple lines, extend the selection
+  of the first line to match the rest on the left (:pull:`2284`)
+
+- macOS: Add a :code:`titlebar-only` setting to
+  :opt:`hide_window_decorations` to only hide the title bar (:pull:`2286`)
+
+- Fix a segfault when using :option:`kitty --debug-config` with maps (:iss:`2270`)
+
+- ``goto_tab`` now maps numbers larger than the last tab to the last tab
+  (:iss:`2291`)
+
+- Fix URL detection not working for urls of the form scheme:///url
+  (:iss:`2292`)
+
+- When windows are semi-transparent and all contain graphics, correctly render
+  them. (:iss:`2310`)
+
+0.15.1 [2019-12-21]
+--------------------
+
+- Fix a crash/incorrect rendering when detaching a window in some circumstances
+  (:iss:`2173`)
+
+- hints kitten: Add an option :option:`kitty +kitten hints --ascending` to
+  control if the hints numbers increase or decrease from top to bottom
+
+- Fix :opt:`background_opacity` incorrectly applying to selected text and
+  reverse video text (:iss:`2177`)
+
+- Add a new option :opt:`tab_bar_background` to specify a different color
+  for the tab bar (:iss:`2198`)
+
+- Add a new option :opt:`active_tab_title_template` to specify a different
+  template for active tab titles (:iss:`2198`)
+
+- Fix lines at the edge of the window at certain windows sizes when drawing
+  images on a transparent window (:iss:`2079`)
+
+- Fix window not being rendered for the first time until some input has been
+  received from child process (:iss:`2216`)
+
+
 0.15.0 [2019-11-27]
 --------------------
 

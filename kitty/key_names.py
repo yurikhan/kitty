@@ -4,6 +4,7 @@
 
 import sys
 from contextlib import suppress
+from typing import Callable, Optional
 
 from .constants import is_macos
 
@@ -30,6 +31,7 @@ key_name_aliases = {
     '[': 'LEFT_BRACKET',
     '\\': 'BACKSLASH',
     ']': 'RIGHT_BRACKET',
+    '^': 'CIRCUMFLEX',
     '_': 'UNDERSCORE',
     '`': 'GRAVE_ACCENT',
     '§': 'PARAGRAPH',
@@ -95,16 +97,18 @@ key_name_aliases = {
     'ARROWLEFT': 'LEFT'
 }
 
+LookupFunc = Callable[[str, bool], Optional[int]]
 
-def null_lookup(name, case_sensitive=False):
-    pass
+
+def null_lookup(name: str, case_sensitive: bool = False) -> Optional[int]:
+    return None
 
 
 if is_macos:
-    def get_key_name_lookup():
+    def get_key_name_lookup() -> LookupFunc:
         return null_lookup
 else:
-    def load_libxkb_lookup():
+    def load_libxkb_lookup() -> LookupFunc:
         import ctypes
         for suffix in ('.0', ''):
             with suppress(Exception):
@@ -112,25 +116,28 @@ else:
                 break
         else:
             from ctypes.util import find_library
-            lib = ctypes.CDLL(find_library('xkbcommon'))
+            lname = find_library('xkbcommon')
+            if lname is None:
+                raise RuntimeError('Failed to find libxkbcommon')
+            lib = ctypes.CDLL(lname)
 
         f = lib.xkb_keysym_from_name
         f.argtypes = [ctypes.c_char_p, ctypes.c_int]
         f.restype = ctypes.c_int
 
-        def xkb_lookup(name, case_sensitive=False):
-            name = name.encode('utf-8')
-            return f(name, int(case_sensitive)) or None
+        def xkb_lookup(name: str, case_sensitive: bool = False) -> Optional[int]:
+            q = name.encode('utf-8')
+            return f(q, int(case_sensitive)) or None
 
         return xkb_lookup
 
-    def get_key_name_lookup():
-        ans = getattr(get_key_name_lookup, 'ans', None)
+    def get_key_name_lookup() -> LookupFunc:
+        ans: Optional[LookupFunc] = getattr(get_key_name_lookup, 'ans', None)
         if ans is None:
             try:
                 ans = load_libxkb_lookup()
             except Exception as e:
                 print('Failed to load libxkbcommon.xkb_keysym_from_name with error:', e, file=sys.stderr)
                 ans = null_lookup
-            get_key_name_lookup.ans = ans
+            setattr(get_key_name_lookup, 'ans', ans)
         return ans

@@ -5,9 +5,13 @@
 # Utils  {{{
 import os
 from gettext import gettext as _
+from typing import (
+    Any, Dict, FrozenSet, Iterable, List, Optional, Sequence, Set, Tuple,
+    TypeVar, Union
+)
 
 from . import fast_data_types as defines
-from .conf.definition import option_func
+from .conf.definition import Option, Shortcut, option_func
 from .conf.utils import (
     choices, positive_float, positive_int, to_bool, to_cmdline, to_color,
     to_color_or_none, unit_float
@@ -15,7 +19,7 @@ from .conf.utils import (
 from .constants import config_dir, is_macos
 from .fast_data_types import CURSOR_BEAM, CURSOR_BLOCK, CURSOR_UNDERLINE
 from .layout import all_layouts
-from .rgb import color_as_int, color_as_sharp, color_from_int
+from .rgb import Color, color_as_int, color_as_sharp, color_from_int
 from .utils import log_error
 
 MINIMUM_FONT_SIZE = 4
@@ -25,9 +29,9 @@ mod_map = {'CTRL': 'CONTROL', 'CMD': 'SUPER', '⌘': 'SUPER',
            '⌥': 'ALT', 'OPTION': 'ALT', 'KITTY_MOD': 'KITTY'}
 
 
-def parse_mods(parts, sc):
+def parse_mods(parts: Iterable[str], sc: str) -> Optional[int]:
 
-    def map_mod(m):
+    def map_mod(m: str) -> str:
         return mod_map.get(m, m)
 
     mods = 0
@@ -36,25 +40,28 @@ def parse_mods(parts, sc):
             mods |= getattr(defines, 'GLFW_MOD_' + map_mod(m.upper()))
         except AttributeError:
             log_error('Shortcut: {} has unknown modifier, ignoring'.format(sc))
-            return
+            return None
 
     return mods
 
 
-def to_modifiers(val):
+def to_modifiers(val: str) -> int:
     return parse_mods(val.split('+'), val) or 0
 
 
-def uniq(vals, result_type=list):
-    seen = set()
+T = TypeVar('T')
+
+
+def uniq(vals: Iterable[T]) -> List[T]:
+    seen: Set[T] = set()
     seen_add = seen.add
-    return result_type(x for x in vals if x not in seen and not seen_add(x))
+    return [x for x in vals if x not in seen and not seen_add(x)]
 # }}}
 
 # Groups {{{
 
 
-all_options = {}
+all_options: Dict[str, Union[Option, Sequence[Shortcut]]] = {}
 
 
 o, k, g, all_groups = option_func(all_options, {
@@ -84,19 +91,21 @@ as color16 to color255.''')
     'shortcuts': [
         _('Keyboard shortcuts'),
         _('''\
-For a list of key names, see: :link:`GLFW keys
-<https://www.glfw.org/docs/latest/group__keys.html>`. The name to use is the part
-after the :code:`GLFW_KEY_` prefix. For a list of modifier names, see:
+For a list of key names, see: :link:`the GLFW key macros
+<https://github.com/kovidgoyal/kitty/blob/master/glfw/glfw3.h#L349>`.
+The name to use is the part after the :code:`GLFW_KEY_` prefix.
+For a list of modifier names, see:
 :link:`GLFW mods <https://www.glfw.org/docs/latest/group__mods.html>`
 
 On Linux you can also use XKB key names to bind keys that are not supported by
 GLFW. See :link:`XKB keys
 <https://github.com/xkbcommon/libxkbcommon/blob/master/xkbcommon/xkbcommon-keysyms.h>`
 for a list of key names. The name to use is the part after the :code:`XKB_KEY_`
-prefix. Note that you should only use an XKB key name for keys that are not present
-in the list of GLFW keys.
+prefix. Note that you can only use an XKB key name for keys that are not known
+as GLFW keys.
 
-Finally, you can use raw system key codes to map keys. To see the system key code
+Finally, you can use raw system key codes to map keys, again only for keys that are not
+known as GLFW keys. To see the system key code
 for a key, start kitty with the :option:`kitty --debug-keyboard` option. Then kitty will
 output some debug text for every key event. In that text look for ``native_code``
 the value of that becomes the key name in the shortcut. For example:
@@ -144,7 +153,8 @@ For example::
             _('Tab management'), '',
             _('''\
 You can also create shortcuts to go to specific tabs, with 1 being the first
-tab, 2 the second tab and -1 being the previously active tab::
+tab, 2 the second tab and -1 being the previously active tab, and any number
+larger than the last tab being the last tab::
 
     map ctrl+alt+1 goto_tab 1
     map ctrl+alt+2 goto_tab 2
@@ -217,14 +227,31 @@ o('italic_font', 'auto')
 o('bold_italic_font', 'auto')
 
 
-def to_font_size(x):
+def to_font_size(x: str) -> float:
     return max(MINIMUM_FONT_SIZE, float(x))
 
 
 o('font_size', 11.0, long_text=_('Font size (in pts)'), option_type=to_font_size)
 
+o('force_ltr', False, long_text=_("""
+kitty does not support BIDI (bidirectional text), however, for RTL scripts,
+words are automatically displayed in RTL. That is
+to say, in an RTL script, the words "HELLO WORLD" display in kitty as "WORLD
+HELLO", and if you try to select a substring of an RTL-shaped string, you will
+get the character that would be there had the the string been LTR. For example,
+assuming the Hebrew word ירושלים, selecting the character that on the screen
+appears to be ם actually writes into the selection buffer the character י.
 
-def adjust_line_height(x):
+kitty's default behavior is useful in conjunction with a filter to reverse the
+word order, however, if you wish to manipulate RTL glyphs, it can be very
+challenging to work with, so this option is provided to turn it off.
+Furthermore, this option can be used with the command line program
+:link:`GNU FriBidi <https://github.com/fribidi/fribidi#executable>` to get BIDI
+support, because it will force kitty to always treat the text as LTR, which
+FriBidi expects for terminals."""))
+
+
+def adjust_line_height(x: str) -> Union[int, float]:
     if x.endswith('%'):
         ans = float(x[:-1].strip()) / 100.0
         if ans < 0:
@@ -245,7 +272,7 @@ o('adjust_column_width', 0, option_type=adjust_line_height)
 
 o(
     '+symbol_map',
-    'U+E0A0-U+E0A2,U+E0B0-U+E0B3 PowerlineSymbols',
+    'U+E0A0-U+E0A3,U+E0C0-U+E0C7 PowerlineSymbols',
     add_to_default=False,
     long_text=_('''
 Map the specified unicode codepoints to a particular font. Useful if you need
@@ -260,7 +287,7 @@ Syntax is::
 '''))
 
 
-def disable_ligatures(x):
+def disable_ligatures(x: str) -> int:
     cmap = {'never': 0, 'cursor': 1, 'always': 2}
     return cmap.get(x.lower(), 0)
 
@@ -276,14 +303,59 @@ or by defining shortcuts for it in kitty.conf, for example::
     map alt+1 disable_ligatures_in active always
     map alt+2 disable_ligatures_in all never
     map alt+3 disable_ligatures_in tab cursor
+
+'''))
+
+o('font_features', 'none', long_text=_('''
+Choose exactly which OpenType features to enable or disable. This is useful as
+some fonts might have features worthwhile in a terminal. For example, Fira
+Code Retina includes a discretionary feature, :code:`zero`, which in that font
+changes the appearance of the zero (0), to make it more easily distinguishable
+from Ø. Fira Code Retina also includes other discretionary features known as
+Stylistic Sets which have the tags :code:`ss01` through :code:`ss20`.
+
+Note that this code is indexed by PostScript name, and not the font
+family. This allows you to define very precise feature settings; e.g. you can
+disable a feature in the italic font but not in the regular font.
+
+To get the PostScript name for a font, use :code:`kitty + list-fonts --psnames`::
+
+    $ kitty + list-fonts --psnames | grep Fira
+    Fira Code
+    Fira Code Bold (FiraCode-Bold)
+    Fira Code Light (FiraCode-Light)
+    Fira Code Medium (FiraCode-Medium)
+    Fira Code Regular (FiraCode-Regular)
+    Fira Code Retina (FiraCode-Retina)
+
+The part in brackets is the PostScript name.
+
+Enable alternate zero and oldstyle numerals::
+
+    font_features FiraCode-Retina +zero +onum
+
+Enable only alternate zero::
+
+    font_features FiraCode-Retina +zero
+
+Disable the normal ligatures, but keep the :code:`calt` feature which (in this
+font) breaks up monotony::
+
+    font_features TT2020StyleB-Regular -liga +calt
+
+In conjunction with :opt:`force_ltr`, you may want to disable Arabic shaping
+entirely, and only look at their isolated forms if they show up in a document.
+You can do this with e.g.::
+
+    font_features UnifontMedium +isol -medi -fina -init
 '''))
 
 
-def box_drawing_scale(x):
-    ans = tuple(float(x.strip()) for x in x.split(','))
+def box_drawing_scale(x: str) -> Tuple[float, float, float, float]:
+    ans = tuple(float(q.strip()) for q in x.split(','))
     if len(ans) != 4:
         raise ValueError('Invalid box_drawing scale, must have four entries')
-    return ans
+    return ans[0], ans[1], ans[2], ans[3]
 
 
 o(
@@ -308,7 +380,7 @@ cshapes = {
 }
 
 
-def to_cursor_shape(x):
+def to_cursor_shape(x: str) -> int:
     try:
         return cshapes[x.lower()]
     except KeyError:
@@ -319,9 +391,9 @@ def to_cursor_shape(x):
         )
 
 
-def cursor_text_color(x):
+def cursor_text_color(x: str) -> Optional[Color]:
     if x.lower() == 'background':
-        return
+        return None
     return to_color(x)
 
 
@@ -331,6 +403,10 @@ Choose the color of text under the cursor. If you want it rendered with the
 background color of the cell underneath instead, use the special keyword: background'''))
 o('cursor_shape', 'block', option_type=to_cursor_shape, long_text=_(
     'The cursor shape can be one of (block, beam, underline)'))
+o('cursor_beam_thickness', 1.5, option_type=positive_float, long_text=_(
+    'Defines the thickness of the beam cursor (in pts)'))
+o('cursor_underline_thickness', 2.0, option_type=positive_float, long_text=_(
+    'Defines the thickness of the underline cursor (in pts)'))
 o('cursor_blink_interval', -1, option_type=float, long_text=_('''
 The interval (in seconds) at which to blink the cursor. Set to zero to disable
 blinking. Negative values mean use system default. Note that numbers smaller
@@ -346,14 +422,14 @@ inactivity.  Set to zero to never stop blinking.
 g('scrollback')  # {{{
 
 
-def scrollback_lines(x):
-    x = int(x)
-    if x < 0:
-        x = 2 ** 32 - 1
-    return x
+def scrollback_lines(x: str) -> int:
+    ans = int(x)
+    if ans < 0:
+        ans = 2 ** 32 - 1
+    return ans
 
 
-def scrollback_pager_history_size(x):
+def scrollback_pager_history_size(x: str) -> int:
     ans = int(max(0, float(x)) * 1024 * 1024)
     return min(ans, 4096 * 1024 * 1024 - 1)
 
@@ -406,11 +482,11 @@ The color and style for highlighting URLs on mouse-over.
 :code:`url_style` can be one of: none, single, double, curly'''))
 
 
-def url_style(x):
-    return url_style.map.get(x, url_style.map['curly'])
+def url_style(x: str) -> int:
+    return url_style_map.get(x, url_style_map['curly'])
 
 
-url_style.map = dict(
+url_style_map = dict(
     ((v, i) for i, v in enumerate('none single double curly'.split()))
 )
 
@@ -427,7 +503,15 @@ The special value :code:`default` means to use the
 operating system's default URL handler.'''))
 
 
-def copy_on_select(raw):
+def url_prefixes(x: str) -> Tuple[str, ...]:
+    return tuple(a.lower() for a in x.replace(',', ' ').split())
+
+
+o('url_prefixes', 'http https file ftp', option_type=url_prefixes, long_text=_('''
+The set of URL prefixes to look for when detecting a URL under the mouse cursor.'''))
+
+
+def copy_on_select(raw: str) -> str:
     q = raw.lower()
     # boolean values special cased for backwards compat
     if q in ('y', 'yes', 'true', 'clipboard'):
@@ -479,6 +563,7 @@ moving the mouse around'''))
 
 o('pointer_shape_when_grabbed', 'arrow', option_type=choices('arrow', 'beam', 'hand'), long_text=('''
 The shape of the mouse pointer when the program running in the terminal grabs the mouse.
+Valid values are: :code:`arrow`, :code:`beam` and :code:`hand`
 '''))
 
 # }}}
@@ -541,7 +626,7 @@ number of cells instead of pixels.
 '''))
 
 
-def window_size(val):
+def window_size(val: str) -> Tuple[int, str]:
     val = val.lower()
     unit = 'cells' if val.endswith('c') else 'px'
     return positive_int(val.rstrip('c')), unit
@@ -551,9 +636,9 @@ o('initial_window_width', '640', option_type=window_size)
 o('initial_window_height', '400', option_type=window_size)
 
 
-def to_layout_names(raw):
+def to_layout_names(raw: str) -> List[str]:
     parts = [x.strip().lower() for x in raw.split(',')]
-    ans = []
+    ans: List[str] = []
     for p in parts:
         if p in ('*', 'all'):
             ans.extend(sorted(all_layouts))
@@ -568,7 +653,8 @@ def to_layout_names(raw):
 o('enabled_layouts', '*', option_type=to_layout_names, long_text=_('''
 The enabled window layouts. A comma separated list of layout names. The special
 value :code:`all` means all layouts. The first listed layout will be used as the
-startup layout. For a list of available layouts, see the :ref:`layouts`.
+startup layout. Default configuration is all layouts in alphabetical order.
+For a list of available layouts, see the :ref:`layouts`.
 '''))
 
 o('window_resize_step_cells', 2, option_type=positive_int, long_text=_('''
@@ -622,8 +708,18 @@ Fade the text in inactive windows by the specified amount (a number between
 zero and one, with zero being fully faded).
 '''))
 
-o('hide_window_decorations', False, long_text=_('''
-Hide the window decorations (title-bar and window borders).
+
+def hide_window_decorations(x: str) -> int:
+    if x == 'titlebar-only':
+        return 0b10
+    if to_bool(x):
+        return 0b01
+    return 0b00
+
+
+o('hide_window_decorations', 'no', option_type=hide_window_decorations, long_text=_('''
+Hide the window decorations (title-bar and window borders) with :code:`yes`.
+On macOS, :code:`titlebar-only` can be used to only hide the titlebar.
 Whether this works and exactly what effect it has depends on the
 window manager/operating system.
 '''))
@@ -635,7 +731,7 @@ operating system sends events corresponding to the start and end
 of a resize, this number is ignored.'''))
 
 
-def resize_draw_strategy(x):
+def resize_draw_strategy(x: str) -> int:
     cmap = {'static': 0, 'scale': 1, 'blank': 2, 'size': 3}
     return cmap.get(x.lower(), 0)
 
@@ -648,13 +744,20 @@ A value of :code:`blank` means draw a blank window.
 A value of :code:`size` means show the window size in cells.
 '''))
 
+o('resize_in_steps', False, long_text=_('''
+Resize the OS window in steps as large as the cells, instead of with the usual pixel accuracy.
+Combined with an :opt:`initial_window_width` and :opt:`initial_window_height` in number of cells,
+this option can be used to keep the margins as small as possible when resizing the OS window.
+Note that this does not currently work on Wayland.
+'''))
+
 # }}}
 
 g('tabbar')   # {{{
 default_tab_separator = ' ┇'
 
 
-def tab_separator(x):
+def tab_separator(x: str) -> str:
     for q in '\'"':
         if x.startswith(q) and x.endswith(q):
             x = x[1:-1]
@@ -664,11 +767,11 @@ def tab_separator(x):
     return x
 
 
-def tab_bar_edge(x):
+def tab_bar_edge(x: str) -> int:
     return {'top': 1, 'bottom': 3}.get(x.lower(), 3)
 
 
-def tab_font_style(x):
+def tab_font_style(x: str) -> Tuple[bool, bool]:
     return {
         'bold-italic': (True, True),
         'bold': (True, False),
@@ -688,7 +791,12 @@ In the fade style, each tab's edges fade into the background color, in the separ
 separated by a configurable separator, and the powerline shows the tabs as a continuous line.
 '''))
 
-o('tab_bar_min_tabs', 2, option_type=lambda x: max(1, positive_int(x)), long_text=_('''
+
+def tab_bar_min_tabs(x: str) -> int:
+    return max(1, positive_int(x))
+
+
+o('tab_bar_min_tabs', 2, option_type=tab_bar_min_tabs, long_text=_('''
 The minimum number of tabs that must exist before the tab bar is shown
 '''))
 
@@ -700,7 +808,7 @@ of :code:`last` will switch to the right-most tab.
 '''))
 
 
-def tab_fade(x):
+def tab_fade(x: str) -> Tuple[float, ...]:
     return tuple(map(unit_float, x.split()))
 
 
@@ -715,12 +823,30 @@ entries to this list.
 o('tab_separator', '"{}"'.format(default_tab_separator), option_type=tab_separator, long_text=_('''
 The separator between tabs in the tab bar when using :code:`separator` as the :opt:`tab_bar_style`.'''))
 
-o('tab_title_template', '{title}', long_text=_('''
+
+def tab_title_template(x: str) -> str:
+    if x:
+        for q in '\'"':
+            if x.startswith(q) and x.endswith(q):
+                x = x[1:-1]
+                break
+    return x
+
+
+def active_tab_title_template(x: str) -> Optional[str]:
+    x = tab_title_template(x)
+    return None if x == 'none' else x
+
+
+o('tab_title_template', '"{title}"', option_type=tab_title_template, long_text=_('''
 A template to render the tab title. The default just renders
 the title. If you wish to include the tab-index as well,
 use something like: :code:`{index}: {title}`. Useful
 if you have shortcuts mapped for :code:`goto_tab N`.
 '''))
+o('active_tab_title_template', 'none', option_type=active_tab_title_template, long_text=_('''
+Template to use for active tabs, if not specified falls back
+to :opt:`tab_title_template`.'''))
 
 o('active_tab_foreground', '#000', option_type=to_color, long_text=_('''
 Tab bar colors and styles'''))
@@ -729,6 +855,8 @@ o('active_tab_font_style', 'bold-italic', option_type=tab_font_style)
 o('inactive_tab_foreground', '#444', option_type=to_color)
 o('inactive_tab_background', '#999', option_type=to_color)
 o('inactive_tab_font_style', 'normal', option_type=tab_font_style)
+o('tab_bar_background', 'none', option_type=to_color_or_none, long_text=_('''
+Background color for the tab bar. Defaults to using the terminal background color.'''))
 
 # }}}
 
@@ -742,7 +870,8 @@ o('background_opacity', 1.0, option_type=unit_float, long_text=_('''
 The opacity of the background. A number between 0 and 1, where 1 is opaque and
 0 is fully transparent.  This will only work if supported by the OS (for
 instance, when using a compositor under X11). Note that it only sets the
-default background color's opacity. This is so that things like the status bar
+background color's opacity in cells that have the same background color as
+the default terminal background. This is so that things like the status bar
 in vim, powerline prompts, etc. still look good.  But it means that if you use
 a color theme with a background color in your editor, it will not be rendered
 as transparent.  Instead you should change the default background color in your
@@ -754,10 +883,38 @@ of windows set :opt:`dynamic_background_opacity` to :code:`yes` (this is off by
 default as it has a performance cost)
 '''))
 
+
+def config_or_absolute_path(x: str) -> Optional[str]:
+    if x.lower() == 'none':
+        return None
+    x = os.path.expanduser(x)
+    x = os.path.expandvars(x)
+    if not os.path.isabs(x):
+        x = os.path.join(config_dir, x)
+    return x
+
+
+o('background_image', 'none', option_type=config_or_absolute_path, long_text=_('''
+Path to a background image. Must be in PNG format.'''))
+
+o('background_image_layout', 'tiled', option_type=choices('tiled', 'scaled', 'mirror-tiled'), long_text=_('''
+Whether to tile or scale the background image.'''))
+
+o('background_image_linear', False, long_text=_('''
+When background image is scaled, whether linear interpolation should be used.'''))
+
 o('dynamic_background_opacity', False, long_text=_('''
 Allow changing of the :opt:`background_opacity` dynamically, using either keyboard
 shortcuts (:sc:`increase_background_opacity` and :sc:`decrease_background_opacity`)
 or the remote control facility.
+'''))
+
+o('background_tint', 0.0, option_type=unit_float, long_text=_('''
+How much to tint the background image by the background color. The tint is applied
+only under the text area, not margin/borders. Makes it easier to read the text.
+Tinting is done using the current background color for each window. This setting
+applies only if :opt:`background_opacity` is set and transparent windows are supported
+or :opt:`background_image` is set.
 '''))
 
 o('dim_opacity', 0.75, option_type=unit_float, long_text=_('''
@@ -765,9 +922,10 @@ How much to dim text that has the DIM/FAINT attribute set. One means no dimming 
 zero means fully dimmed (i.e. invisible).'''))
 
 
-def selection_foreground(x):
+def selection_foreground(x: str) -> Optional[Color]:
     if x.lower() != 'none':
         return to_color(x)
+    return None
 
 
 o('selection_foreground', '#000000', option_type=selection_foreground, long_text=_('''
@@ -800,6 +958,12 @@ o('color14', '#14ffff', option_type=to_color)
 o('color7', '#dddddd', long_text=_('white'), option_type=to_color)
 o('color15', '#ffffff', option_type=to_color)
 
+o('mark1_foreground', 'black', long_text=_('Color for marks of type 1'), option_type=to_color)
+o('mark1_background', '#98d3cb', long_text=_('Color for marks of type 1 (light steel blue)'), option_type=to_color)
+o('mark2_foreground', 'black', long_text=_('Color for marks of type 2'), option_type=to_color)
+o('mark2_background', '#f2dcd3', long_text=_('Color for marks of type 1 (beige)'), option_type=to_color)
+o('mark3_foreground', 'black', long_text=_('Color for marks of type 3'), option_type=to_color)
+o('mark3_background', '#f274bc', long_text=_('Color for marks of type 1 (violet)'), option_type=to_color)
 dfctl = defines.default_color_table()
 for i in range(16, 256):
     o('color{}'.format(i), color_as_sharp(color_from_int(dfctl[i])), option_type=to_color, add_to_docs=False)
@@ -830,7 +994,7 @@ terminal can fail silently because their stdout/stderr/stdin no longer work.
 '''))
 
 
-def allow_remote_control(x):
+def allow_remote_control(x: str) -> str:
     if x != 'socket-only':
         x = 'y' if to_bool(x) else 'n'
     return x
@@ -868,17 +1032,7 @@ The default is to check every 24 hrs, set to zero to disable.
 '''))
 
 
-def startup_session(x):
-    if x.lower() == 'none':
-        return
-    x = os.path.expanduser(x)
-    x = os.path.expandvars(x)
-    if not os.path.isabs(x):
-        x = os.path.join(config_dir, x)
-    return x
-
-
-o('startup_session', 'none', option_type=startup_session, long_text=_('''
+o('startup_session', 'none', option_type=config_or_absolute_path, long_text=_('''
 Path to a session file to use for all kitty instances. Can be overridden
 by using the :option:`kitty --session` command line option for individual
 instances. See :ref:`sessions` in the kitty documentation for details. Note
@@ -886,7 +1040,12 @@ that relative paths are interpreted with respect to the kitty config directory.
 Environment variables in the path are expanded.
 '''))
 
-o('clipboard_control', 'write-clipboard write-primary', option_type=lambda x: frozenset(x.lower().split()), long_text=_('''
+
+def clipboard_control(x: str) -> FrozenSet[str]:
+    return frozenset(x.lower().split())
+
+
+o('clipboard_control', 'write-clipboard write-primary', option_type=clipboard_control, long_text=_('''
 Allow programs running in kitty to read and write from the clipboard. You can
 control exactly which actions are allowed. The set of possible actions is:
 write-clipboard read-clipboard write-primary read-primary. You can
@@ -912,7 +1071,7 @@ key-presses, to colors, to various advanced features may not work.
 g('os')  # {{{
 
 
-def macos_titlebar_color(x):
+def macos_titlebar_color(x: str) -> int:
     x = x.strip('"')
     if x == 'system':
         return 0
@@ -933,7 +1092,7 @@ probably better off just hiding the titlebar with :opt:`hide_window_decorations`
 '''))
 
 
-def macos_option_as_alt(x):
+def macos_option_as_alt(x: str) -> int:
     x = x.lower()
     if x == 'both':
         return 0b11
@@ -1026,7 +1185,8 @@ to zero for all mappings, including the builtin ones.
 g('shortcuts.clipboard')  # {{{
 k('copy_to_clipboard', 'kitty_mod+c', 'copy_to_clipboard', _('Copy to clipboard'), long_text=_('''
 There is also a :code:`copy_or_interrupt` action that can be optionally mapped to :kbd:`Ctrl+c`.
-It will copy only if there is a selection and send an interrupt otherwise.'''))
+It will copy only if there is a selection and send an interrupt otherwise. Similarly, :code:`copy_and_clear_or_interrupt`
+will copy and clear the selection or send an interrupt if there is no selection.'''))
 if is_macos:
     k('copy_to_clipboard', 'cmd+c', 'copy_to_clipboard', _('Copy to clipboard'), add_to_docs=False)
 k('paste_from_clipboard', 'kitty_mod+v', 'paste_from_clipboard', _('Paste from clipboard'))
@@ -1217,6 +1377,11 @@ k('insert_selected_hash', 'kitty_mod+p>h', 'kitten hints --type hash --program -
 Select something that looks like a hash and insert it into the terminal.
 Useful with git, which uses sha1 hashes to identify commits'''))
 
+k('goto_file_line', 'kitty_mod+p>n', 'kitten hints --type linenum', _('Open the selected file at the selected line'), long_text=_('''
+Select something that looks like :code:`filename:linenum` and open it in vim at
+the specified line number.'''))
+
+
 # }}}
 
 g('shortcuts.misc')  # {{{
@@ -1276,4 +1441,9 @@ the line (same as pressing the Home key)::
 # }}}
 # }}}
 
-type_map = {o.name: o.option_type for o in all_options.values() if hasattr(o, 'option_type')}
+
+def type_convert(name: str, val: Any) -> Any:
+    o = all_options.get(name)
+    if isinstance(o, Option):
+        val = o.option_type(val)
+    return val

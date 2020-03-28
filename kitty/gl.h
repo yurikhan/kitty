@@ -35,12 +35,14 @@ typedef struct {
 void gl_init(void);
 void update_surface_size(int w, int h, GLuint offscreen_texture_id);
 void free_texture(GLuint *tex_id);
+void free_framebuffer(GLuint *fb_id);
 void remove_vao(ssize_t vao_idx);
 void init_uniforms(int program);
 GLuint program_id(int program);
 Program* program_ptr(int program);
 GLuint block_index(int program, const char *name);
 GLint block_size(int program, GLuint block_index);
+GLint get_uniform_location(int program, const char *name);
 GLint get_uniform_information(int program, const char *name, GLenum information_type);
 GLint attrib_location(int program, const char *name);
 ssize_t create_vao(void);

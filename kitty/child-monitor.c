@@ -109,7 +109,7 @@ static size_t reaped_pids_count = 0;
 #define INCREF_CHILD(x) XREF_CHILD(x, Py_INCREF)
 #define DECREF_CHILD(x) XREF_CHILD(x, Py_DECREF)
 
-// The max time (in secs) to wait for events from the window system
+// The max time to wait for events from the window system
 // before ticking over the main loop. Negative values mean wait forever.
 static monotonic_t maximum_wait = -1;
 
@@ -512,15 +512,23 @@ collect_cursor_info(CursorRenderInfo *ans, Window *w, monotonic_t now, OSWindow 
     ans->is_focused = os_window->is_focused;
 }
 
+static inline void
+change_menubar_title(PyObject *title UNUSED) {
+#ifdef __APPLE__
+    static PyObject *current_title = NULL;
+    if (title != current_title) {
+        current_title = title;
+        if (title && OPT(macos_show_window_title_in) & MENUBAR) cocoa_update_menu_bar_title(title);
+    }
+#endif
+}
+
 static inline bool
 update_window_title(Window *w, OSWindow *os_window) {
     if (w->title && w->title != os_window->window_title) {
         os_window->window_title = w->title;
         Py_INCREF(os_window->window_title);
         set_os_window_title(os_window, PyUnicode_AsUTF8(w->title));
-#ifdef __APPLE__
-        if (os_window->is_focused && (OPT(macos_show_window_title_in) & MENUBAR)) cocoa_update_menu_bar_title(w->title);
-#endif
         return true;
     }
     return false;
@@ -554,7 +562,7 @@ prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *
             *num_visible_windows += 1;
             color_type window_bg = colorprofile_to_color(WD.screen->color_profile, WD.screen->color_profile->overridden.default_bg, WD.screen->color_profile->configured.default_bg);
             if (*num_visible_windows == 1) first_window_bg = window_bg;
-            if (first_window_bg != window_bg) all_windows_have_same_bg = false;
+            if (first_window_bg != window_bg) *all_windows_have_same_bg = false;
             if (w->last_drag_scroll_at > 0) {
                 if (now - w->last_drag_scroll_at >= ms_to_monotonic_t(20ll)) {
                     if (drag_scroll(w, os_window)) {
@@ -633,7 +641,7 @@ draw_resizing_text(OSWindow *w) {
     snprintf(text, sizeof(text), "%u x %u cells", width / w->fonts_data->cell_width, height / w->fonts_data->cell_height);
     StringCanvas rendered = render_simple_text(w->fonts_data, text);
     if (rendered.canvas) {
-        draw_centered_alpha_mask(w->gvao_idx, width, height, rendered.width, rendered.height, rendered.canvas);
+        draw_centered_alpha_mask(w, width, height, rendered.width, rendered.height, rendered.canvas);
         free(rendered.canvas);
     }
 }
@@ -641,7 +649,7 @@ draw_resizing_text(OSWindow *w) {
 static inline bool
 no_render_frame_received_recently(OSWindow *w, monotonic_t now, monotonic_t max_wait) {
     bool ans = now - w->last_render_frame_received_at > max_wait;
-    if (ans) log_error("No render frame received in %f seconds, re-requesting at: %f", monotonic_t_to_s_double(max_wait), monotonic_t_to_s_double(now));
+    if (ans) log_error("No render frame received in %.2f seconds, re-requesting at: %f", monotonic_t_to_s_double(max_wait), monotonic_t_to_s_double(now));
     return ans;
 }
 
@@ -649,7 +657,7 @@ static inline void
 render(monotonic_t now, bool input_read) {
     EVDBG("input_read: %d", input_read);
     static monotonic_t last_render_at = MONOTONIC_T_MIN;
-    monotonic_t time_since_last_render = now - last_render_at;
+    monotonic_t time_since_last_render = last_render_at == MONOTONIC_T_MIN ? OPT(repaint_delay) : now - last_render_at;
     if (!input_read && time_since_last_render < OPT(repaint_delay)) {
         set_maximum_wait(OPT(repaint_delay) - time_since_last_render);
         return;
@@ -657,9 +665,11 @@ render(monotonic_t now, bool input_read) {
 
     for (size_t i = 0; i < global_state.num_os_windows; i++) {
         OSWindow *w = global_state.os_windows + i;
+        w->render_calls++;
         if (!w->num_tabs) continue;
         if (!should_os_window_be_rendered(w)) {
             update_os_window_title(w);
+            if (w->is_focused) change_menubar_title(w->window_title);
             continue;
         }
         if (USE_RENDER_FRAMES && w->render_state != RENDER_FRAME_READY) {
@@ -688,7 +698,9 @@ render(monotonic_t now, bool input_read) {
         if (!w->fonts_data) { log_error("No fonts data found for window id: %llu", w->id); continue; }
         if (prepare_to_render_os_window(w, now, &active_window_id, &active_window_bg, &num_visible_windows, &all_windows_have_same_bg)) needs_render = true;
         if (w->last_active_window_id != active_window_id || w->last_active_tab != w->active_tab || w->focused_at_last_render != w->is_focused) needs_render = true;
+        if (w->render_calls < 3 && w->bgimage && w->bgimage->texture_id) needs_render = true;
         if (needs_render) render_os_window(w, now, active_window_id, active_window_bg, num_visible_windows, all_windows_have_same_bg);
+        if (w->is_focused) change_menubar_title(w->window_title);
     }
     last_render_at = now;
 #undef TD
@@ -916,10 +928,14 @@ process_global_state(void *data) {
     ChildMonitor *self = data;
     maximum_wait = -1;
     bool state_check_timer_enabled = false;
+    bool input_read = false;
 
     monotonic_t now = monotonic();
-    if (global_state.has_pending_resizes) process_pending_resizes(now);
-    bool input_read = parse_input(self);
+    if (global_state.has_pending_resizes) {
+        process_pending_resizes(now);
+        input_read = true;
+    }
+    if (parse_input(self)) input_read = true;
     render(now, input_read);
 #ifdef __APPLE__
         if (cocoa_pending_actions) {
@@ -1551,12 +1567,23 @@ safe_pipe(PyObject *self UNUSED, PyObject *args) {
     return Py_BuildValue("ii", fds[0], fds[1]);
 }
 
+static PyObject*
+cocoa_set_menubar_title(PyObject *self UNUSED, PyObject *args UNUSED) {
+#ifdef __APPLE__
+    PyObject *title = NULL;
+    if (!PyArg_ParseTuple(args, "U", &title)) return NULL;
+    change_menubar_title(title);
+#endif
+    Py_RETURN_NONE;
+}
+
 static PyMethodDef module_methods[] = {
     METHODB(safe_pipe, METH_VARARGS),
     {"add_timer", (PyCFunction)add_python_timer, METH_VARARGS, ""},
     {"remove_timer", (PyCFunction)remove_python_timer, METH_VARARGS, ""},
     METHODB(monitor_pid, METH_VARARGS),
     {"set_iutf8_winid", (PyCFunction)pyset_iutf8, METH_VARARGS, ""},
+    METHODB(cocoa_set_menubar_title, METH_VARARGS),
     {NULL}  /* Sentinel */
 };
 

@@ -2,44 +2,67 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
+import errno
 import os
 import pwd
 import sys
-from collections import namedtuple
 from contextlib import suppress
+from functools import lru_cache
+from typing import NamedTuple, Optional, Set
 
-appname = 'kitty'
-version = (0, 15, 0)
-str_version = '.'.join(map(str, version))
+from .options_stub import Options
+
+
+class Version(NamedTuple):
+    major: int
+    minor: int
+    patch: int
+
+
+appname: str = 'kitty'
+version: Version = Version(0, 17, 1)
+str_version: str = '.'.join(map(str, version))
 _plat = sys.platform.lower()
-is_macos = 'darwin' in _plat
+is_macos: bool = 'darwin' in _plat
 base = os.path.dirname(os.path.abspath(__file__))
 
 
-ScreenGeometry = namedtuple('ScreenGeometry', 'xstart ystart xnum ynum dx dy')
-WindowGeometry = namedtuple('WindowGeometry', 'left top right bottom xnum ynum')
+class ScreenGeometry(NamedTuple):
+    xstart: float
+    ystart: float
+    xnum: int
+    ynum: int
+    dx: float
+    dy: float
 
 
-def kitty_exe():
-    ans = getattr(kitty_exe, 'ans', None)
-    if ans is None:
-        rpath = sys._xoptions.get('bundle_exe_dir')
-        if not rpath:
-            items = filter(None, os.environ.get('PATH', '').split(os.pathsep))
-            seen = set()
-            for candidate in items:
-                if candidate not in seen:
-                    seen.add(candidate)
-                    if os.access(os.path.join(candidate, 'kitty'), os.X_OK):
-                        rpath = candidate
-                        break
-            else:
-                rpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'launcher')
-        ans = kitty_exe.ans = os.path.join(rpath, 'kitty')
-    return ans
+class WindowGeometry(NamedTuple):
+    left: int
+    top: int
+    right: int
+    bottom: int
+    xnum: int
+    ynum: int
 
 
-def _get_config_dir():
+@lru_cache(maxsize=2)
+def kitty_exe() -> str:
+    rpath = sys._xoptions.get('bundle_exe_dir')
+    if not rpath:
+        items = filter(None, os.environ.get('PATH', '').split(os.pathsep))
+        seen: Set[str] = set()
+        for candidate in items:
+            if candidate not in seen:
+                seen.add(candidate)
+                if os.access(os.path.join(candidate, 'kitty'), os.X_OK):
+                    rpath = candidate
+                    break
+        else:
+            rpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'launcher')
+    return os.path.join(rpath, 'kitty')
+
+
+def _get_config_dir() -> str:
     if 'KITTY_CONFIG_DIRECTORY' in os.environ:
         return os.path.abspath(os.path.expanduser(os.environ['KITTY_CONFIG_DIRECTORY']))
 
@@ -57,6 +80,17 @@ def _get_config_dir():
             if os.access(q, os.W_OK) and os.path.exists(os.path.join(q, 'kitty.conf')):
                 return q
 
+    def make_tmp_conf() -> None:
+        import tempfile
+        import atexit
+        ans = tempfile.mkdtemp(prefix='kitty-conf-')
+
+        def cleanup() -> None:
+            import shutil
+            with suppress(Exception):
+                shutil.rmtree(ans)
+        atexit.register(cleanup)
+
     candidate = os.path.abspath(os.path.expanduser(os.environ.get('XDG_CONFIG_HOME') or '~/.config'))
     ans = os.path.join(candidate, appname)
     try:
@@ -64,15 +98,11 @@ def _get_config_dir():
     except FileExistsError:
         raise SystemExit('A file {} already exists. It must be a directory, not a file.'.format(ans))
     except PermissionError:
-        import tempfile
-        import atexit
-        ans = tempfile.mkdtemp(prefix='kitty-conf-')
-
-        def cleanup():
-            import shutil
-            with suppress(Exception):
-                shutil.rmtree(ans)
-        atexit.register(cleanup)
+        make_tmp_conf()
+    except OSError as err:
+        if err.errno != errno.EROFS:  # Error other than read-only file system
+            raise
+        make_tmp_conf()
     return ans
 
 
@@ -81,7 +111,8 @@ del _get_config_dir
 defconf = os.path.join(config_dir, 'kitty.conf')
 
 
-def _get_cache_dir():
+@lru_cache(maxsize=2)
+def cache_dir() -> str:
     if 'KITTY_CACHE_DIRECTORY' in os.environ:
         candidate = os.path.abspath(os.environ['KITTY_CACHE_DIRECTORY'])
     elif is_macos:
@@ -93,25 +124,11 @@ def _get_cache_dir():
     return candidate
 
 
-def cache_dir():
-    ans = getattr(cache_dir, 'ans', None)
-    if ans is None:
-        ans = cache_dir.ans = _get_cache_dir()
-    return ans
-
-
-def get_boss():
-    return get_boss.boss
-
-
-def set_boss(m):
-    from .fast_data_types import set_boss as set_c_boss
-    get_boss.boss = m
-    set_c_boss(m)
-
-
-def wakeup():
-    get_boss.boss.child_monitor.wakeup()
+def wakeup() -> None:
+    from .fast_data_types import get_boss
+    b = get_boss()
+    if b is not None:
+        b.child_monitor.wakeup()
 
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -127,11 +144,11 @@ except KeyError:
     shell_path = '/bin/sh'
 
 
-def glfw_path(module):
+def glfw_path(module: str) -> str:
     return os.path.join(base, 'glfw-{}.so'.format(module))
 
 
-def detect_if_wayland_ok():
+def detect_if_wayland_ok() -> bool:
     if 'WAYLAND_DISPLAY' not in os.environ:
         return False
     if 'KITTY_DISABLE_WAYLAND' in os.environ:
@@ -161,11 +178,11 @@ def detect_if_wayland_ok():
     return ans == b'YES'
 
 
-def is_wayland(opts=None):
+def is_wayland(opts: Optional[Options] = None) -> bool:
     if is_macos:
         return False
     if opts is None:
-        return is_wayland.ans
+        return bool(getattr(is_wayland, 'ans'))
     if opts.linux_display_server == 'auto':
         ans = detect_if_wayland_ok()
     else:
@@ -175,3 +192,9 @@ def is_wayland(opts=None):
 
 
 supports_primary_selection = not is_macos
+
+
+def running_in_kitty(set_val: Optional[bool] = None) -> bool:
+    if set_val is not None:
+        setattr(running_in_kitty, 'ans', set_val)
+    return bool(getattr(running_in_kitty, 'ans', False))

@@ -132,6 +132,7 @@ typedef enum VkStructureType
     VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR = 1000006000,
     VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR = 1000009000,
     VK_STRUCTURE_TYPE_MACOS_SURFACE_CREATE_INFO_MVK = 1000123000,
+    VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT = 1000217000,
     VK_STRUCTURE_TYPE_MAX_ENUM = 0x7FFFFFFF
 } VkStructureType;
 
@@ -418,6 +419,7 @@ struct _GLFWwindow
     int                 minwidth, minheight;
     int                 maxwidth, maxheight;
     int                 numer, denom;
+    int                 widthincr, heightincr;
 
     bool                stickyKeys;
     bool                stickyMouseButtons;
@@ -575,12 +577,6 @@ struct _GLFWlibrary
     _GLFWmutex          errorLock;
 
     struct {
-        uint64_t        offset;
-        // This is defined in the platform's time.h
-        _GLFW_PLATFORM_LIBRARY_TIMER_STATE;
-    } timer;
-
-    struct {
         bool            available;
         void*           handle;
         char*           extensions[2];
@@ -593,6 +589,7 @@ struct _GLFWlibrary
         bool            KHR_win32_surface;
 #elif defined(_GLFW_COCOA)
         bool            MVK_macos_surface;
+        bool            EXT_metal_surface;
 #elif defined(_GLFW_X11)
         bool            KHR_xlib_surface;
         bool            KHR_xcb_surface;
@@ -663,9 +660,6 @@ const char* _glfwPlatformGetPrimarySelectionString(void);
 int _glfwPlatformPollJoystick(_GLFWjoystick* js, int mode);
 void _glfwPlatformUpdateGamepadGUID(char* guid);
 
-uint64_t _glfwPlatformGetTimerValue(void);
-uint64_t _glfwPlatformGetTimerFrequency(void);
-
 int _glfwPlatformCreateWindow(_GLFWwindow* window,
                               const _GLFWwndconfig* wndconfig,
                               const _GLFWctxconfig* ctxconfig,
@@ -682,6 +676,7 @@ void _glfwPlatformSetWindowSizeLimits(_GLFWwindow* window,
                                       int minwidth, int minheight,
                                       int maxwidth, int maxheight);
 void _glfwPlatformSetWindowAspectRatio(_GLFWwindow* window, int numer, int denom);
+void _glfwPlatformSetWindowSizeIncrements(_GLFWwindow* window, int widthincr, int heightincr);
 void _glfwPlatformGetFramebufferSize(_GLFWwindow* window, int* width, int* height);
 void _glfwInputLiveResize(_GLFWwindow* window, bool started);
 void _glfwPlatformGetWindowFrameSize(_GLFWwindow* window,
@@ -764,7 +759,7 @@ void _glfwInputScroll(_GLFWwindow* window, double xoffset, double yoffset, int f
 void _glfwInputMouseClick(_GLFWwindow* window, int button, int action, int mods);
 void _glfwInputCursorPos(_GLFWwindow* window, double xpos, double ypos);
 void _glfwInputCursorEnter(_GLFWwindow* window, bool entered);
-void _glfwInputDrop(_GLFWwindow* window, int count, const char** names);
+int _glfwInputDrop(_GLFWwindow* window, const char *mime, const char *text, size_t sz);
 void _glfwInputJoystick(_GLFWjoystick* js, int event);
 void _glfwInputJoystickAxis(_GLFWjoystick* js, int axis, float value);
 void _glfwInputJoystickButton(_GLFWjoystick* js, int button, char value);

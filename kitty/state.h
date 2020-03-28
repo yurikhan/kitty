@@ -13,12 +13,20 @@
 
 typedef enum { LEFT_EDGE, TOP_EDGE, RIGHT_EDGE, BOTTOM_EDGE } Edge;
 typedef enum { RESIZE_DRAW_STATIC, RESIZE_DRAW_SCALED, RESIZE_DRAW_BLANK, RESIZE_DRAW_SIZE } ResizeDrawStrategy;
+typedef enum { REPEAT_MIRROR, REPEAT_CLAMP, REPEAT_DEFAULT } RepeatStrategy;
+
+typedef struct {
+    char_type string[16];
+    size_t len;
+} UrlPrefix;
 
 typedef struct {
     monotonic_t visual_bell_duration, cursor_blink_interval, cursor_stop_blinking_after, mouse_hide_wait, click_interval;
     double wheel_scroll_multiplier, touch_scroll_multiplier;
     bool enable_audio_bell;
     CursorShape cursor_shape;
+    float cursor_beam_thickness;
+    float cursor_underline_thickness;
     unsigned int open_url_modifiers;
     unsigned int rectangle_select_modifiers;
     unsigned int terminal_select_modifiers;
@@ -26,8 +34,10 @@ typedef struct {
     unsigned int scrollback_pager_history_size;
     char_type select_by_word_characters[256]; size_t select_by_word_characters_count;
     color_type url_color, background, foreground, active_border_color, inactive_border_color, bell_border_color;
+    color_type mark1_foreground, mark1_background, mark2_foreground, mark2_background, mark3_foreground, mark3_background;
     monotonic_t repaint_delay, input_delay;
-    bool focus_follows_mouse, hide_window_decorations;
+    bool focus_follows_mouse;
+    unsigned int hide_window_decorations;
     bool macos_hide_from_tasks, macos_quit_when_last_window_closed, macos_window_resizable, macos_traditional_fullscreen;
     unsigned int macos_option_as_alt;
     float macos_thicken_font;
@@ -35,19 +45,31 @@ typedef struct {
     int adjust_line_height_px, adjust_column_width_px;
     float adjust_line_height_frac, adjust_column_width_frac;
     float background_opacity, dim_opacity;
+
+    char* background_image;
+    BackgroundImageLayout background_image_layout;
+    bool background_image_linear;
+    float background_tint;
+
     bool dynamic_background_opacity;
     float inactive_text_alpha;
     float window_padding_width;
     Edge tab_bar_edge;
     unsigned long tab_bar_min_tabs;
     DisableLigature disable_ligatures;
+    bool force_ltr;
     ResizeDrawStrategy resize_draw_strategy;
+    bool resize_in_steps;
     bool sync_to_monitor;
     bool close_on_child_death;
     bool window_alert_on_bell;
     bool debug_keyboard;
     monotonic_t resize_debounce_time;
     MouseShape pointer_shape_when_grabbed;
+    struct {
+        UrlPrefix *values;
+        size_t num, max_prefix_len;
+    } url_prefixes;
 } Options;
 
 typedef struct {
@@ -82,6 +104,7 @@ typedef struct {
     struct {
         unsigned int cell_x, cell_y;
         double x, y;
+        bool in_left_half_of_cell;
     } mouse_pos;
     WindowGeometry geometry;
     ClickQueue click_queue;
@@ -127,10 +150,12 @@ typedef struct {
 typedef struct {
     void *handle;
     id_type id;
+    uint32_t offscreen_framebuffer;
     OSWindowGeometry before_fullscreen;
     int viewport_width, viewport_height, window_width, window_height;
     double viewport_x_ratio, viewport_y_ratio;
     Tab *tabs;
+    BackgroundImage *bgimage;
     unsigned int active_tab, num_tabs, capacity, last_active_tab, last_num_tabs, last_active_window_id;
     bool focused_at_last_render, needs_render;
     ScreenRenderData tab_bar_render_data;
@@ -153,6 +178,7 @@ typedef struct {
     id_type temp_font_group_id;
     enum RENDER_STATE render_state;
     monotonic_t last_render_frame_received_at;
+    uint64_t render_calls;
     id_type last_focused_counter;
     ssize_t gvao_idx;
 } OSWindow;
@@ -163,6 +189,7 @@ typedef struct {
 
     id_type os_window_id_counter, tab_id_counter, window_id_counter;
     PyObject *boss;
+    BackgroundImage *bgimage;
     OSWindow *os_windows;
     size_t num_os_windows, capacity;
     OSWindow *callback_os_window;
@@ -214,10 +241,11 @@ ssize_t create_graphics_vao(void);
 ssize_t create_border_vao(void);
 bool send_cell_data_to_gpu(ssize_t, ssize_t, float, float, float, float, Screen *, OSWindow *);
 void draw_cells(ssize_t, ssize_t, float, float, float, float, Screen *, OSWindow *, bool, bool);
-void draw_centered_alpha_mask(ssize_t gvao_idx, size_t screen_width, size_t screen_height, size_t width, size_t height, uint8_t *canvas);
+void draw_centered_alpha_mask(OSWindow *w, size_t screen_width, size_t screen_height, size_t width, size_t height, uint8_t *canvas);
 void update_surface_size(int, int, uint32_t);
 void free_texture(uint32_t*);
-void send_image_to_gpu(uint32_t*, const void*, int32_t, int32_t, bool, bool);
+void free_framebuffer(uint32_t*);
+void send_image_to_gpu(uint32_t*, const void*, int32_t, int32_t, bool, bool, bool, RepeatStrategy);
 void send_sprite_to_gpu(FONTS_DATA_HANDLE fg, unsigned int, unsigned int, unsigned int, pixel*);
 void blank_canvas(float, color_type);
 void blank_os_window(OSWindow *);
@@ -225,7 +253,7 @@ void set_titlebar_color(OSWindow *w, color_type color);
 FONTS_DATA_HANDLE load_fonts_data(double, double, double);
 void send_prerendered_sprites_for_window(OSWindow *w);
 #ifdef __APPLE__
-void get_cocoa_key_equivalent(int, int, unsigned short*, int*);
+void get_cocoa_key_equivalent(int, int, char *key, size_t key_sz, int*);
 typedef enum {
     PREFERENCES_WINDOW = 1,
     NEW_OS_WINDOW = 2,
@@ -245,3 +273,4 @@ void remove_main_loop_timer(id_type timer_id);
 void update_main_loop_timer(id_type timer_id, monotonic_t interval, bool enabled);
 void run_main_loop(tick_callback_fun, void*);
 void stop_main_loop(void);
+void os_window_update_size_increments(OSWindow *window);

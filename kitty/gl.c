@@ -81,6 +81,11 @@ free_texture(GLuint *tex_id) {
     *tex_id = 0;
 }
 
+void
+free_framebuffer(GLuint *fb_id) {
+    glDeleteFramebuffers(1, fb_id);
+    *fb_id = 0;
+}
 
 // }}}
 
@@ -124,6 +129,12 @@ init_uniforms(int program) {
         u->location = glGetUniformLocation(p->id, u->name);
         u->idx = i;
     }
+}
+
+GLint
+get_uniform_location(int program, const char *name) {
+    Program *p = programs + program;
+    return glGetUniformLocation(p->id, name);
 }
 
 GLint

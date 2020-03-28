@@ -21,12 +21,14 @@ typedef struct {
 
 typedef struct {
     unsigned int x, y;
+    bool in_left_half_of_cell;
 } SelectionBoundary;
 
 typedef enum SelectionExtendModes { EXTEND_CELL, EXTEND_WORD, EXTEND_LINE } SelectionExtendMode;
 
 typedef struct {
-    unsigned int start_x, start_y, start_scrolled_by, end_x, end_y, end_scrolled_by;
+    SelectionBoundary start, end, input_start, input_current;
+    unsigned int start_scrolled_by, end_scrolled_by;
     bool in_progress, rectangle_select;
     SelectionExtendMode extend_mode;
 } Selection;
@@ -61,22 +63,31 @@ typedef struct {
     index_type xstart, ynum, xnum;
 } OverlayLine;
 
+typedef struct {
+    index_type x, x_limit;
+} XRange;
+
+typedef struct {
+    int y, y_limit;
+    XRange first, body, last;
+} IterationData;
 
 typedef struct {
     PyObject_HEAD
 
-    unsigned int columns, lines, margin_top, margin_bottom, charset, scrolled_by, last_selection_scrolled_by;
-    unsigned int last_rendered_cursor_x, last_rendered_cursor_y;
+    unsigned int columns, lines, margin_top, margin_bottom, charset, scrolled_by;
     double pending_scroll_pixels;
     CellPixelSize cell_size;
     OverlayLine overlay_line;
     id_type window_id;
     uint32_t utf8_state, utf8_codepoint, *g0_charset, *g1_charset, *g_charset;
     unsigned int current_charset;
-    Selection selection;
-    SelectionBoundary last_rendered_selection_start, last_rendered_selection_end, last_rendered_url_start, last_rendered_url_end;
-    Selection url_range;
-    bool use_latin1, selection_updated_once, is_dirty, scroll_changed;
+    Selection selection, url_range;
+    struct {
+        IterationData selection, url;
+        unsigned int cursor_x, cursor_y, scrolled_by;
+    } last_rendered;
+    bool use_latin1, is_dirty, scroll_changed, reload_all_gpu_data;
     Cursor *cursor;
     SavepointBuffer main_savepoints, alt_savepoints;
     SavemodesBuffer modes_savepoints;
@@ -108,7 +119,7 @@ typedef struct {
         uint8_t stop_buf[32];
     } pending_mode;
     DisableLigature disable_ligatures;
-
+    PyObject *marker;
 } Screen;
 
 
@@ -183,9 +194,9 @@ bool screen_invert_colors(Screen *self);
 void screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE, bool cursor_has_moved);
 bool screen_is_cursor_visible(Screen *self);
 bool screen_selection_range_for_line(Screen *self, index_type y, index_type *start, index_type *end);
-bool screen_selection_range_for_word(Screen *self, index_type x, index_type *, index_type *, index_type *start, index_type *end, bool);
-void screen_start_selection(Screen *self, index_type x, index_type y, bool, SelectionExtendMode);
-void screen_update_selection(Screen *self, index_type x, index_type y, bool ended);
+bool screen_selection_range_for_word(Screen *self, const index_type x, const index_type y, index_type *, index_type *, index_type *start, index_type *end, bool);
+void screen_start_selection(Screen *self, index_type x, index_type y, bool, bool, SelectionExtendMode);
+void screen_update_selection(Screen *self, index_type x, index_type y, bool in_left_half, bool ended, bool start_extended_selection);
 bool screen_history_scroll(Screen *self, int amt, bool upwards);
 Line* screen_visual_line(Screen *self, index_type y);
 unsigned long screen_current_char_width(Screen *self);
