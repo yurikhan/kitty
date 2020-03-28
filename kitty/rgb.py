@@ -1,9 +1,10 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
 import re
 from collections import namedtuple
+from contextlib import suppress
 
 Color = namedtuple('Color', 'red green blue')
 
@@ -62,13 +63,11 @@ def to_color(raw, validate=False):
     if ans is not None:
         return ans
     val = None
-    try:
+    with suppress(Exception):
         if raw.startswith('#'):
             val = parse_sharp(raw[1:])
         elif raw[:4].lower() == 'rgb:':
             val = parse_rgb(raw[4:])
-    except Exception:
-        pass
     if val is None and validate:
         raise ValueError('Invalid color name: {}'.format(raw))
     return val
@@ -836,14 +835,15 @@ if __name__ == '__main__':
     import sys
     import pprint
     data = {}
-    for line in open(sys.argv[-1]):
-        line = line.strip()
-        if not line or line.startswith('!'):
-            continue
-        parts = line.split()
-        r, g, b = map(int, parts[:3])
-        name = ' '.join(parts[3:]).lower()
-        data[name] = data[name.replace(' ', '')] = r, g, b
+    with open(sys.argv[-1]) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('!'):
+                continue
+            parts = line.split()
+            r, g, b = map(int, parts[:3])
+            name = ' '.join(parts[3:]).lower()
+            data[name] = data[name.replace(' ', '')] = r, g, b
     data = pprint.pformat(data).replace('{', '{\n ').replace('(', 'Color(')
     with open(__file__, 'r+') as src:
         raw = src.read()

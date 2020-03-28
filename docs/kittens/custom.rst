@@ -43,6 +43,8 @@ Now in :file:`kitty.conf` add the lines::
 Start kitty and press :kbd:`ctrl+k` and you should see the kitten running.
 The best way to develop your own kittens is to modify one of the built in
 kittens. Look in the kittens sub-directory of the kitty source code for those.
+Or see below for a list of :ref:`third-party kittens <external_kittens>`,
+that other kitty users have created.
 
 
 Passing arguments to kittens
@@ -126,4 +128,39 @@ layout, by simply adding the line::
     boss.toggle_fullscreen()
 
 
-to the ``handle_result()`` function, above.
+To the ``handle_result()`` function, above.
+
+
+Debugging kittens
+--------------------
+
+The part of the kitten that runs in ``main()`` is just a normal program and
+the output of print statements will be visible in the kitten window. Or
+alternately, you can use::
+
+    from kittens.tui.loop import debug
+    debug('whatever')
+
+The ``debug()`` function is just like ``print()`` except that the output
+will appear in the ``STDOUT`` of the kitty process inside which the kitten is
+running.
+
+The ``handle_result()`` part of the kitten runs inside the kitty process.
+The output of print statements will go to the ``STDOUT`` of the kitty process.
+So if you run kitty from another kitty instance, the output will be visible
+in the first kitty instance.
+
+.. _external_kittens:
+
+Kittens created by kitty users
+---------------------------------------------
+
+`vim-kitty-navigator <https://github.com/knubie/vim-kitty-navigator>`_
+   Allows you to navigate seamlessly between vim and kitty splits using a consistent set of hotkeys.
+
+`smart-scroll <https://github.com/yurikhan/kitty-smart-scroll>`_
+   Makes the kitty scroll bindings work in full screen applications
+
+`insert password <https://github.com/kovidgoyal/kitty/issues/1222>`_
+   Insert a password from a CLI password manager, taking care to only do it at
+   a password prompt.

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -18,7 +18,7 @@ worker_processes = []
 
 
 def find_differ():
-    if shutil.which('git'):
+    if shutil.which('git') and subprocess.Popen(['git', '--help'], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL).wait() == 0:
         return GIT_DIFF
     if shutil.which('diff'):
         return DIFF_DIFF

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -85,7 +85,7 @@ c('hunk_bg', '#f1f8ff')
 
 c('search_bg', '#444', long_text=_('Highlighting'))
 c('search_fg', 'white')
-c('select_bg', '#B4D5FE')
+c('select_bg', '#b4d5fe')
 c('select_fg', 'black')
 
 g('shortcuts')

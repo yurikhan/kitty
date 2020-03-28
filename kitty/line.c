@@ -8,6 +8,7 @@
 #include "data-types.h"
 #include "unicode-data.h"
 #include "lineops.h"
+#include "charsets.h"
 
 extern PyTypeObject Cursor_Type;
 
@@ -57,7 +58,7 @@ find_colon_slash(Line *self, index_type x, index_type limit) {
     index_type pos = x;
     enum URL_PARSER_STATES {ANY, FIRST_SLASH, SECOND_SLASH};
     enum URL_PARSER_STATES state = ANY;
-    limit = MAX(2, limit);
+    limit = MAX(2u, limit);
     if (pos < limit) return 0;
     do {
         char_type ch = self->cpu_cells[pos].ch;
@@ -183,14 +184,46 @@ cell_as_unicode(CPUCell *cell, bool include_cc, Py_UCS4 *buf, char_type zero_cha
 }
 
 size_t
+cell_as_unicode_for_fallback(CPUCell *cell, Py_UCS4 *buf) {
+    size_t n = 1;
+    buf[0] = cell->ch ? cell->ch : ' ';
+    if (buf[0] != '\t') {
+        for (unsigned i = 0; i < arraysz(cell->cc_idx) && cell->cc_idx[i]; i++) {
+            if (cell->cc_idx[i] != VS15 && cell->cc_idx[i] != VS16) buf[n++] = codepoint_for_mark(cell->cc_idx[i]);
+        }
+    } else buf[0] = ' ';
+    return n;
+}
+
+size_t
 cell_as_utf8(CPUCell *cell, bool include_cc, char *buf, char_type zero_char) {
-    size_t n = encode_utf8(cell->ch ? cell->ch : zero_char, buf);
+    char_type ch = cell->ch ? cell->ch : zero_char;
+    if (ch == '\t') { include_cc = false; }
+    size_t n = encode_utf8(ch, buf);
     if (include_cc) {
         for (unsigned i = 0; i < arraysz(cell->cc_idx) && cell->cc_idx[i]; i++) n += encode_utf8(codepoint_for_mark(cell->cc_idx[i]), buf + n);
     }
     buf[n] = 0;
     return n;
 }
+
+size_t
+cell_as_utf8_for_fallback(CPUCell *cell, char *buf) {
+    char_type ch = cell->ch ? cell->ch : ' ';
+    bool include_cc = true;
+    if (ch == '\t') { ch = ' '; include_cc = false; }
+    size_t n = encode_utf8(ch, buf);
+    if (include_cc) {
+        for (unsigned i = 0; i < arraysz(cell->cc_idx) && cell->cc_idx[i]; i++) {
+            if (cell->cc_idx[i] != VS15 && cell->cc_idx[i] != VS16) {
+                n += encode_utf8(codepoint_for_mark(cell->cc_idx[i]), buf + n);
+            }
+        }
+    }
+    buf[n] = 0;
+    return n;
+}
+
 
 
 PyObject*
@@ -204,7 +237,16 @@ unicode_in_range(Line *self, index_type start, index_type limit, bool include_cc
         if (ch == 0) {
             if (previous_width == 2) { previous_width = 0; continue; };
         }
-        n += cell_as_unicode(self->cpu_cells + i, include_cc, buf + n, ' ');
+        if (ch == '\t') {
+            buf[n++] = '\t';
+            unsigned num_cells_to_skip_for_tab = self->cpu_cells[i].cc_idx[0];
+            while (num_cells_to_skip_for_tab && i + 1 < limit && self->cpu_cells[i+1].ch == ' ') {
+                i++;
+                num_cells_to_skip_for_tab--;
+            }
+        } else {
+            n += cell_as_unicode(self->cpu_cells + i, include_cc, buf + n, ' ');
+        }
         previous_width = self->gpu_cells[i].attrs & WIDTH_MASK;
     }
     return PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, buf, n);
@@ -234,7 +276,7 @@ write_sgr(const char *val, Py_UCS4 *buf, index_type buflen, index_type *i) {
 }
 
 index_type
-line_as_ansi(Line *self, Py_UCS4 *buf, index_type buflen, bool *truncated) {
+line_as_ansi(Line *self, Py_UCS4 *buf, index_type buflen, bool *truncated, const GPUCell** prev_cell) {
 #define WRITE_SGR(val) { if (!write_sgr(val, buf, buflen, &i)) { *truncated = true; return i; } }
 #define WRITE_CH(val) if (i > buflen - 1) { *truncated = true; return i; } buf[i++] = val;
 
@@ -243,8 +285,9 @@ line_as_ansi(Line *self, Py_UCS4 *buf, index_type buflen, bool *truncated) {
     if (limit == 0) return 0;
     char_type previous_width = 0;
 
-    GPUCell blank_cell = { 0 };
-    GPUCell *cell, *prev_cell = &blank_cell;
+    static const GPUCell blank_cell = { 0 };
+    GPUCell *cell;
+    if (*prev_cell == NULL) *prev_cell = &blank_cell;
 
     for (index_type pos=0; pos < limit; pos++) {
         char_type ch = self->cpu_cells[pos].ch;
@@ -255,16 +298,23 @@ line_as_ansi(Line *self, Py_UCS4 *buf, index_type buflen, bool *truncated) {
 
         cell = &self->gpu_cells[pos];
 
-#define CMP_ATTRS (cell->attrs & ATTRS_MASK_WITHOUT_WIDTH) != (prev_cell->attrs & ATTRS_MASK_WITHOUT_WIDTH)
-#define CMP(x) cell->x != prev_cell->x
+#define CMP_ATTRS (cell->attrs & ATTRS_MASK_WITHOUT_WIDTH) != ((*prev_cell)->attrs & ATTRS_MASK_WITHOUT_WIDTH)
+#define CMP(x) cell->x != (*prev_cell)->x
         if (CMP_ATTRS || CMP(fg) || CMP(bg) || CMP(decoration_fg)) {
-            const char *sgr = cell_as_sgr(cell, prev_cell);
+            const char *sgr = cell_as_sgr(cell, *prev_cell);
             if (*sgr) WRITE_SGR(sgr);
         }
-        prev_cell = cell;
+        *prev_cell = cell;
         WRITE_CH(ch);
-        for(unsigned c = 0; c < arraysz(self->cpu_cells[pos].cc_idx) && self->cpu_cells[pos].cc_idx[c]; c++) {
-            WRITE_CH(codepoint_for_mark(self->cpu_cells[pos].cc_idx[c]));
+        if (ch == '\t') {
+            unsigned num_cells_to_skip_for_tab = self->cpu_cells[pos].cc_idx[0];
+            while (num_cells_to_skip_for_tab && pos + 1 < limit && self->cpu_cells[pos+1].ch == ' ') {
+                num_cells_to_skip_for_tab--; pos++;
+            }
+        } else {
+            for(unsigned c = 0; c < arraysz(self->cpu_cells[pos].cc_idx) && self->cpu_cells[pos].cc_idx[c]; c++) {
+                WRITE_CH(codepoint_for_mark(self->cpu_cells[pos].cc_idx[c]));
+            }
         }
         previous_width = cell->attrs & WIDTH_MASK;
     }
@@ -280,7 +330,8 @@ as_ansi(Line* self, PyObject *a UNUSED) {
 #define as_ansi_doc "Return the line's contents with ANSI (SGR) escape codes for formatting"
     static Py_UCS4 t[5120] = {0};
     bool truncated;
-    index_type num = line_as_ansi(self, t, 5120, &truncated);
+    const GPUCell *prev_cell = NULL;
+    index_type num = line_as_ansi(self, t, 5120, &truncated, &prev_cell);
     PyObject *ans = PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, t, num);
     return ans;
 }
@@ -565,7 +616,7 @@ decoration_as_sgr(uint8_t decoration) {
 
 
 const char*
-cell_as_sgr(GPUCell *cell, GPUCell *prev) {
+cell_as_sgr(const GPUCell *cell, const GPUCell *prev) {
     static char buf[128];
 #define SZ sizeof(buf) - (p - buf) - 2
 #define P(s) { size_t len = strlen(s); if (SZ > len) { memcpy(p, s, len); p += len; } }

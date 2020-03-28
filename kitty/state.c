@@ -10,14 +10,12 @@
 
 GlobalState global_state = {{0}};
 
-#define REMOVER(array, qid, count, structure, destroy, capacity) { \
+#define REMOVER(array, qid, count, destroy, capacity) { \
     for (size_t i = 0; i < count; i++) { \
         if (array[i].id == qid) { \
             destroy(array + i); \
-            memset(array + i, 0, sizeof(structure)); \
-            size_t num_to_right = count - 1 - i; \
-            if (num_to_right) memmove(array + i, array + i + 1, num_to_right * sizeof(structure)); \
-            (count)--; \
+            zero_at_i(array, i); \
+            remove_i_from_array(array, i, count); \
             break; \
         } \
     }}
@@ -78,9 +76,10 @@ add_os_window() {
     WITH_OS_WINDOW_REFS
     ensure_space_for(&global_state, os_windows, OSWindow, global_state.num_os_windows + 1, capacity, 1, true);
     OSWindow *ans = global_state.os_windows + global_state.num_os_windows++;
-    memset(ans, 0, sizeof(OSWindow));
+    zero_at_ptr(ans);
     ans->id = ++global_state.os_window_id_counter;
     ans->tab_bar_render_data.vao_idx = create_cell_vao();
+    ans->gvao_idx = create_graphics_vao();
     ans->background_opacity = OPT(background_opacity);
     ans->font_sz_in_pts = global_state.font_sz_in_pts;
     END_WITH_OS_WINDOW_REFS
@@ -92,7 +91,7 @@ add_tab(id_type os_window_id) {
     WITH_OS_WINDOW(os_window_id)
         make_os_window_context_current(os_window);
         ensure_space_for(os_window, tabs, Tab, os_window->num_tabs + 1, capacity, 1, true);
-        memset(os_window->tabs + os_window->num_tabs, 0, sizeof(Tab));
+        zero_at_i(os_window->tabs, os_window->num_tabs);
         os_window->tabs[os_window->num_tabs].id = ++global_state.tab_id_counter;
         os_window->tabs[os_window->num_tabs].border_rects.vao_idx = create_border_vao();
         return os_window->tabs[os_window->num_tabs++].id;
@@ -100,17 +99,29 @@ add_tab(id_type os_window_id) {
     return 0;
 }
 
+static inline void
+create_gpu_resources_for_window(Window *w) {
+    w->render_data.vao_idx = create_cell_vao();
+    w->render_data.gvao_idx = create_graphics_vao();
+}
+
+static inline void
+release_gpu_resources_for_window(Window *w) {
+    remove_vao(w->render_data.vao_idx); remove_vao(w->render_data.gvao_idx);
+    w->render_data.vao_idx = 0; w->render_data.gvao_idx = 0;
+}
+
+
 static inline id_type
 add_window(id_type os_window_id, id_type tab_id, PyObject *title) {
     WITH_TAB(os_window_id, tab_id);
         ensure_space_for(tab, windows, Window, tab->num_windows + 1, capacity, 1, true);
         make_os_window_context_current(osw);
-        memset(tab->windows + tab->num_windows, 0, sizeof(Window));
+        zero_at_i(tab->windows, tab->num_windows);
         tab->windows[tab->num_windows].id = ++global_state.window_id_counter;
         tab->windows[tab->num_windows].visible = true;
         tab->windows[tab->num_windows].title = title;
-        tab->windows[tab->num_windows].render_data.vao_idx = create_cell_vao();
-        tab->windows[tab->num_windows].render_data.gvao_idx = create_graphics_vao();
+        create_gpu_resources_for_window(&tab->windows[tab->num_windows]);
         Py_INCREF(tab->windows[tab->num_windows].title);
         return tab->windows[tab->num_windows++].id;
     END_WITH_TAB;
@@ -134,12 +145,12 @@ update_window_title(id_type os_window_id, id_type tab_id, id_type window_id, PyO
 static inline void
 destroy_window(Window *w) {
     Py_CLEAR(w->render_data.screen); Py_CLEAR(w->title);
-    remove_vao(w->render_data.vao_idx); remove_vao(w->render_data.gvao_idx);
+    release_gpu_resources_for_window(w);
 }
 
 static inline void
 remove_window_inner(Tab *tab, id_type id) {
-    REMOVER(tab->windows, id, tab->num_windows, Window, destroy_window, tab->capacity);
+    REMOVER(tab->windows, id, tab->num_windows, destroy_window, tab->capacity);
 }
 
 static inline void
@@ -147,6 +158,70 @@ remove_window(id_type os_window_id, id_type tab_id, id_type id) {
     WITH_TAB(os_window_id, tab_id);
         make_os_window_context_current(osw);
         remove_window_inner(tab, id);
+    END_WITH_TAB;
+}
+
+typedef struct {
+    unsigned int num_windows, capacity;
+    Window *windows;
+} DetachedWindows;
+
+static DetachedWindows detached_windows = {0};
+
+
+static void
+add_detached_window(Window *w) {
+    ensure_space_for(&detached_windows, windows, Window, detached_windows.num_windows + 1, capacity, 8, true);
+    memcpy(detached_windows.windows + detached_windows.num_windows++, w, sizeof(Window));
+}
+
+static inline void
+detach_window(id_type os_window_id, id_type tab_id, id_type id) {
+    WITH_TAB(os_window_id, tab_id);
+        for (size_t i = 0; i < tab->num_windows; i++) {
+            if (tab->windows[i].id == id) {
+                make_os_window_context_current(osw);
+                release_gpu_resources_for_window(&tab->windows[i]);
+                add_detached_window(tab->windows + i);
+                zero_at_i(tab->windows, i);
+                remove_i_from_array(tab->windows, i, tab->num_windows);
+                break;
+            }
+        }
+    END_WITH_TAB;
+}
+
+
+static inline void
+resize_screen(OSWindow *os_window, Screen *screen, bool has_graphics) {
+    if (screen) {
+        screen->cell_size.width = os_window->fonts_data->cell_width;
+        screen->cell_size.height = os_window->fonts_data->cell_height;
+        screen_dirty_sprite_positions(screen);
+        if (has_graphics) screen_rescale_images(screen);
+    }
+}
+
+static inline void
+attach_window(id_type os_window_id, id_type tab_id, id_type id) {
+    WITH_TAB(os_window_id, tab_id);
+        for (size_t i = 0; i < detached_windows.num_windows; i++) {
+            if (detached_windows.windows[i].id == id) {
+                ensure_space_for(tab, windows, Window, tab->num_windows + 1, capacity, 1, true);
+                Window *w = tab->windows + tab->num_windows++;
+                memcpy(w, detached_windows.windows + i, sizeof(Window));
+                zero_at_i(detached_windows.windows, i);
+                remove_i_from_array(detached_windows.windows, i, detached_windows.num_windows);
+                make_os_window_context_current(osw);
+                create_gpu_resources_for_window(w);
+                if (
+                    w->render_data.screen->cell_size.width != osw->fonts_data->cell_width ||
+                    w->render_data.screen->cell_size.height != osw->fonts_data->cell_height
+                ) resize_screen(osw, w->render_data.screen, true);
+                else screen_dirty_sprite_positions(w->render_data.screen);
+                break;
+            }
+        }
     END_WITH_TAB;
 }
 
@@ -161,7 +236,7 @@ destroy_tab(Tab *tab) {
 static inline void
 remove_tab_inner(OSWindow *os_window, id_type id) {
     make_os_window_context_current(os_window);
-    REMOVER(os_window->tabs, id, os_window->num_tabs, Tab, destroy_tab, os_window->capacity);
+    REMOVER(os_window->tabs, id, os_window->num_tabs, destroy_tab, os_window->capacity);
 }
 
 static inline void
@@ -180,6 +255,7 @@ destroy_os_window_item(OSWindow *w) {
     Py_CLEAR(w->window_title); Py_CLEAR(w->tab_bar_render_data.screen);
     if (w->offscreen_texture_id) free_texture(&w->offscreen_texture_id);
     remove_vao(w->tab_bar_render_data.vao_idx);
+    remove_vao(w->gvao_idx);
     free(w->tabs); w->tabs = NULL;
 }
 
@@ -192,7 +268,7 @@ remove_os_window(id_type os_window_id) {
     END_WITH_OS_WINDOW
     if (found) {
         WITH_OS_WINDOW_REFS
-            REMOVER(global_state.os_windows, os_window_id, global_state.num_os_windows, OSWindow, destroy_os_window_item, global_state.capacity);
+            REMOVER(global_state.os_windows, os_window_id, global_state.num_os_windows, destroy_os_window_item, global_state.capacity);
         END_WITH_OS_WINDOW_REFS
         update_os_window_references();
     }
@@ -249,7 +325,7 @@ add_borders_rect(id_type os_window_id, id_type tab_id, uint32_t left, uint32_t t
 
 void
 os_window_regions(OSWindow *os_window, Region *central, Region *tab_bar) {
-    if (!global_state.tab_bar_hidden && os_window->num_tabs > 1) {
+    if (!global_state.tab_bar_hidden && os_window->num_tabs >= OPT(tab_bar_min_tabs)) {
         switch(OPT(tab_bar_edge)) {
             case TOP_EDGE:
                 central->left = 0; central->top = os_window->fonts_data->cell_height; central->right = os_window->viewport_width - 1;
@@ -265,7 +341,7 @@ os_window_regions(OSWindow *os_window, Region *central, Region *tab_bar) {
                 break;
         }
     } else {
-        memset(tab_bar, 0, sizeof(Region));
+        zero_at_ptr(tab_bar);
         central->left = 0; central->top = 0; central->right = os_window->viewport_width - 1;
         central->bottom = os_window->viewport_height - 1;
     }
@@ -289,22 +365,26 @@ os_window_regions(OSWindow *os_window, Region *central, Region *tab_bar) {
 #define KK5I(name) PYWRAP1(name) { id_type a, b; unsigned int c, d, e, f, g; PA("KKIIIII", &a, &b, &c, &d, &e, &f, &g); name(a, b, c, d, e, f, g); Py_RETURN_NONE; }
 #define BOOL_SET(name) PYWRAP1(set_##name) { global_state.name = PyObject_IsTrue(args); Py_RETURN_NONE; }
 
+static color_type default_color = 0;
+
 static inline color_type
 color_as_int(PyObject *color) {
+    if (color == Py_None && default_color) return default_color;
     if (!PyTuple_Check(color)) { PyErr_SetString(PyExc_TypeError, "Not a color tuple"); return 0; }
 #define I(n, s) ((PyLong_AsUnsignedLong(PyTuple_GET_ITEM(color, n)) & 0xff) << s)
     return (I(0, 16) | I(1, 8) | I(2, 0)) & 0xffffff;
 #undef I
 }
 
-static inline double
-repaint_delay(PyObject *val) {
-    return (double)(PyLong_AsUnsignedLong(val)) / 1000.0;
+static inline monotonic_t
+parse_s_double_to_monotonic_t(PyObject *val) {
+    return s_double_to_monotonic_t(PyFloat_AsDouble(val));
 }
 
-#define dict_iter(d) { \
-    PyObject *key, *value; Py_ssize_t pos = 0; \
-    while (PyDict_Next(d, &pos, &key, &value))
+static inline monotonic_t
+parse_ms_long_to_monotonic_t(PyObject *val) {
+    return ms_to_monotonic_t(PyLong_AsUnsignedLong(val));
+}
 
 static int kitty_mod = 0;
 
@@ -321,6 +401,35 @@ convert_mods(PyObject *obj) {
     return resolve_mods(PyLong_AsLong(obj));
 }
 
+static WindowTitleIn
+window_title_in(PyObject *title_in) {
+    const char *in = PyUnicode_AsUTF8(title_in);
+    switch(in[0]) {
+        case 'a': return ALL;
+        case 'w': return WINDOW;
+        case 'm': return MENUBAR;
+        case 'n': return NONE;
+        default: break;
+    }
+    return ALL;
+}
+
+static MouseShape
+pointer_shape(PyObject *shape_name) {
+    const char *name = PyUnicode_AsUTF8(shape_name);
+    switch(name[0]) {
+        case 'a': return ARROW;
+        case 'h': return HAND;
+        case 'b': return BEAM;
+        default: break;
+    }
+    return BEAM;
+}
+
+#define dict_iter(d) { \
+    PyObject *key, *value; Py_ssize_t pos = 0; \
+    while (PyDict_Next(d, &pos, &key, &value))
+
 static inline void
 set_special_keys(PyObject *dict) {
     dict_iter(dict) {
@@ -330,6 +439,11 @@ set_special_keys(PyObject *dict) {
         int glfw_key = PyLong_AsLong(PyTuple_GET_ITEM(key, 2));
         set_special_key_combo(glfw_key, mods, is_native);
     }}
+}
+
+static inline float
+PyFloat_AsFloat(PyObject *o) {
+    return (float)PyFloat_AsDouble(o);
 }
 
 PYWRAP0(next_window_id) {
@@ -351,49 +465,63 @@ PYWRAP1(set_options) {
     int is_wayland = 0, debug_gl = 0, debug_font_fallback = 0;
     PA("O|ppp", &opts, &is_wayland, &debug_gl, &debug_font_fallback);
     global_state.is_wayland = is_wayland ? true : false;
+#ifdef __APPLE__
+    global_state.has_render_frames = true;
+#endif
+    if (global_state.is_wayland) global_state.has_render_frames = true;
     global_state.debug_gl = debug_gl ? true : false;
     global_state.debug_font_fallback = debug_font_fallback ? true : false;
 #define GA(name) ret = PyObject_GetAttrString(opts, #name); if (ret == NULL) return NULL;
 #define SS(name, dest, convert) { GA(name); dest = convert(ret); Py_DECREF(ret); if (PyErr_Occurred()) return NULL; }
-#define S(name, convert) SS(name, global_state.opts.name, convert)
+#define S(name, convert) SS(name, OPT(name), convert)
     SS(kitty_mod, kitty_mod, PyLong_AsLong);
     S(hide_window_decorations, PyObject_IsTrue);
-    S(visual_bell_duration, PyFloat_AsDouble);
+    S(visual_bell_duration, parse_s_double_to_monotonic_t);
     S(enable_audio_bell, PyObject_IsTrue);
     S(focus_follows_mouse, PyObject_IsTrue);
-    S(cursor_blink_interval, PyFloat_AsDouble);
-    S(cursor_stop_blinking_after, PyFloat_AsDouble);
-    S(background_opacity, PyFloat_AsDouble);
-    S(dim_opacity, PyFloat_AsDouble);
+    S(cursor_blink_interval, parse_s_double_to_monotonic_t);
+    S(cursor_stop_blinking_after, parse_s_double_to_monotonic_t);
+    S(background_opacity, PyFloat_AsFloat);
+    S(dim_opacity, PyFloat_AsFloat);
     S(dynamic_background_opacity, PyObject_IsTrue);
-    S(inactive_text_alpha, PyFloat_AsDouble);
-    S(window_padding_width, PyFloat_AsDouble);
+    S(inactive_text_alpha, PyFloat_AsFloat);
+    S(window_padding_width, PyFloat_AsFloat);
     S(scrollback_pager_history_size, PyLong_AsUnsignedLong);
     S(cursor_shape, PyLong_AsLong);
     S(url_style, PyLong_AsUnsignedLong);
     S(tab_bar_edge, PyLong_AsLong);
-    S(mouse_hide_wait, PyFloat_AsDouble);
+    S(mouse_hide_wait, parse_s_double_to_monotonic_t);
     S(wheel_scroll_multiplier, PyFloat_AsDouble);
     S(touch_scroll_multiplier, PyFloat_AsDouble);
     S(open_url_modifiers, convert_mods);
     S(rectangle_select_modifiers, convert_mods);
-    S(click_interval, PyFloat_AsDouble);
+    S(terminal_select_modifiers, convert_mods);
+    S(click_interval, parse_s_double_to_monotonic_t);
+    S(resize_debounce_time, parse_s_double_to_monotonic_t);
     S(url_color, color_as_int);
     S(background, color_as_int);
+    S(foreground, color_as_int);
+    default_color = 0x00ff00;
     S(active_border_color, color_as_int);
+    default_color = 0;
     S(inactive_border_color, color_as_int);
     S(bell_border_color, color_as_int);
-    S(repaint_delay, repaint_delay);
-    S(input_delay, repaint_delay);
+    S(repaint_delay, parse_ms_long_to_monotonic_t);
+    S(input_delay, parse_ms_long_to_monotonic_t);
     S(sync_to_monitor, PyObject_IsTrue);
     S(close_on_child_death, PyObject_IsTrue);
     S(window_alert_on_bell, PyObject_IsTrue);
-    S(macos_option_as_alt, PyObject_IsTrue);
+    S(macos_option_as_alt, PyLong_AsUnsignedLong);
     S(macos_traditional_fullscreen, PyObject_IsTrue);
     S(macos_quit_when_last_window_closed, PyObject_IsTrue);
+    S(macos_show_window_title_in, window_title_in);
     S(macos_window_resizable, PyObject_IsTrue);
     S(macos_hide_from_tasks, PyObject_IsTrue);
-    S(macos_thicken_font, PyFloat_AsDouble);
+    S(macos_thicken_font, PyFloat_AsFloat);
+    S(tab_bar_min_tabs, PyLong_AsUnsignedLong);
+    S(disable_ligatures, PyLong_AsLong);
+    S(resize_draw_strategy, PyLong_AsLong);
+    S(pointer_shape_when_grabbed, pointer_shape);
 
     GA(tab_bar_style);
     global_state.tab_bar_hidden = PyUnicode_CompareWithASCIIString(ret, "hidden") == 0 ? true: false;
@@ -633,16 +761,6 @@ PYWRAP1(global_font_size) {
     return Py_BuildValue("d", global_state.font_sz_in_pts);
 }
 
-static inline void
-resize_screen(OSWindow *os_window, Screen *screen, bool has_graphics) {
-    if (screen) {
-        screen->cell_size.width = os_window->fonts_data->cell_width;
-        screen->cell_size.height = os_window->fonts_data->cell_height;
-        screen_dirty_sprite_positions(screen);
-        if (has_graphics) screen_rescale_images(screen);
-    }
-}
-
 PYWRAP1(os_window_font_size) {
     id_type os_window_id;
     int force = 0;
@@ -682,8 +800,8 @@ PYWRAP1(patch_global_colors) {
 #define P(name) { \
     PyObject *val = PyDict_GetItemString(spec, #name); \
     if (val) { \
-		global_state.opts.name = PyLong_AsLong(val); \
-	} \
+        OPT(name) = PyLong_AsLong(val); \
+    } \
 }
     P(active_border_color); P(inactive_border_color); P(bell_border_color);
     if (configured) {
@@ -701,6 +819,8 @@ PYWRAP0(destroy_global_data) {
 
 THREE_ID_OBJ(update_window_title)
 THREE_ID(remove_window)
+THREE_ID(detach_window)
+THREE_ID(attach_window)
 PYWRAP1(resolve_key_mods) { int mods; PA("ii", &kitty_mod, &mods); return PyLong_FromLong(resolve_mods(mods)); }
 PYWRAP1(add_tab) { return PyLong_FromUnsignedLongLong(add_tab(PyLong_AsUnsignedLongLong(args))); }
 PYWRAP1(add_window) { PyObject *title; id_type a, b; PA("KKO", &a, &b, &title); return PyLong_FromUnsignedLongLong(add_window(a, b, title)); }
@@ -728,6 +848,8 @@ static PyMethodDef module_methods[] = {
     MW(update_window_title, METH_VARARGS),
     MW(remove_tab, METH_VARARGS),
     MW(remove_window, METH_VARARGS),
+    MW(detach_window, METH_VARARGS),
+    MW(attach_window, METH_VARARGS),
     MW(set_active_tab, METH_VARARGS),
     MW(set_active_window, METH_VARARGS),
     MW(swap_tabs, METH_VARARGS),
@@ -753,6 +875,15 @@ static PyMethodDef module_methods[] = {
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 
+static void
+finalize(void) {
+    while(detached_windows.num_windows--) {
+        destroy_window(&detached_windows.windows[detached_windows.num_windows]);
+    }
+    if (detached_windows.windows) free(detached_windows.windows);
+    detached_windows.capacity = 0;
+}
+
 bool
 init_state(PyObject *module) {
     global_state.font_sz_in_pts = 11.0;
@@ -766,6 +897,10 @@ init_state(PyObject *module) {
     if (PyStructSequence_InitType2(&RegionType, &region_desc) != 0) return false;
     Py_INCREF((PyObject *) &RegionType);
     PyModule_AddObject(module, "Region", (PyObject *) &RegionType);
+    if (Py_AtExit(finalize) != 0) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to register the state at exit handler");
+        return false;
+    }
     return true;
 }
 // }}}

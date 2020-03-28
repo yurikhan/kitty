@@ -1,4 +1,51 @@
-kitty (0.13.2-1yk1) bionic; urgency=medium
+kitty (0.15.0-1) unstable; urgency=medium
+
+  * New upstream release
+    + Dynamically load canberra (for sounds) rather than linking against it.
+
+ -- James McCoy <jamessan@debian.org>  Sun, 15 Dec 2019 22:28:08 -0500
+
+kitty (0.14.6-1) unstable; urgency=medium
+
+  * New upstream release
+    + Support fonts where fontconfig reports spacing=90.  (Closes: #944558)
+  * Declare compliance with Policy 4.4.1, no changes needed
+
+ -- James McCoy <jamessan@debian.org>  Mon, 11 Nov 2019 20:18:35 -0500
+
+kitty (0.14.4-1) unstable; urgency=medium
+
+  * New upstream release
+  * control:
+    + Restrict Wayland B-D to Linux architectures
+  * Update to debhelper compat 12 and debhelper-compat Build-Depends
+  * Declare compliance with Policy 4.4.0, no changes needed
+
+ -- James McCoy <jamessan@debian.org>  Tue, 03 Sep 2019 20:52:30 -0400
+
+kitty (0.14.3-1) unstable; urgency=medium
+
+  * New upstream release
+    + Update to Unicode 12
+  * control:
+    + Add libcanberra-dev to B-D, used for term bell
+    + Add imagemagick to Suggests for icat kitten
+    + Add wayland-protocols/libwayland-dev to B-D to enable Wayland support
+  * Install a system kitty.conf to disable update checks
+  * rules:
+    + Fix name of upstream changelog file
+    + Disable compression of all the html docs
+
+ -- James McCoy <jamessan@debian.org>  Sun, 04 Aug 2019 21:59:29 -0400
+
+kitty (0.13.3-1) unstable; urgency=medium
+
+  * New upstream release
+  * Declare compliance with Policy 4.3.0, no changes needed
+
+ -- James McCoy <jamessan@debian.org>  Thu, 24 Jan 2019 23:16:31 -0500
+
+kitty (0.13.1-1) unstable; urgency=medium
 
   * New upstream release
     + Add a new option ‘tab_title_template’ to control how tab titles

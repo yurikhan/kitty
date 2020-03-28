@@ -59,6 +59,7 @@ alloc_pagerhist(unsigned int pagerhist_sz) {
     PagerHistoryBuf *ph;
     if (!pagerhist_sz) return NULL;
     ph = PyMem_Calloc(1, sizeof(PagerHistoryBuf));
+    if (!ph) return NULL;
     ph->maxsz = pagerhist_sz / sizeof(Py_UCS4);
     ph->bufsize = 1024*1024 / sizeof(Py_UCS4);
     ph->buffer = PyMem_RawMalloc(1024*1024);
@@ -66,15 +67,30 @@ alloc_pagerhist(unsigned int pagerhist_sz) {
     return ph;
 }
 
+static inline void
+free_pagerhist(HistoryBuf *self) {
+    if (self->pagerhist) PyMem_Free(self->pagerhist->buffer);
+    PyMem_Free(self->pagerhist);
+    self->pagerhist = NULL;
+}
+
 static inline bool
 pagerhist_extend(PagerHistoryBuf *ph, size_t minsz) {
     if (ph->bufsize >= ph->maxsz) return false;
-    size_t newsz = ph->bufsize + MAX(1024 * 1024, minsz);
+    size_t newsz = ph->bufsize + MAX(1024u * 1024u, minsz);
     void *newbuf = PyMem_Realloc(ph->buffer, newsz * sizeof(Py_UCS4));
     if (!newbuf) return false;
     ph->buffer = newbuf;
     ph->bufsize = newsz;
     return true;
+}
+
+static inline void
+pagerhist_clear(HistoryBuf *self) {
+    if (!self->pagerhist || !self->pagerhist->maxsz) return;
+    index_type pagerhist_sz = self->pagerhist->maxsz  * sizeof(Py_UCS4);
+    free_pagerhist(self);
+    self->pagerhist = alloc_pagerhist(pagerhist_sz);
 }
 
 static PyObject *
@@ -112,8 +128,7 @@ dealloc(HistoryBuf* self) {
         PyMem_Free(self->segments[i].line_attrs);
     }
     PyMem_Free(self->segments);
-    if (self->pagerhist) PyMem_Free(self->pagerhist->buffer);
-    PyMem_Free(self->pagerhist);
+    free_pagerhist(self);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
@@ -152,8 +167,9 @@ historybuf_mark_line_dirty(HistoryBuf *self, index_type y) {
     *p |= TEXT_DIRTY_MASK;
 }
 
-inline void
+void
 historybuf_clear(HistoryBuf *self) {
+    pagerhist_clear(self);
     self->count = 0;
     self->start_of_data = 0;
 }
@@ -163,6 +179,7 @@ pagerhist_push(HistoryBuf *self) {
     PagerHistoryBuf *ph = self->pagerhist;
     if (!ph) return;
     bool truncated;
+    const GPUCell *prev_cell = NULL;
     Line l = {.xnum=self->xnum};
     init_line(self, self->start_of_data, &l);
 #define EXPAND_IF_FULL(sz) { \
@@ -170,14 +187,14 @@ pagerhist_push(HistoryBuf *self) {
             ph->bufend = ph->end; ph->end = 0; \
         } \
 }
-    size_t sz = MAX(1024, ph->bufsize - ph->end);
+    size_t sz = MAX(1024u, ph->bufsize - ph->end);
     sz = MAX(sz, self->xnum + self->xnum);
     EXPAND_IF_FULL(sz);
     if (ph->start != ph->end && !l.continued) {
         ph->buffer[ph->end++] = '\n';
     }
     while(sz < ph->maxsz - 2) {
-        size_t num = line_as_ansi(&l, ph->buffer + ph->end, ph->bufsize - ph->end - 2, &truncated);
+        size_t num = line_as_ansi(&l, ph->buffer + ph->end, ph->bufsize - ph->end - 2, &truncated, &prev_cell);
         if (!truncated) {
             ph->end += num;
             ph->buffer[ph->end++] = '\r';
@@ -254,12 +271,13 @@ as_ansi(HistoryBuf *self, PyObject *callback) {
     static Py_UCS4 t[5120];
     Line l = {.xnum=self->xnum};
     bool truncated;
+    const GPUCell *prev_cell = NULL;
     for(unsigned int i = 0; i < self->count; i++) {
         init_line(self, i, &l);
         if (i < self->count - 1) {
             l.continued = *attrptr(self, index_of(self, i + 1)) & CONTINUED_MASK;
         } else l.continued = false;
-        index_type num = line_as_ansi(&l, t, 5120, &truncated);
+        index_type num = line_as_ansi(&l, t, 5120, &truncated, &prev_cell);
         if (!(l.continued) && num < 5119) t[num++] = 10; // 10 = \n
         PyObject *ans = PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, t, num);
         if (ans == NULL) return PyErr_NoMemory();

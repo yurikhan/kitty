@@ -6,6 +6,7 @@
 
 #pragma once
 #include "data-types.h"
+#include "monotonic.h"
 
 typedef struct {
     unsigned char action, transmission_type, compressed, delete_action;
@@ -43,14 +44,14 @@ typedef struct {
 
 typedef struct {
     uint32_t texture_id, client_id, width, height;
-    size_t internal_id;
+    id_type internal_id;
 
     bool data_loaded;
     LoadData load_data;
 
     ImageRef *refs;
     size_t refcnt, refcap;
-    double atime;
+    monotonic_t atime;
     size_t used_storage;
 } Image;
 
@@ -58,13 +59,14 @@ typedef struct {
     float vertices[16];
     uint32_t texture_id, group_count;
     int z_index;
-    size_t image_id;
+    id_type image_id;
 } ImageRenderData;
 
 typedef struct {
     PyObject_HEAD
 
-    size_t image_count, images_capacity, loading_image;
+    size_t image_count, images_capacity;
+    id_type loading_image;
     GraphicsCommand last_init_graphics_command;
     Image *images;
     size_t count, capacity;
@@ -82,10 +84,11 @@ typedef struct {
     bool has_margins;
 } ScrollData;
 
-GraphicsManager* grman_alloc();
+GraphicsManager* grman_alloc(void);
 void grman_clear(GraphicsManager*, bool, CellPixelSize fg);
 const char* grman_handle_command(GraphicsManager *self, const GraphicsCommand *g, const uint8_t *payload, Cursor *c, bool *is_dirty, CellPixelSize fg);
 bool grman_update_layers(GraphicsManager *self, unsigned int scrolled_by, float screen_left, float screen_top, float dx, float dy, unsigned int num_cols, unsigned int num_rows, CellPixelSize);
 void grman_scroll_images(GraphicsManager *self, const ScrollData*, CellPixelSize fg);
 void grman_resize(GraphicsManager*, index_type, index_type, index_type, index_type);
 void grman_rescale(GraphicsManager *self, CellPixelSize fg);
+void gpu_data_for_centered_image(ImageRenderData *ans, unsigned int screen_width_px, unsigned int screen_height_px, unsigned int width, unsigned int height);

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -153,8 +153,9 @@ class Loop:
     def __init__(self,
                  sanitize_bracketed_paste='[\x03\x04\x0e\x0f\r\x07\x7f\x8d\x8e\x8f\x90\x9b\x9d\x9e\x9f]'):
         if is_macos:
-            # On macOS PTY devices are not supported by the KqueueSelector
-            self.asycio_loop = asyncio.SelectorEventLoop(selectors.PollSelector())
+            # On macOS PTY devices are not supported by the KqueueSelector and
+            # the PollSelector is broken, causes 100% CPU usage
+            self.asycio_loop = asyncio.SelectorEventLoop(selectors.SelectSelector())
             asyncio.set_event_loop(self.asycio_loop)
         else:
             self.asycio_loop = asyncio.get_event_loop()
@@ -213,9 +214,20 @@ class Loop:
                 self.handler.on_text(chunk, self.in_bracketed_paste)
 
     def _on_dcs(self, dcs):
+        debug(dcs)
         if dcs.startswith('@kitty-cmd'):
             import json
             self.handler.on_kitty_cmd_response(json.loads(dcs[len('@kitty-cmd'):]))
+        elif dcs.startswith('1+r'):
+            from binascii import unhexlify
+            vals = dcs[3:].split(';')
+            for q in vals:
+                parts = q.split('=', 1)
+                try:
+                    name, val = parts[0], unhexlify(parts[1]).decode('utf-8', 'replace')
+                except Exception:
+                    continue
+                self.handler.on_capability_response(name, val)
 
     def _on_csi(self, csi):
         q = csi[-1]

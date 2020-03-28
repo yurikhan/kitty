@@ -22,7 +22,6 @@ from ..tui.images import (
 )
 from ..tui.operations import clear_images_on_screen, serialize_gr_command
 
-screen_size = None
 OPTIONS = '''\
 --align
 type=choices
@@ -81,7 +80,35 @@ type=bool-set
 Print out the window size as :italic:`widthxheight` (in pixels) and quit. This is a
 convenience method to query the window size if using kitty icat from a
 scripting language that cannot make termios calls.
+
+
+--stdin
+type=choices
+choices=detect,yes,no
+default=detect
+Read image data from stdin. The default is to do it automatically, when STDIN is not a terminal,
+but you can turn it off or on explicitly, if needed.
+
+
+--silent
+type=bool-set
+Do not print out anything to stdout during operation.
 '''
+
+
+screen_size = None
+
+
+def get_screen_size_function():
+    global screen_size
+    if screen_size is None:
+        screen_size = screen_size_function()
+    return screen_size
+
+
+def get_screen_size():
+    screen_size = get_screen_size_function()
+    return screen_size()
 
 
 def options_spec():
@@ -109,7 +136,7 @@ def calculate_in_cell_x_offset(width, cell_width, align):
 
 
 def set_cursor(cmd, width, height, align):
-    ss = screen_size()
+    ss = get_screen_size()
     cw = int(ss.width / ss.cols)
     num_of_cells_needed = int(ceil(width / cw))
     if num_of_cells_needed > ss.cols:
@@ -130,7 +157,7 @@ def set_cursor(cmd, width, height, align):
 
 def set_cursor_for_place(place, cmd, width, height, align):
     x = place.left + 1
-    ss = screen_size()
+    ss = get_screen_size()
     cw = int(ss.width / ss.cols)
     num_of_cells_needed = int(ceil(width / cw))
     cmd['X'] = calculate_in_cell_x_offset(width, cw, align)
@@ -176,16 +203,18 @@ def show(outfile, width, height, fmt, transmit_mode='t', align='center', place=N
 
 def process(path, args, is_tempfile):
     m = identify(path)
-    ss = screen_size()
+    ss = get_screen_size()
     available_width = args.place.width * (ss.width / ss.cols) if args.place else ss.width
     available_height = args.place.height * (ss.height / ss.rows) if args.place else 10 * m.height
     needs_scaling = m.width > available_width or m.height > available_height
     needs_scaling = needs_scaling or args.scale_up
+    file_removed = False
     if m.fmt == 'png' and not needs_scaling:
         outfile = path
         transmit_mode = 't' if is_tempfile else 'f'
         fmt = 100
         width, height = m.width, m.height
+        file_removed = transmit_mode == 't'
     else:
         fmt = 24 if m.mode == 'rgb' else 32
         transmit_mode = 't'
@@ -193,6 +222,7 @@ def process(path, args, is_tempfile):
     show(outfile, width, height, fmt, transmit_mode, align=args.align, place=args.place)
     if not args.place:
         print()  # ensure cursor is on a new line
+    return file_removed
 
 
 def scan(d):
@@ -251,12 +281,53 @@ help_text = (
         ' You can specify multiple image files and/or directories.'
         ' Directories are scanned recursively for image files. If STDIN'
         ' is not a terminal, image data will be read from it as well.'
+        ' You can also specify HTTP(S) or FTP URLs which will be'
+        ' automatically downloaded and displayed.'
 )
-usage = 'image-file ...'
+usage = 'image-file-or-url-or-directory ...'
+
+
+def process_single_item(item, args, url_pat=None, maybe_dir=True):
+    is_tempfile = False
+    file_removed = False
+    try:
+        if isinstance(item, bytes):
+            tf = NamedTemporaryFile(prefix='stdin-image-data-', delete=False)
+            tf.write(item), tf.close()
+            item = tf.name
+            is_tempfile = True
+        if url_pat is not None and url_pat.match(item) is not None:
+            from urllib.request import urlretrieve
+            with NamedTemporaryFile(prefix='url-image-data-', delete=False) as tf:
+                try:
+                    urlretrieve(item, filename=tf.name)
+                except Exception as e:
+                    raise SystemExit('Failed to download image at URL: {} with error: {}'.format(item, e))
+                item = tf.name
+            is_tempfile = True
+            file_removed = process(item, args, is_tempfile)
+        elif item.lower().startswith('file://'):
+            from urllib.parse import urlparse
+            from urllib.request import url2pathname
+            item = urlparse(item)
+            if os.sep == '\\':
+                item = item.netloc + item.path
+            else:
+                item = item.path
+            item = url2pathname(item)
+            file_removed = process(item, args, is_tempfile)
+        else:
+            if maybe_dir and os.path.isdir(item):
+                for (x, mt) in scan(item):
+                    process_single_item(x, args, url_pat=None, maybe_dir=False)
+            else:
+                file_removed = process(item, args, is_tempfile)
+    finally:
+        if is_tempfile and not file_removed:
+            os.remove(item)
 
 
 def main(args=sys.argv):
-    global screen_size
     args, items = parse_args(args[1:], options_spec, usage, help_text, '{} +kitten icat'.format(appname))
 
     if args.print_window_size:
@@ -269,13 +340,14 @@ def main(args=sys.argv):
     if not sys.stdout.isatty():
         sys.stdout = open(os.ctermid(), 'w')
     stdin_data = None
-    if not sys.stdin.isatty():
+    if args.stdin == 'yes' or (not sys.stdin.isatty() and args.stdin == 'detect'):
         stdin_data = sys.stdin.buffer.read()
-        items.insert(0, stdin_data)
+        if stdin_data:
+            items.insert(0, stdin_data)
         sys.stdin.close()
         sys.stdin = open(os.ctermid(), 'r')
 
-    screen_size = screen_size_function()
+    screen_size = get_screen_size_function()
     signal.signal(signal.SIGWINCH, lambda signum, frame: setattr(screen_size, 'changed', True))
     if screen_size().width == 0:
         if args.detect_support:
@@ -294,7 +366,7 @@ def main(args=sys.argv):
         print('file' if detect_support.has_files else 'stream', end='', file=sys.stderr)
         return
     if args.transfer_mode == 'detect':
-        if not detect_support(wait_for=args.detection_timeout):
+        if not detect_support(wait_for=args.detection_timeout, silent=args.silent):
             raise SystemExit('This terminal emulator does not support the graphics protocol, use a terminal emulator such as kitty that does support it')
     else:
         detect_support.has_files = args.transfer_mode == 'file'
@@ -307,21 +379,12 @@ def main(args=sys.argv):
         raise SystemExit('You must specify at least one file to cat')
     if args.place:
         if len(items) > 1 or (isinstance(items[0], str) and os.path.isdir(items[0])):
-            raise SystemExit('The --place option can only be used with a single image')
+            raise SystemExit(f'The --place option can only be used with a single image, not {items}')
         sys.stdout.buffer.write(b'\0337')  # save cursor
+    url_pat = re.compile(r'(?:https?|ftp)://', flags=re.I)
     for item in items:
-        is_tempfile = False
         try:
-            if isinstance(item, bytes):
-                tf = NamedTemporaryFile(prefix='stdin-image-data-', delete=False)
-                tf.write(item), tf.close()
-                item = tf.name
-                is_tempfile = True
-            if os.path.isdir(item):
-                for x in scan(item):
-                    process(item, args)
-            else:
-                process(item, args, is_tempfile)
+            process_single_item(item, args, url_pat)
         except NoImageMagick as e:
             raise SystemExit(str(e))
         except ConvertFailed as e:

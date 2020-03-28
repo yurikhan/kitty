@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPLv3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -11,6 +11,25 @@ from kittens.runner import get_kitten_cli_docs, all_kitten_names
 from .cli import options_for_completion, parse_option_spec
 from .cmds import cmap
 from .shell import options_for_cmd
+
+'''
+To add completion for a new shell, you need to:
+
+1) Add an entry to completion scripts for your shell, this is
+a simple function that calls kitty's completion code and passes the
+results to the shell's completion system. This can be output by
+`kitty +complete setup shell_name` and its output goes into
+your shell's rc file.
+
+2) Add an input_parser function, this takes the input from
+the shell for the text being completed and returns a list of words
+alongwith a boolean indicating if we are on a new word or not. This
+is passed to kitty's completion system.
+
+3) An output_serializer function that is responsible for
+taking the results from kitty's completion system and converting
+them into something your shell will understand.
+'''
 
 parsers, serializers = {}, {}
 
@@ -131,7 +150,6 @@ def bash_output_serializer(ans):
             lines.append('COMPREPLY+=({})'.format(shlex.quote(word)))
     # debug('\n'.join(lines))
     return '\n'.join(lines)
-# }}}
 
 
 @output_serializer
@@ -142,6 +160,7 @@ def fish_output_serializer(ans):
             lines.append(shlex.quote(word))
     # debug('\n'.join(lines))
     return '\n'.join(lines)
+# }}}
 
 
 def completions_for_first_word(ans, prefix, entry_points, namespaced_entry_points):
@@ -166,11 +185,37 @@ def kitty_cli_opts(ans, prefix=None):
 
 def complete_kitty_cli_arg(ans, opt, prefix):
     prefix = prefix or ''
-    if opt and opt['dest'] == 'override':
+    if not opt:
+        return
+    dest = opt['dest']
+    if dest == 'override':
         from kitty.config import option_names_for_completion
         k = 'Config directives'
         ans.match_groups[k] = {k+'=': None for k in option_names_for_completion() if k.startswith(prefix)}
         ans.no_space_groups.add(k)
+    elif dest == 'config':
+
+        def is_conf_file(x):
+            if os.path.isdir(x):
+                return True
+            return x.lower().endswith('.conf')
+
+        complete_files_and_dirs(ans, prefix, files_group_name='Config files', predicate=is_conf_file)
+    elif dest == 'session':
+        complete_files_and_dirs(ans, prefix, files_group_name='Session files')
+    elif dest == 'directory':
+        complete_files_and_dirs(ans, prefix, files_group_name='Directories', predicate=os.path.isdir)
+    elif dest == 'start_as':
+        k = 'Start as'
+        ans.match_groups[k] = {x: x for x in 'normal,fullscreen,maximized,minimized'.split(',') if x.startswith(prefix)}
+        ans.no_space_groups.add(k)
+    elif dest == 'listen_on':
+        if ':' not in prefix:
+            k = 'Address type'
+            ans.match_groups[k] = {x: x for x in ('unix:', 'tcp:') if x.startswith(prefix)}
+            ans.no_space_groups.add(k)
+        elif prefix.startswith('unix:') and not prefix.startswith('@'):
+            complete_files_and_dirs(ans, prefix[len('unix:'):], files_group_name='UNIX sockets', add_prefix='unix:')
 
 
 def complete_alias_map(ans, words, new_word, option_map, complete_args=None):
@@ -254,9 +299,12 @@ def path_completion(prefix=''):
     return dirs, files
 
 
-def complete_files_and_dirs(ans, prefix, files_group_name='Files', predicate=None):
+def complete_files_and_dirs(ans, prefix, files_group_name='Files', predicate=None, add_prefix=None):
     dirs, files = path_completion(prefix or '')
     files = filter(predicate, files)
+    if add_prefix:
+        dirs = (add_prefix + x for x in dirs)
+        files = (add_prefix + x for x in files)
 
     if dirs:
         ans.match_groups['Directories'] = dict.fromkeys(dirs)

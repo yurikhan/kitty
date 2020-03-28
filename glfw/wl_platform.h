@@ -1,5 +1,5 @@
 //========================================================================
-// GLFW 3.3 Wayland - www.glfw.org
+// GLFW 3.4 Wayland - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2014 Jonas Ådahl <jadahl@gmail.com>
 //
@@ -133,13 +133,12 @@ typedef struct _GLFWdecorationWayland
 typedef struct _GLFWwindowWayland
 {
     int                         width, height;
-    GLFWbool                    visible;
-    GLFWbool                    maximized;
-    GLFWbool                    hovered;
-    GLFWbool                    transparent;
+    bool                        visible;
+    bool                        maximized;
+    bool                        hovered;
+    bool                        transparent;
     struct wl_surface*          surface;
     struct wl_egl_window*       native;
-    struct wl_shell_surface*    shellSurface;
     struct wl_callback*         callback;
 
     struct {
@@ -157,6 +156,7 @@ typedef struct _GLFWwindowWayland
     // We need to track the monitors the window spans on to calculate the
     // optimal scaling factor.
     int                         scale;
+    bool                        initial_scale_notified;
     _GLFWmonitor**              monitors;
     int                         monitorsCount;
     int                         monitorsSize;
@@ -168,11 +168,10 @@ typedef struct _GLFWwindowWayland
 
     struct zwp_idle_inhibitor_v1*          idleInhibitor;
 
-    // This is a hack to prevent auto-iconification on creation.
-    GLFWbool                    justCreated;
+    bool                        fullscreened;
 
     struct {
-        GLFWbool                           serverSide;
+        bool                               serverSide;
         struct wl_buffer*                  buffer;
         _GLFWdecorationWayland             top, left, right, bottom;
         int                                focus;
@@ -227,7 +226,6 @@ typedef struct _GLFWlibraryWayland
     struct wl_registry*         registry;
     struct wl_compositor*       compositor;
     struct wl_subcompositor*    subcompositor;
-    struct wl_shell*            shell;
     struct wl_shm*              shm;
     struct wl_seat*             seat;
     struct wl_pointer*          pointer;
@@ -250,10 +248,11 @@ typedef struct _GLFWlibraryWayland
 
     struct wl_cursor_theme*     cursorTheme;
     struct wl_surface*          cursorSurface;
+    GLFWCursorShape             cursorPreviousShape;
     uint32_t                    pointerSerial;
 
     int32_t                     keyboardRepeatRate;
-    int32_t                     keyboardRepeatDelay;
+    monotonic_t                 keyboardRepeatDelay;
     struct {
         uint32_t                key;
         id_type                 keyRepeatTimer;
@@ -298,7 +297,7 @@ typedef struct _GLFWlibraryWayland
 typedef struct _GLFWmonitorWayland
 {
     struct wl_output*           output;
-    int                         name;
+    uint32_t                    name;
     int                         currentMode;
 
     int                         x;
@@ -320,6 +319,7 @@ typedef struct _GLFWcursorWayland
 
 
 void _glfwAddOutputWayland(uint32_t name, uint32_t version);
-void _glfwSetupWaylandDataDevice();
-void _glfwSetupWaylandPrimarySelectionDevice();
+void _glfwSetupWaylandDataDevice(void);
+void _glfwSetupWaylandPrimarySelectionDevice(void);
 void animateCursorImage(id_type timer_id, void *data);
+struct wl_cursor* _glfwLoadCursor(GLFWCursorShape);

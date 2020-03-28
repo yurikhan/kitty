@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -8,6 +8,7 @@ import re
 import sys
 import types
 from functools import partial
+from contextlib import suppress
 
 from .cli import emph, parse_args
 from .cmds import cmap, parse_subcommand_cli
@@ -19,7 +20,7 @@ from .utils import TTYIO, parse_address_spec
 def handle_cmd(boss, window, cmd):
     cmd = json.loads(cmd)
     v = cmd['version']
-    no_response = cmd['no_response']
+    no_response = cmd.get('no_response', False)
     if tuple(v)[:2] > version[:2]:
         if no_response:
             return
@@ -67,10 +68,8 @@ class SocketIO:
 
     def __exit__(self, *a):
         import socket
-        try:
+        with suppress(EnvironmentError):  # on some OSes such as macOS the socket is already closed at this point
             self.socket.shutdown(socket.SHUT_RDWR)
-        except EnvironmentError:
-            pass  # on some OSes such as macOS the socket is already closed at this point
         self.socket.close()
 
     def send(self, data):

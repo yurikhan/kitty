@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -212,12 +212,20 @@ def wrap(text, limit=80):
     return reversed(lines)
 
 
+def get_defaults_from_seq(seq):
+    ans = {}
+    for opt in seq:
+        if not isinstance(opt, str):
+            ans[opt['dest']] = defval_for_opt(opt)
+    return ans
+
+
 default_msg = ('''\
 Run the :italic:`{appname}` terminal emulator. You can also specify the :italic:`program`
 to run inside :italic:`{appname}` as normal arguments following the :italic:`options`.
 For example: {appname} /bin/sh
 
-For comprehensive documentation for kitty, please see: https://sw.kovidgoyal.net/kitty''').format(appname=appname)
+For comprehensive documentation for kitty, please see: https://sw.kovidgoyal.net/kitty/''').format(appname=appname)
 
 
 def print_help_for_seq(seq, usage, message, appname):
@@ -415,8 +423,8 @@ class Options:
 class Namespace:
 
     def __init__(self, kwargs):
-        for name in kwargs:
-            setattr(self, name, kwargs[name])
+        for name, val in kwargs.items():
+            setattr(self, name, val)
 
 
 def parse_cmdline(oc, disabled, args=None):
@@ -506,7 +514,7 @@ Detach from the controlling terminal, if any
 
 --session
 Path to a file containing the startup :italic:`session` (tabs, windows, layout, programs).
-See the README file for details and an example.
+Use - to read from STDIN. See the README file for details and an example.
 
 
 --hold
@@ -614,7 +622,9 @@ type=bool-set
 
 
 def options_for_completion():
-    return parse_option_spec(options_spec())[0]
+    raw = '--help -h\ntype=bool-set\nShow help for {appname} command line options\n\n{raw}'.format(
+            appname=appname, raw=options_spec())
+    return parse_option_spec(raw)[0]
 
 
 def option_spec_as_rst(ospec=options_spec, usage=None, message=None, appname=None, heading_char='-'):
@@ -708,7 +718,7 @@ def compare_opts(opts):
     compare_keymaps(final, initial)
 
 
-def create_opts(args, debug_config=False):
+def create_opts(args, debug_config=False, accumulate_bad_lines=None):
     from .config import load_config
     config = tuple(resolve_config(SYSTEM_CONF, defconf, args.config))
     if debug_config:
@@ -717,17 +727,19 @@ def create_opts(args, debug_config=False):
         if is_macos:
             import subprocess
             print(' '.join(subprocess.check_output(['sw_vers']).decode('utf-8').splitlines()).strip())
-        else:
-            print('Running under:', green('Wayland' if is_wayland else 'X11'))
         if os.path.exists('/etc/issue'):
-            print(open('/etc/issue', encoding='utf-8', errors='replace').read().strip())
+            with open('/etc/issue', encoding='utf-8', errors='replace') as f:
+                print(f.read().strip())
         if os.path.exists('/etc/lsb-release'):
-            print(open('/etc/lsb-release', encoding='utf-8', errors='replace').read().strip())
+            with open('/etc/lsb-release', encoding='utf-8', errors='replace') as f:
+                print(f.read().strip())
         config = tuple(x for x in config if os.path.exists(x))
         if config:
             print(green('Loaded config files:'), ', '.join(config))
     overrides = (a.replace('=', ' ', 1) for a in args.override or ())
-    opts = load_config(*config, overrides=overrides)
+    opts = load_config(*config, overrides=overrides, accumulate_bad_lines=accumulate_bad_lines)
     if debug_config:
+        if not is_macos:
+            print('Running under:', green('Wayland' if is_wayland(opts) else 'X11'))
         compare_opts(opts)
     return opts

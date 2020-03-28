@@ -2,13 +2,13 @@ Source: kitty
 Priority: optional
 Maintainer: James McCoy <jamessan@debian.org>
 Section: x11
-Standards-Version: 4.2.1
+Standards-Version: 4.4.1
 Rules-Requires-Root: no
 Homepage: https://sw.kovidgoyal.net/kitty/
 Vcs-Git: https://salsa.debian.org/jamessan/kitty.git
 Vcs-Browser: https://salsa.debian.org/jamessan/kitty
 Build-Depends:
- debhelper (>= 11~),
+ debhelper-compat (= 12),
  dh-python,
  libdbus-1-dev,
  libfontconfig1-dev,
@@ -22,10 +22,12 @@ Build-Depends:
  libxinerama-dev,
  libxkbcommon-x11-dev,
  libxrandr-dev,
+ libwayland-dev [linux-any],
  pkg-config,
  python3-dev (>= 3.5),
  python3-pil <!nocheck>,
  python3-sphinx,
+ wayland-protocols [linux-any],
  zlib1g-dev,
 
 Package: kitty
@@ -36,7 +38,12 @@ Depends:
  ${python3:Depends},
  ${shlibs:Depends},
 Recommends:
- kitty-doc
+ kitty-doc,
+# To play the "beep" sound for the terminal
+ libcanberra0
+Suggests:
+# For tui kitten
+ imagemagick
 Provides:
  x-terminal-emulator
 Description: fast, featureful, GPU based terminal emulator

@@ -31,17 +31,17 @@ static uint32_t FG_BG_256[256] = {
 };
 
 static inline void
-init_FG_BG_table() {
+init_FG_BG_table(void) {
     if (UNLIKELY(FG_BG_256[255] == 0)) {
         // colors 16..232: the 6x6x6 color cube
         const uint8_t valuerange[6] = {0x00, 0x5f, 0x87, 0xaf, 0xd7, 0xff};
         uint8_t i, j=16;
-        for(i = 0; i < 217; i++, j++) {
+        for(i = 0; i < 216; i++, j++) {
             uint8_t r = valuerange[(i / 36) % 6], g = valuerange[(i / 6) % 6], b = valuerange[i % 6];
             FG_BG_256[j] = (r << 16) | (g << 8) | b;
         }
-        // colors 233..255: grayscale
-        for(i = 1; i < 24; i++, j++) {
+        // colors 232..255: grayscale
+        for(i = 0; i < 24; i++, j++) {
             uint8_t v = 8 + i * 10;
             FG_BG_256[j] = (v << 16) | (v << 8) | v;
         }
@@ -96,6 +96,15 @@ update_ansi_color_table(ColorProfile *self, PyObject *val) {
     }
     self->dirty = true;
     Py_RETURN_NONE;
+}
+
+void
+copy_color_profile(ColorProfile *dest, ColorProfile *src) {
+    memcpy(dest->color_table, src->color_table, sizeof(dest->color_table));
+    memcpy(dest->orig_color_table, src->orig_color_table, sizeof(dest->color_table));
+    memcpy(&dest->configured, &src->configured, sizeof(dest->configured));
+    memcpy(&dest->overridden, &src->overridden, sizeof(dest->overridden));
+    dest->dirty = true;
 }
 
 static PyObject*
@@ -272,7 +281,7 @@ set_configured_colors(ColorProfile *self, PyObject *args) {
 void
 copy_color_table_to_buffer(ColorProfile *self, color_type *buf, int offset, size_t stride) {
     size_t i;
-    stride = MAX(1, stride);
+    stride = MAX(1u, stride);
     for (i = 0, buf = buf + offset; i < sizeof(self->color_table)/sizeof(self->color_table[0]); i++, buf += stride) {
         *buf = self->color_table[i];
     }

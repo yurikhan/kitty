@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -8,6 +8,8 @@ import re
 import sys
 from collections import namedtuple
 from contextlib import contextmanager
+from contextlib import suppress
+from functools import partial
 
 from . import fast_data_types as defines
 from .conf.definition import as_conf_file, config_lines
@@ -18,19 +20,7 @@ from .conf.utils import (
 from .config_data import all_options, parse_mods, type_map
 from .constants import cache_dir, defconf, is_macos
 from .utils import log_error
-
-named_keys = {
-    "'": 'APOSTROPHE',
-    ',': 'COMMA',
-    '-': 'MINUS',
-    '.': 'PERIOD',
-    '/': 'SLASH',
-    ';': 'SEMICOLON',
-    '=': 'EQUAL',
-    '[': 'LEFT_BRACKET',
-    ']': 'RIGHT_BRACKET',
-    '`': 'GRAVE_ACCENT'
-}
+from .key_names import get_key_name_lookup, key_name_aliases
 
 
 def parse_shortcut(sc):
@@ -41,16 +31,15 @@ def parse_shortcut(sc):
         if mods is None:
             return None, None, None
     key = parts[-1].upper()
-    key = getattr(defines, 'GLFW_KEY_' + named_keys.get(key, key), None)
+    key = getattr(defines, 'GLFW_KEY_' + key_name_aliases.get(key, key), None)
     is_native = False
     if key is None:
-        if parts[-1].startswith('0x'):
-            try:
-                key = int(parts[-1], 16)
-            except Exception:
-                pass
+        q = parts[-1]
+        if q.startswith('0x'):
+            with suppress(Exception):
+                key = int(q, 16)
         else:
-            key = defines.key_for_native_key_name(parts[-1])
+            key = get_key_name_lookup()(q)
         is_native = key is not None
     return mods, is_native, key
 
@@ -61,7 +50,8 @@ func_with_args, args_funcs = key_func()
 
 @func_with_args(
     'pass_selection_to_program', 'new_window', 'new_tab', 'new_os_window',
-    'new_window_with_cwd', 'new_tab_with_cwd', 'new_os_window_with_cwd'
+    'new_window_with_cwd', 'new_tab_with_cwd', 'new_os_window_with_cwd',
+    'launch'
     )
 def shlex_parse(func, rest):
     return func, to_cmdline(rest)
@@ -69,7 +59,7 @@ def shlex_parse(func, rest):
 
 @func_with_args('combine')
 def combine_parse(func, rest):
-    sep, rest = rest.split(' ', 1)
+    sep, rest = rest.split(maxsplit=1)
     parts = re.split(r'\s*' + re.escape(sep) + r'\s*', rest)
     args = tuple(map(parse_key_action, filter(None, parts)))
     return func, args
@@ -77,7 +67,7 @@ def combine_parse(func, rest):
 
 @func_with_args('send_text')
 def send_text_parse(func, rest):
-    args = rest.split(' ', 1)
+    args = rest.split(maxsplit=1)
     if len(args) > 0:
         try:
             args[1] = parse_send_text_bytes(args[1])
@@ -90,9 +80,9 @@ def send_text_parse(func, rest):
 @func_with_args('run_kitten', 'run_simple_kitten', 'kitten')
 def kitten_parse(func, rest):
     if func == 'kitten':
-        args = rest.split(' ', 1)
+        args = rest.split(maxsplit=1)
     else:
-        args = rest.split(' ', 2)[1:]
+        args = rest.split(maxsplit=2)[1:]
         func = 'kitten'
     return func, args
 
@@ -101,6 +91,20 @@ def kitten_parse(func, rest):
 def goto_tab_parse(func, rest):
     args = (max(0, int(rest)), )
     return func, args
+
+
+@func_with_args('detach_window')
+def detach_window_parse(func, rest):
+    if rest not in ('new', 'new-tab', 'ask'):
+        rest = 'new'
+    return func, (rest,)
+
+
+@func_with_args('detach_tab')
+def detach_tab_parse(func, rest):
+    if rest not in ('new', 'ask'):
+        rest = 'new'
+    return func, (rest,)
 
 
 @func_with_args('set_background_opacity', 'goto_layout', 'kitty_shell')
@@ -115,7 +119,7 @@ def float_parse(func, rest):
 
 @func_with_args('change_font_size')
 def parse_change_font_size(func, rest):
-    vals = rest.strip().split(' ', 1)
+    vals = rest.strip().split(maxsplit=1)
     if len(vals) != 2:
         log_error('Invalid change_font_size specification: {}, treating it as default'.format(rest))
         args = [True, None, 0]
@@ -131,13 +135,23 @@ def parse_change_font_size(func, rest):
 
 @func_with_args('clear_terminal')
 def clear_terminal(func, rest):
-    vals = rest.strip().split(' ', 1)
+    vals = rest.strip().split(maxsplit=1)
     if len(vals) != 2:
         log_error('clear_terminal needs two arguments, using defaults')
         args = ['reset', 'active']
     else:
         args = [vals[0].lower(), vals[1].lower() == 'active']
     return func, args
+
+
+@func_with_args('copy_to_buffer')
+def copy_to_buffer(func, rest):
+    return func, [rest]
+
+
+@func_with_args('paste_from_buffer')
+def paste_from_buffer(func, rest):
+    return func, [rest]
 
 
 @func_with_args('neighboring_window')
@@ -152,7 +166,7 @@ def neighboring_window(func, rest):
 
 @func_with_args('resize_window')
 def resize_window(func, rest):
-    vals = rest.strip().split(' ', 1)
+    vals = rest.strip().split(maxsplit=1)
     if len(vals) > 2:
         log_error('resize_window needs one or two arguments, using defaults')
         args = ['wider', 1]
@@ -194,6 +208,15 @@ def pipe(func, rest):
     return func, rest
 
 
+@func_with_args('set_colors')
+def set_colors(func, rest):
+    import shlex
+    rest = shlex.split(rest)
+    if len(rest) < 1:
+        log_error('Too few arguments to set_colors function')
+    return func, rest
+
+
 @func_with_args('nth_window')
 def nth_window(func, rest):
     try:
@@ -204,8 +227,22 @@ def nth_window(func, rest):
     return func, [num]
 
 
+@func_with_args('disable_ligatures_in')
+def disable_ligatures_in(func, rest):
+    parts = rest.split(maxsplit=1)
+    if len(parts) == 1:
+        where, strategy = 'active', parts[0]
+    else:
+        where, strategy = parts
+    if where not in ('active', 'all', 'tab'):
+        raise ValueError('{} is not a valid set of windows to disable ligatures in'.format(where))
+    if strategy not in ('never', 'always', 'cursor'):
+        raise ValueError('{} is not a valid disable ligatures strategy'.format(strategy))
+    return func, [where, strategy]
+
+
 def parse_key_action(action):
-    parts = action.strip().split(' ', 1)
+    parts = action.strip().split(maxsplit=1)
     func = parts[0]
     if len(parts) == 1:
         return KeyAction(func, ())
@@ -236,9 +273,27 @@ class KeyDefinition:
         self.trigger = defines.resolve_key_mods(kitty_mod, self.trigger[0]), self.trigger[1], self.trigger[2]
         self.rest = tuple((defines.resolve_key_mods(kitty_mod, mods), is_native, key) for mods, is_native, key in self.rest)
 
+    def resolve_kitten_aliases(self, aliases):
+        if not self.action.args:
+            return
+        kitten = self.action.args[0]
+        rest = self.action.args[1] if len(self.action.args) > 1 else ''
+        changed = False
+        for key, expanded in aliases.items():
+            if key == kitten:
+                changed = True
+                kitten = expanded[0]
+                if len(expanded) > 1:
+                    rest = expanded[1] + ' ' + rest
+        if changed:
+            self.action = self.action._replace(args=[kitten + (' ' + rest).rstrip()])
+
 
 def parse_key(val, key_definitions):
-    sc, action = val.partition(' ')[::2]
+    parts = val.split(maxsplit=1)
+    if len(parts) != 2:
+        return
+    sc, action = parts
     sc, action = sc.strip().strip(sequence_sep), action.strip()
     if not sc or not action:
         return
@@ -278,7 +333,7 @@ def parse_key(val, key_definitions):
 
 
 def parse_symbol_map(val):
-    parts = val.split(' ')
+    parts = val.split()
     symbol_map = {}
 
     def abort():
@@ -356,6 +411,13 @@ def handle_symbol_map(key, val, ans):
 
 
 @special_handler
+def handle_kitten_alias(key, val, ans):
+    parts = val.split(maxsplit=2)
+    if len(parts) >= 2:
+        ans['kitten_aliases'][parts[0]] = parts[1:]
+
+
+@special_handler
 def handle_send_text(key, val, ans):
     # For legacy compatibility
     parse_send_text(val, ans['key_definitions'])
@@ -373,7 +435,27 @@ def handle_deprecated_hide_window_decorations_aliases(key, val, ans):
         handle_deprecated_hide_window_decorations_aliases.key = True
         log_error('The option {} is deprecated. Use hide_window_decorations instead.'.format(key))
     if to_bool(val):
-        ans['hide_window_decorations'] = True
+        if is_macos and key == 'macos_hide_titlebar' or (not is_macos and key == 'x11_hide_window_decorations'):
+            ans['hide_window_decorations'] = True
+
+
+@deprecated_handler('macos_show_window_title_in_menubar')
+def handle_deprecated_macos_show_window_title_in_menubar_alias(key, val, ans):
+    if not hasattr(handle_deprecated_macos_show_window_title_in_menubar_alias, key):
+        handle_deprecated_macos_show_window_title_in_menubar_alias.key = True
+        log_error('The option {} is deprecated. Use macos_show_window_title_in menubar instead.'.format(key))
+    macos_show_window_title_in = ans.get('macos_show_window_title_in', 'all')
+    if to_bool(val):
+        if macos_show_window_title_in == 'none':
+            macos_show_window_title_in = 'menubar'
+        elif macos_show_window_title_in == 'window':
+            macos_show_window_title_in = 'all'
+    else:
+        if macos_show_window_title_in == 'all':
+            macos_show_window_title_in = 'window'
+        elif macos_show_window_title_in == 'menubar':
+            macos_show_window_title_in = 'none'
+    ans['macos_show_window_title_in'] = macos_show_window_title_in
 
 
 def expandvars(val, env):
@@ -412,15 +494,16 @@ def option_names_for_completion():
     yield from special_handlers
 
 
-def parse_config(lines, check_keys=True):
-    ans = {'symbol_map': {}, 'keymap': {}, 'sequence_map': {}, 'key_definitions': [], 'env': {}}
+def parse_config(lines, check_keys=True, accumulate_bad_lines=None):
+    ans = {'symbol_map': {}, 'keymap': {}, 'sequence_map': {}, 'key_definitions': [], 'env': {}, 'kitten_aliases': {}}
     parse_config_base(
         lines,
         defaults,
         type_map,
         special_handling,
         ans,
-        check_keys=check_keys
+        check_keys=check_keys,
+        accumulate_bad_lines=accumulate_bad_lines
     )
     return ans
 
@@ -518,13 +601,17 @@ def initial_window_size_func(opts, cached_values):
     w, w_unit = opts.initial_window_width
     h, h_unit = opts.initial_window_height
 
-    def get_window_size(cell_width, cell_height, dpi_x, dpi_y):
+    def get_window_size(cell_width, cell_height, dpi_x, dpi_y, xscale, yscale):
+        if not is_macos:
+            # scaling is not needed on Wayland, but is needed on macOS. Not
+            # sure about X11.
+            xscale = yscale = 1
         if w_unit == 'cells':
-            width = cell_width * w + (dpi_x / 72) * (opts.window_margin_width + opts.window_padding_width) + 1
+            width = cell_width * w / xscale + (dpi_x / 72) * (opts.window_margin_width + opts.window_padding_width) + 1
         else:
             width = w
         if h_unit == 'cells':
-            height = cell_height * h + (dpi_y / 72) * (opts.window_margin_width + opts.window_padding_width) + 1
+            height = cell_height * h / yscale + (dpi_y / 72) * (opts.window_margin_width + opts.window_padding_width) + 1
         else:
             height = h
         return width, height
@@ -544,10 +631,8 @@ def commented_out_default_config():
 def prepare_config_file_for_editing():
     if not os.path.exists(defconf):
         d = os.path.dirname(defconf)
-        try:
+        with suppress(FileExistsError):
             os.makedirs(d)
-        except FileExistsError:
-            pass
         with open(defconf, 'w', encoding='utf-8') as f:
             f.write(commented_out_default_config())
     return defconf
@@ -560,8 +645,11 @@ def finalize_keys(opts):
             defns = []
         else:
             defns.append(d)
+    kitten_aliases = opts.kitten_aliases
     for d in defns:
         d.resolve(opts.kitty_mod)
+        if kitten_aliases and d.action.func == 'kitten':
+            d.resolve_kitten_aliases(kitten_aliases)
     keymap = {}
     sequence_map = {}
 
@@ -586,12 +674,13 @@ def finalize_keys(opts):
     opts.sequence_map = sequence_map
 
 
-def load_config(*paths, overrides=None):
-    opts = _load_config(Options, defaults, parse_config, merge_configs, *paths, overrides=overrides)
+def load_config(*paths, overrides=None, accumulate_bad_lines=None):
+    parser = parse_config
+    if accumulate_bad_lines is not None:
+        parser = partial(parse_config, accumulate_bad_lines=accumulate_bad_lines)
+    opts = _load_config(Options, defaults, parser, merge_configs, *paths, overrides=overrides)
     finalize_keys(opts)
     if opts.background_opacity < 1.0 and opts.macos_titlebar_color:
         log_error('Cannot use both macos_titlebar_color and background_opacity')
         opts.macos_titlebar_color = 0
-    if (is_macos and getattr(opts, 'macos_hide_titlebar', False)) or (not is_macos and getattr(opts, 'x11_hide_window_decorations', False)):
-        opts.hide_window_decorations = True
     return opts

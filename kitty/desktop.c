@@ -89,9 +89,67 @@ static PyMethodDef module_methods[] = {
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 
+static void* libcanberra_handle = NULL;
+static void *canberra_ctx = NULL;
+FUNC(ca_context_create, int, void**);
+FUNC(ca_context_destroy, int, void*);
+typedef int (*ca_context_play_func)(void*, uint32_t, ...); static ca_context_play_func ca_context_play = NULL;
+
+static PyObject*
+load_libcanberra_functions(void) {
+    LOAD_FUNC(libcanberra_handle, ca_context_create);
+    LOAD_FUNC(libcanberra_handle, ca_context_play);
+    LOAD_FUNC(libcanberra_handle, ca_context_destroy);
+    return NULL;
+}
+
+static void
+load_libcanberra(void) {
+    static const char* libname = "libcanberra.so";
+    // some installs are missing the .so symlink, so try the full name
+    static const char* libname2 = "libcanberra.so.0";
+    static const char* libname3 = "libcanberra.so.0.2.5";
+    static bool done = false;
+    if (done) return;
+    done = true;
+    libcanberra_handle = dlopen(libname, RTLD_LAZY);
+    if (libcanberra_handle == NULL) libsn_handle = dlopen(libname2, RTLD_LAZY);
+    if (libcanberra_handle == NULL) libsn_handle = dlopen(libname3, RTLD_LAZY);
+    if (libcanberra_handle == NULL) {
+        fprintf(stderr, "Failed to load %s, cannot play beep sound, with error: %s\n", libname, dlerror());
+        return;
+    }
+    load_libcanberra_functions();
+    if (PyErr_Occurred()) {
+        PyErr_Print();
+        dlclose(libcanberra_handle); libcanberra_handle = NULL;
+    }
+    if (ca_context_create(&canberra_ctx) != 0) {
+        fprintf(stderr, "Failed to create libcanberra context, cannot play beep sound\n");
+        ca_context_destroy(canberra_ctx); canberra_ctx = NULL;
+        dlclose(libcanberra_handle); libcanberra_handle = NULL;
+    }
+}
+
+void
+play_canberra_sound(const char *which_sound, const char *event_id) {
+    load_libcanberra();
+    if (libcanberra_handle == NULL || canberra_ctx == NULL) return;
+    ca_context_play(
+        canberra_ctx, 0,
+        "event.id", which_sound,
+        "event.description", event_id,
+        NULL
+    );
+}
+
 static void
 finalize(void) {
     if (libsn_handle) dlclose(libsn_handle);
+    libsn_handle = NULL;
+    if (canberra_ctx) ca_context_destroy(canberra_ctx);
+    canberra_ctx = NULL;
+    if (libcanberra_handle) dlclose(libcanberra_handle);
 }
 
 bool

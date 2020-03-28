@@ -7,6 +7,7 @@
 #pragma once
 
 #include "graphics.h"
+#include "monotonic.h"
 
 typedef enum ScrollTypes { SCROLL_LINE = -999999, SCROLL_PAGE, SCROLL_FULL } ScrollType;
 
@@ -65,6 +66,8 @@ typedef struct {
     PyObject_HEAD
 
     unsigned int columns, lines, margin_top, margin_bottom, charset, scrolled_by, last_selection_scrolled_by;
+    unsigned int last_rendered_cursor_x, last_rendered_cursor_y;
+    double pending_scroll_pixels;
     CellPixelSize cell_size;
     OverlayLine overlay_line;
     id_type window_id;
@@ -85,13 +88,13 @@ typedef struct {
     bool *tabstops, *main_tabstops, *alt_tabstops;
     ScreenModes modes;
     ColorProfile *color_profile;
-    double start_visual_bell_at;
+    monotonic_t start_visual_bell_at;
 
     uint32_t parser_buf[PARSER_BUF_SZ];
     unsigned int parser_state, parser_text_start, parser_buf_pos;
     bool parser_has_pending_text;
     uint8_t read_buf[READ_BUF_SZ], *write_buf;
-    double new_input_at;
+    monotonic_t new_input_at;
     size_t read_buf_sz, write_buf_sz, write_buf_used;
     pthread_mutex_t read_buf_lock, write_buf_lock;
 
@@ -100,16 +103,17 @@ typedef struct {
     struct {
         size_t capacity, used, stop_buf_pos;
         uint8_t *buf;
-        double activated_at, wait_time;
+        monotonic_t activated_at, wait_time;
         int state;
         uint8_t stop_buf[32];
     } pending_mode;
+    DisableLigature disable_ligatures;
 
 } Screen;
 
 
-void parse_worker(Screen *screen, PyObject *dump_callback, double now);
-void parse_worker_dump(Screen *screen, PyObject *dump_callback, double now);
+void parse_worker(Screen *screen, PyObject *dump_callback, monotonic_t now);
+void parse_worker_dump(Screen *screen, PyObject *dump_callback, monotonic_t now);
 void screen_align(Screen*);
 void screen_restore_cursor(Screen *);
 void screen_save_cursor(Screen *);
@@ -176,10 +180,10 @@ void screen_apply_selection(Screen *self, void *address, size_t size);
 bool screen_is_selection_dirty(Screen *self);
 bool screen_has_selection(Screen*);
 bool screen_invert_colors(Screen *self);
-void screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE);
+void screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE, bool cursor_has_moved);
 bool screen_is_cursor_visible(Screen *self);
 bool screen_selection_range_for_line(Screen *self, index_type y, index_type *start, index_type *end);
-bool screen_selection_range_for_word(Screen *self, index_type x, index_type *, index_type *, index_type *start, index_type *end);
+bool screen_selection_range_for_word(Screen *self, index_type x, index_type *, index_type *, index_type *start, index_type *end, bool);
 void screen_start_selection(Screen *self, index_type x, index_type y, bool, SelectionExtendMode);
 void screen_update_selection(Screen *self, index_type x, index_type y, bool ended);
 bool screen_history_scroll(Screen *self, int amt, bool upwards);

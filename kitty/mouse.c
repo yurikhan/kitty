@@ -8,10 +8,12 @@
 #include "state.h"
 #include "screen.h"
 #include "lineops.h"
+#include "charsets.h"
 #include <limits.h>
 #include <math.h>
 #include "glfw-wrapper.h"
 #include "control-codes.h"
+#include "monotonic.h"
 
 static MouseShape mouse_cursor_shape = BEAM;
 typedef enum MouseActions { PRESS, RELEASE, DRAG, MOVE } MouseAction;
@@ -169,7 +171,7 @@ update_drag(bool from_button, Window *w, bool is_release, int modifiers) {
         }
         else {
             global_state.active_drag_in_window = w->id;
-            screen_start_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, modifiers == (int)OPT(rectangle_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | GLFW_MOD_SHIFT), EXTEND_CELL);
+            screen_start_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, modifiers == (int)OPT(rectangle_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | (int)OPT(terminal_select_modifiers)), EXTEND_CELL);
         }
     } else if (screen->selection.in_progress) {
         screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, false);
@@ -202,7 +204,7 @@ static inline void
 extend_selection(Window *w) {
     Screen *screen = w->render_data.screen;
     if (screen_has_selection(screen)) {
-        screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, false);
+        screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, true);
     }
 }
 
@@ -243,6 +245,11 @@ get_url_sentinel(Line *line, index_type url_start) {
 }
 
 static inline void
+set_mouse_cursor_for_screen(Screen *screen) {
+    mouse_cursor_shape = screen->modes.mouse_tracking_mode == NO_TRACKING ? BEAM : OPT(pointer_shape_when_grabbed);
+}
+
+static inline void
 detect_url(Screen *screen, unsigned int x, unsigned int y) {
     bool has_url = false;
     index_type url_start, url_end = 0;
@@ -260,7 +267,7 @@ detect_url(Screen *screen, unsigned int x, unsigned int y) {
         extend_url(screen, line, &url_end, &y_extended, sentinel);
         screen_mark_url(screen, url_start, y, url_end, y_extended);
     } else {
-        mouse_cursor_shape = BEAM;
+        set_mouse_cursor_for_screen(screen);
         screen_mark_url(screen, 0, 0, 0, 0);
     }
 }
@@ -279,17 +286,17 @@ HANDLER(handle_move_event) {
     detect_url(screen, x, y);
     bool mouse_cell_changed = x != w->mouse_pos.cell_x || y != w->mouse_pos.cell_y;
     w->mouse_pos.cell_x = x; w->mouse_pos.cell_y = y;
-    bool handle_in_kitty = (
-            (screen->modes.mouse_tracking_mode == ANY_MODE ||
-            (screen->modes.mouse_tracking_mode == MOTION_MODE && button >= 0)) &&
-            !(global_state.callback_os_window->is_key_pressed[GLFW_KEY_LEFT_SHIFT] || global_state.callback_os_window->is_key_pressed[GLFW_KEY_RIGHT_SHIFT])
-    ) ? false : true;
+    bool in_tracking_mode = (
+        screen->modes.mouse_tracking_mode == ANY_MODE ||
+        (screen->modes.mouse_tracking_mode == MOTION_MODE && button >= 0));
+    bool has_terminal_select_modifiers = modifiers == (int)OPT(terminal_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | (int)OPT(terminal_select_modifiers));
+    bool handle_in_kitty = !in_tracking_mode || has_terminal_select_modifiers;
     if (handle_in_kitty) {
         if (screen->selection.in_progress && button == GLFW_MOUSE_BUTTON_LEFT) {
-            double now = monotonic();
-            if ((now - w->last_drag_scroll_at) >= 0.02 || mouse_cell_changed) {
+            monotonic_t now = monotonic();
+            if ((now - w->last_drag_scroll_at) >= ms_to_monotonic_t(20ll) || mouse_cell_changed) {
                 update_drag(false, w, false, 0);
-                w->last_drag_scroll_at = monotonic();
+                w->last_drag_scroll_at = now;
             }
         }
     } else {
@@ -308,7 +315,7 @@ multi_click(Window *w, unsigned int count) {
     unsigned int y1 = w->mouse_pos.cell_y, y2 = w->mouse_pos.cell_y;
     switch(count) {
         case 2:
-            found_selection = screen_selection_range_for_word(screen, w->mouse_pos.cell_x, &y1, &y2, &start, &end);
+            found_selection = screen_selection_range_for_word(screen, w->mouse_pos.cell_x, &y1, &y2, &start, &end, true);
             mode = EXTEND_WORD;
             break;
         case 3:
@@ -332,7 +339,7 @@ distance(double x1, double y1, double x2, double y2) {
 HANDLER(add_click) {
     ClickQueue *q = &w->click_queue;
     if (q->length == CLICK_QUEUE_SZ) { memmove(q->clicks, q->clicks + 1, sizeof(Click) * (CLICK_QUEUE_SZ - 1)); q->length--; }
-    double now = monotonic();
+    monotonic_t now = monotonic();
 #define N(n) (q->clicks[q->length - n])
     N(0).at = now; N(0).button = button; N(0).modifiers = modifiers; N(0).x = w->mouse_pos.x; N(0).y = w->mouse_pos.y;
     q->length++;
@@ -356,7 +363,6 @@ HANDLER(add_click) {
            ) {
             multi_click(w, 2);
         }
-
     }
 #undef N
 }
@@ -371,13 +377,13 @@ open_url(Window *w) {
 HANDLER(handle_button_event) {
     Tab *t = global_state.callback_os_window->tabs + global_state.callback_os_window->active_tab;
     bool is_release = !global_state.callback_os_window->mouse_button_pressed[button];
-    if (window_idx != t->active_window) {
+    if (window_idx != t->active_window && !is_release) {
         call_boss(switch_focus_to, "I", window_idx);
     }
     Screen *screen = w->render_data.screen;
     if (!screen) return;
     bool handle_in_kitty = (
-            modifiers == GLFW_MOD_SHIFT || modifiers == ((int)OPT(rectangle_select_modifiers) | GLFW_MOD_SHIFT) ||
+            modifiers == (int)OPT(terminal_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | (int)OPT(terminal_select_modifiers)) ||
             screen->modes.mouse_tracking_mode == 0 ||
             button == GLFW_MOUSE_BUTTON_MIDDLE ||
             (modifiers == (int)OPT(open_url_modifiers) && button == GLFW_MOUSE_BUTTON_LEFT)
@@ -404,7 +410,7 @@ HANDLER(handle_button_event) {
 }
 
 static inline int
-currently_pressed_button() {
+currently_pressed_button(void) {
     for (int i = 0; i < GLFW_MOUSE_BUTTON_5; i++) {
         if (global_state.callback_os_window->mouse_button_pressed[i]) return i;
     }
@@ -438,9 +444,9 @@ handle_tab_bar_mouse(int button, int UNUSED modifiers) {
 static inline bool
 mouse_in_region(Region *r) {
     if (r->left == r->right) return false;
-	if (global_state.callback_os_window->mouse_y < r->top || global_state.callback_os_window->mouse_y > r->bottom) return false;
-	if (global_state.callback_os_window->mouse_x < r->left || global_state.callback_os_window->mouse_x > r->right) return false;
-	return true;
+    if (global_state.callback_os_window->mouse_y < r->top || global_state.callback_os_window->mouse_y > r->bottom) return false;
+    if (global_state.callback_os_window->mouse_x < r->left || global_state.callback_os_window->mouse_x > r->right) return false;
+    return true;
 }
 
 static inline Window*
@@ -456,8 +462,8 @@ window_for_id(id_type window_id) {
 static inline Window*
 window_for_event(unsigned int *window_idx, bool *in_tab_bar) {
     Region central, tab_bar;
-	os_window_regions(global_state.callback_os_window, &central, &tab_bar);
-	*in_tab_bar = mouse_in_region(&tab_bar);
+    os_window_regions(global_state.callback_os_window, &central, &tab_bar);
+    *in_tab_bar = mouse_in_region(&tab_bar);
     if (!*in_tab_bar && global_state.callback_os_window->num_tabs > 0) {
         Tab *t = global_state.callback_os_window->tabs + global_state.callback_os_window->active_tab;
         for (unsigned int i = 0; i < t->num_windows; i++) {
@@ -490,9 +496,12 @@ focus_in_event() {
     bool in_tab_bar;
     unsigned int window_idx = 0;
     mouse_cursor_shape = BEAM;
-    set_mouse_cursor(BEAM);
     Window *w = window_for_event(&window_idx, &in_tab_bar);
-    if (w && w->render_data.screen) screen_mark_url(w->render_data.screen, 0, 0, 0, 0);
+    if (w && w->render_data.screen) {
+        screen_mark_url(w->render_data.screen, 0, 0, 0, 0);
+        set_mouse_cursor_for_screen(w->render_data.screen);
+    }
+    set_mouse_cursor(mouse_cursor_shape);
 }
 
 void
@@ -538,7 +547,7 @@ mouse_event(int button, int modifiers, int action) {
     if (in_tab_bar) {
         mouse_cursor_shape = HAND;
         handle_tab_bar_mouse(button, modifiers);
-    } else if(w) {
+    } else if (w) {
         handle_event(w, button, modifiers, window_idx);
     } else if (button == GLFW_MOUSE_BUTTON_LEFT && global_state.callback_os_window->mouse_button_pressed[button]) {
         // initial click, clamp it to the closest window
@@ -600,27 +609,31 @@ scroll_event(double UNUSED xoffset, double yoffset, int flags) {
 
     if (is_high_resolution) {
         yoffset *= OPT(touch_scroll_multiplier);
-        if (yoffset * global_state.callback_os_window->pending_scroll_pixels < 0) {
-            global_state.callback_os_window->pending_scroll_pixels = 0;  // change of direction
+        if (yoffset * screen->pending_scroll_pixels < 0) {
+            screen->pending_scroll_pixels = 0;  // change of direction
         }
-        double pixels = global_state.callback_os_window->pending_scroll_pixels + yoffset;
+        double pixels = screen->pending_scroll_pixels + yoffset;
         if (fabs(pixels) < global_state.callback_os_window->fonts_data->cell_height) {
-            global_state.callback_os_window->pending_scroll_pixels = pixels;
+            screen->pending_scroll_pixels = pixels;
             return;
         }
         s = (int)round(pixels) / (int)global_state.callback_os_window->fonts_data->cell_height;
-        global_state.callback_os_window->pending_scroll_pixels = pixels - s * (int) global_state.callback_os_window->fonts_data->cell_height;
+        screen->pending_scroll_pixels = pixels - s * (int) global_state.callback_os_window->fonts_data->cell_height;
     } else {
         if (screen->linebuf == screen->main_linebuf || !screen->modes.mouse_tracking_mode) {
             // Only use wheel_scroll_multiplier if we are scrolling kitty scrollback or in mouse
             // tracking mode, where the application is responsible for interpreting scroll events
             yoffset *= OPT(wheel_scroll_multiplier);
+        } else if (OPT(wheel_scroll_multiplier) < 0) {
+            // ensure that changing scroll direction still works, even though
+            // we are not using wheel_scroll_multiplier
+            yoffset *= -1;
         }
         s = (int) round(yoffset);
         // apparently on cocoa some mice generate really small yoffset values
         // when scrolling slowly https://github.com/kovidgoyal/kitty/issues/1238
         if (s == 0 && yoffset != 0) s = yoffset > 0 ? 1 : -1;
-        global_state.callback_os_window->pending_scroll_pixels = 0;
+        screen->pending_scroll_pixels = 0;
     }
     if (s == 0) return;
     bool upwards = s > 0;

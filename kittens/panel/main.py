@@ -1,13 +1,14 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
+import os
 import shutil
 import subprocess
 import sys
 
 from kitty.cli import parse_args
-from kitty.constants import is_macos, is_wayland
+from kitty.constants import is_macos
 
 OPTIONS = r'''
 --lines
@@ -104,7 +105,7 @@ def setup_x11_window(win_id):
 def initial_window_size_func(opts, *a):
     from kitty.fast_data_types import glfw_primary_monitor_size, set_smallest_allowed_resize
 
-    def initial_window_size(cell_width, cell_height, dpi_x, dpi_y):
+    def initial_window_size(cell_width, cell_height, dpi_x, dpi_y, xscale, yscale):
         monitor_width, monitor_height = glfw_primary_monitor_size()
         if args.edge in {'top', 'bottom'}:
             h = initial_window_size_func.height = cell_height * args.lines + 1
@@ -121,7 +122,7 @@ def initial_window_size_func(opts, *a):
 
 def main(sys_args):
     global args
-    if is_macos or is_wayland:
+    if is_macos or not os.environ.get('DISPLAY'):
         raise SystemExit('Currently the panel kitten is supported only on X11 desktops')
     if not shutil.which('xprop'):
         raise SystemExit('The xprop program is required for the panel kitten')

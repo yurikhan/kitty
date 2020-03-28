@@ -1,11 +1,12 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import fcntl
 import os
+import sys
 from collections import defaultdict
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 
 import kitty.fast_data_types as fast_data_types
 
@@ -29,14 +30,16 @@ if is_macos:
 else:
 
     def cmdline_of_process(pid):
-        return list(filter(None, open('/proc/{}/cmdline'.format(pid), 'rb').read().decode('utf-8').split('\0')))
+        with open('/proc/{}/cmdline'.format(pid), 'rb') as f:
+            return list(filter(None, f.read().decode('utf-8').split('\0')))
 
     def cwd_of_process(pid):
         ans = '/proc/{}/cwd'.format(pid)
         return os.path.realpath(ans)
 
     def _environ_of_process(pid):
-        return open('/proc/{}/environ'.format(pid), 'rb').read().decode('utf-8')
+        with open('/proc/{}/environ'.format(pid), 'rb') as f:
+            return f.read().decode('utf-8')
 
     def process_group_map():
         ans = defaultdict(list)
@@ -46,7 +49,8 @@ else:
             except Exception:
                 continue
             try:
-                raw = open('/proc/' + x + '/stat', 'rb').read().decode('utf-8')
+                with open('/proc/' + x + '/stat', 'rb') as f:
+                    raw = f.read().decode('utf-8')
             except EnvironmentError:
                 continue
             try:
@@ -55,6 +59,13 @@ else:
                 continue
             ans[q].append(pid)
         return ans
+
+
+def checked_terminfo_dir():
+    ans = getattr(checked_terminfo_dir, 'ans', None)
+    if ans is None:
+        ans = checked_terminfo_dir.ans = terminfo_dir if os.path.isdir(terminfo_dir) else None
+    return ans
 
 
 def processes_in_group(grp):
@@ -110,18 +121,38 @@ def remove_cloexec(fd):
     fcntl.fcntl(fd, fcntl.F_SETFD, fcntl.fcntl(fd, fcntl.F_GETFD) & ~fcntl.FD_CLOEXEC)
 
 
+def remove_blocking(fd):
+    os.set_blocking(fd, False)
+
+
+def process_env():
+    ans = os.environ
+    ssl_env_var = getattr(sys, 'kitty_ssl_env_var', None)
+    if ssl_env_var is not None:
+        ans = ans.copy()
+        ans.pop(ssl_env_var, None)
+    return ans
+
+
 def default_env():
     try:
         return default_env.env
     except AttributeError:
-        return os.environ
+        return process_env()
 
 
 def set_default_env(val=None):
-    env = os.environ.copy()
+    env = process_env().copy()
     if val:
         env.update(val)
     default_env.env = env
+
+
+def openpty():
+    master, slave = os.openpty()  # Note that master and slave are in blocking mode
+    remove_cloexec(slave)
+    fast_data_types.set_iutf8_fd(master, True)
+    return master, slave
 
 
 class Child:
@@ -129,12 +160,8 @@ class Child:
     child_fd = pid = None
     forked = False
 
-    def __init__(self, argv, cwd, opts, stdin=None, env=None, cwd_from=None):
-        self.allow_remote_control = False
-        if argv and argv[0] == '@':
-            self.allow_remote_control = True
-            if len(argv) > 1:
-                argv = argv[1:]
+    def __init__(self, argv, cwd, opts, stdin=None, env=None, cwd_from=None, allow_remote_control=False):
+        self.allow_remote_control = allow_remote_control
         self.argv = argv
         if cwd_from is not None:
             try:
@@ -149,13 +176,28 @@ class Child:
         self.stdin = stdin
         self.env = env or {}
 
+    @property
+    def final_env(self):
+        env = getattr(self, '_final_env', None)
+        if env is None:
+            env = self._final_env = default_env().copy()
+            env.update(self.env)
+            env['TERM'] = self.opts.term
+            env['COLORTERM'] = 'truecolor'
+            if self.cwd:
+                # needed in case cwd is a symlink, in which case shells
+                # can use it to display the current directory name rather
+                # than the resolved path
+                env['PWD'] = self.cwd
+            if checked_terminfo_dir():
+                env['TERMINFO'] = checked_terminfo_dir()
+        return env
+
     def fork(self):
         if self.forked:
             return
         self.forked = True
-        master, slave = os.openpty()  # Note that master and slave are in blocking mode
-        remove_cloexec(slave)
-        fast_data_types.set_iutf8(master, True)
+        master, slave = openpty()
         stdin, self.stdin = self.stdin, None
         ready_read_fd, ready_write_fd = os.pipe()
         remove_cloexec(ready_read_fd)
@@ -164,18 +206,25 @@ class Child:
             remove_cloexec(stdin_read_fd)
         else:
             stdin_read_fd = stdin_write_fd = -1
-        env = default_env().copy()
-        env.update(self.env)
-        env['TERM'] = self.opts.term
-        env['COLORTERM'] = 'truecolor'
-        if os.path.isdir(terminfo_dir):
-            env['TERMINFO'] = terminfo_dir
+        env = self.final_env
         env = tuple('{}={}'.format(k, v) for k, v in env.items())
         argv = list(self.argv)
         exe = argv[0]
         if is_macos and exe == shell_path:
-            # Some macOS machines need the shell to have argv[0] prefixed by
-            # hyphen, see https://github.com/kovidgoyal/kitty/issues/247
+            # bash will only source ~/.bash_profile if it detects it is a login
+            # shell (see the invocation section of the bash man page), which it
+            # does if argv[0] is prefixed by a hyphen see
+            # https://github.com/kovidgoyal/kitty/issues/247
+            # it is apparently common to use ~/.bash_profile instead of the
+            # more correct ~/.bashrc on macOS to setup env vars, so if
+            # the default shell is used prefix argv[0] by '-'
+            #
+            # it is arguable whether graphical terminals should start shells
+            # in login mode in general, there are at least a few Linux users
+            # that also make this incorrect assumption, see for example
+            # https://github.com/kovidgoyal/kitty/issues/1870
+            # xterm, urxvt, konsole and gnome-terminal do not do it in my
+            # testing.
             argv[0] = ('-' + exe.split('/')[-1])
         pid = fast_data_types.spawn(exe, self.cwd, tuple(argv), env, master, slave, stdin_read_fd, stdin_write_fd, ready_read_fd, ready_write_fd)
         os.close(slave)
@@ -186,7 +235,7 @@ class Child:
             fast_data_types.thread_write(stdin_write_fd, stdin)
         os.close(ready_read_fd)
         self.terminal_ready_fd = ready_write_fd
-        fcntl.fcntl(self.child_fd, fcntl.F_SETFL, fcntl.fcntl(self.child_fd, fcntl.F_GETFL) | os.O_NONBLOCK)
+        remove_blocking(self.child_fd)
         return pid
 
     def mark_terminal_ready(self):
@@ -201,14 +250,10 @@ class Child:
 
             def process_desc(pid):
                 ans = {'pid': pid}
-                try:
+                with suppress(Exception):
                     ans['cmdline'] = cmdline_of_process(pid)
-                except Exception:
-                    pass
-                try:
+                with suppress(Exception):
                     ans['cwd'] = cwd_of_process(pid) or None
-                except Exception:
-                    pass
                 return ans
 
             return list(map(process_desc, foreground_processes))
@@ -223,6 +268,13 @@ class Child:
             return list(self.argv)
 
     @property
+    def foreground_cmdline(self):
+        try:
+            return cmdline_of_process(self.pid_for_cwd) or self.cmdline
+        except Exception:
+            return self.cmdline
+
+    @property
     def environ(self):
         try:
             return environ_of_process(self.pid)
@@ -231,25 +283,30 @@ class Child:
 
     @property
     def current_cwd(self):
-        try:
+        with suppress(Exception):
             return cwd_of_process(self.pid)
-        except Exception:
-            pass
 
     @property
     def pid_for_cwd(self):
-        try:
+        with suppress(Exception):
             pgrp = os.tcgetpgrp(self.child_fd)
             foreground_processes = processes_in_group(pgrp) if pgrp >= 0 else []
             if len(foreground_processes) == 1:
                 return foreground_processes[0]
-        except Exception:
-            pass
         return self.pid
 
     @property
     def foreground_cwd(self):
-        try:
+        with suppress(Exception):
             return cwd_of_process(self.pid_for_cwd) or None
+
+    @property
+    def foreground_environ(self):
+        try:
+            return environ_of_process(self.pid_for_cwd)
         except Exception:
-            pass
+            try:
+                return environ_of_process(self.pid)
+            except Exception:
+                pass
+        return {}

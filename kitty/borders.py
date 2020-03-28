@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -11,7 +11,7 @@ from .utils import load_shaders
 
 try:
     from enum import IntFlag
-except Exception:
+except ImportError:
     from enum import IntEnum as IntFlag
 
 
@@ -52,6 +52,7 @@ class Borders:
         self.tab_id = tab_id
         self.border_width = border_width
         self.padding_width = padding_width
+        self.draw_active_borders = opts.active_border_color is not None
 
     def __call__(
         self,
@@ -67,7 +68,7 @@ class Borders:
         bw, pw = self.border_width, self.padding_width
         if bw + pw <= 0:
             return
-        draw_borders = bw > 0 and draw_window_borders and len(windows) > 1
+        draw_borders = bw > 0 and draw_window_borders
         if draw_borders:
             border_data = current_layout.resolve_borders(windows, active_window)
 
@@ -77,7 +78,7 @@ class Borders:
             window_bg = (window_bg << 8) | BorderColor.window_bg
             if draw_borders:
                 # Draw the border rectangles
-                if w is active_window:
+                if w is active_window and self.draw_active_borders:
                     color = BorderColor.active
                 else:
                     color = BorderColor.bell if w.needs_attention else BorderColor.inactive

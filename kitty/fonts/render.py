@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -25,8 +25,29 @@ else:
 current_faces = None
 
 
+def coalesce_symbol_maps(maps):
+    if not maps:
+        return maps
+    items = tuple((k, maps[k]) for k in sorted(maps))
+    ans = [items[0]]
+
+    def merge(prev_item, item):
+        s, e = item[0]
+        pe = prev_item[0][1]
+        ans[-1] = ((prev_item[0][0], max(pe, e)), prev_item[1])
+
+    for item in items[1:]:
+        current_item = ans[-1]
+        if current_item[1] != item[1] or item[0][0] > current_item[0][1] + 1:
+            ans.append(item)
+        else:
+            merge(current_item, item)
+
+    return dict(ans)
+
+
 def create_symbol_map(opts):
-    val = opts.symbol_map
+    val = coalesce_symbol_maps(opts.symbol_map)
     family_map = {}
     count = 0
     for family in val.values():
@@ -88,7 +109,7 @@ def set_font_family(opts=None, override_font_size=None, debug_font_matching=Fals
 
 def add_line(buf, cell_width, position, thickness, cell_height):
     y = position - thickness // 2
-    while thickness > 0 and y > -1 and y < cell_height:
+    while thickness > 0 and -1 < y < cell_height:
         thickness -= 1
         ctypes.memset(ctypes.addressof(buf) + (cell_width * y), 255, cell_width)
         y += 1
@@ -149,7 +170,11 @@ def render_special(
     ans = CharTexture if missing else CharTexture()
 
     def dl(f, *a):
-        f(ans, cell_width, *a)
+        try:
+            f(ans, cell_width, *a)
+        except Exception as e:
+            log_error('Failed to render {} at cell_width={} and cell_height={} with error: {}'.format(
+                f.__name__, cell_width, cell_height, e))
 
     if underline:
         t = underline_thickness

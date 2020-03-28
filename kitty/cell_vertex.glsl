@@ -5,6 +5,7 @@
 #define REVERSE_SHIFT {REVERSE_SHIFT}
 #define STRIKE_SHIFT {STRIKE_SHIFT}
 #define DIM_SHIFT {DIM_SHIFT}
+#define USE_SELECTION_FG
 
 // Inputs {{{
 layout(std140) uniform CellRenderData {
@@ -113,7 +114,7 @@ vec3 choose_color(float q, vec3 a, vec3 b) {
     return mix(b, a, q);
 }
 
-float are_integers_equal(float a, float b) { // return 1 iff equal otherwise 0
+float are_integers_equal(float a, float b) { // return 1 if equal otherwise 0
     float delta = abs(a - b);  // delta can be 0, 1 or larger
     return step(delta, 0.5); // 0 if 0.5 < delta else 1
 }
@@ -171,11 +172,15 @@ void main() {
     foreground = color_to_vec(resolved_fg);
     float has_dim = float((text_attrs >> DIM_SHIFT) & ONE);
     effective_text_alpha = inactive_text_alpha * mix(1.0, dim_opacity, has_dim);
-    // Selection
-    foreground = choose_color(float(is_selected & ONE), color_to_vec(highlight_fg), foreground);
-    // Underline and strike through (rendered via sprites)
     float in_url = float((is_selected & TWO) >> 1);
     decoration_fg = choose_color(in_url, color_to_vec(url_color), to_color(colors[2], resolved_fg));
+#ifdef USE_SELECTION_FG
+    // Selection
+    vec3 selection_color = color_to_vec(highlight_fg);
+    foreground = choose_color(float(is_selected & ONE), selection_color, foreground);
+    decoration_fg = choose_color(float(is_selected & ONE), selection_color, decoration_fg);
+#endif
+    // Underline and strike through (rendered via sprites)
     underline_pos = choose_color(in_url, to_sprite_pos(pos, url_style, ZERO, ZERO), to_sprite_pos(pos, (text_attrs >> DECORATION_SHIFT) & THREE, ZERO, ZERO));
     strike_pos = to_sprite_pos(pos, ((text_attrs >> STRIKE_SHIFT) & ONE) * FOUR, ZERO, ZERO);
 

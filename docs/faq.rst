@@ -63,6 +63,18 @@ Really, the correct solution for this is to convince the OpenSSH maintainers to
 have ssh do this automatically, if possible, when connecting to a server, so that
 all terminals work transparently.
 
+If the server is running FreeBSD, or another system that relies on termcap
+rather than terminfo, you will need to convert the terminfo file on your local
+machine by running (on local machine with |kitty|)::
+
+    infocmp -C xterm-kitty
+
+The output of this command is the termcap description, which should be appended
+to :file:`/usr/share/misc/termcap` on the remote server. Then run the following
+command to apply your change (on the server)::
+
+    cap_mkdb /usr/share/misc/termcap
+
 
 Keys such as arrow keys, backspace, delete, home/end, etc. do not work when using su or sudo?
 -------------------------------------------------------------------------------------------------
@@ -81,6 +93,11 @@ Shell providing the right terminfo path::
     sudo … env TERMINFO=$HOME/.terminfo bash -i
     TERMINFO=/home/ORIGINALUSER/.terminfo exec bash -i
 
+You can configure sudo to preserve TERMINFO by running ``sudo
+visudo`` and adding the following line::
+
+    Defaults env_keep += "TERM TERMINFO"
+
 If you have double width characters in your prompt, you may also need to
 explicitly set a UTF-8 locale, like::
 
@@ -91,9 +108,39 @@ How do I change the colors in a running kitty instance?
 ------------------------------------------------------------
 
 You can either use the
-`OSC terminal escape codes <http://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Operating-System-Commands>`_
-to set colors or you can enable :doc:`remote control <remote-control>`
-for |kitty| and use :ref:`at_set-colors`.
+`OSC terminal escape codes <https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Operating-System-Commands>`_
+to set colors or you can define keyboard shortcuts to set colors, for example::
+
+    map f1 set_colors --configured /path/to/some/config/file/colors.conf
+
+Or you can enable :doc:`remote control <remote-control>` for |kitty| and use :ref:`at_set-colors`.
+The shortcut mapping technique has the same syntax as the remote control
+command, for details, see :ref:`at_set-colors`.
+
+A list of pre-made color themes for kitty is available at:
+`kitty-themes <https://github.com/dexpota/kitty-themes>`_
+
+Examples of using OSC escape codes to set colors::
+
+    Change the default foreground color:
+    printf '\x1b]10;#ff0000\x1b\\'
+    Change the default background color:
+    printf '\x1b]11;blue\x1b\\'
+    Change the cursor color:
+    printf '\x1b]12;blue\x1b\\'
+    Change the selection background color:
+    printf '\x1b]17;blue\x1b\\'
+    Change the selection foreground color:
+    printf '\x1b]19;blue\x1b\\'
+    Change the nth color (0 - 255):
+    printf '\x1b]4;n;green\x1b\\'
+
+You can use various syntaxes/names for color specifications in the above
+examples. See `XParseColor <https://linux.die.net/man/3/xparsecolor>`_
+for full details.
+
+If a ``?`` is given rather than a color specification, kitty will respond
+with the current value for the specified color.
 
 
 How do I specify command line options for kitty on macOS?
@@ -122,7 +169,32 @@ only monospace fonts, since every cell in the grid has to be the same size. If
 your font is not listed in ``kitty list-fonts`` it means that it is not
 monospace. On Linux you can list all monospace fonts with::
 
-    fc-list : family spacing | grep spacing=100
+    fc-list : family spacing | grep -e spacing=100 -e spacing=90
+
+Note that the spacing property is calculated by fontconfig based on actual
+glyph widths in the font. If for some reason fontconfig concludes your favorite
+monospace font does not have ``spacing=100`` you can override it by using the
+following :file:`~/.config/fontconfig/fonts.conf`::
+
+    <?xml version="1.0"?>
+    <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+    <fontconfig>
+    <match target="scan">
+        <test name="family">
+            <string>Your Font Family Name</string>
+        </test>
+        <edit name="spacing">
+            <int>100</int>
+        </edit>
+    </match>
+    </fontconfig>
+
+After creating (or modifying) this file, you may need to run the following
+command to rebuild your fontconfig cache::
+
+    fc-cache -r
+
+Then, the font will be available in ``kitty list-fonts``.
 
 
 How can I assign a single global shortcut to bring up the kitty terminal?
@@ -132,3 +204,31 @@ Bringing up applications on a single key press is the job of the window
 manager/desktop environment. For ways to do it with kitty (or indeed any
 terminal) in different environments,
 see `here <https://github.com/kovidgoyal/kitty/issues/45>`_.
+
+
+How do I map key presses in kitty to different keys in the terminal program?
+--------------------------------------------------------------------------------------
+
+This is accomplished by using ``map`` with :sc:`send_text <send_text>` in :file:`kitty.conf`.
+For example::
+
+    map alt+s send_text all \x13
+
+This maps :kbd:`alt+s` to :kbd:`ctrl+s`. To figure out what bytes to use for
+the :sc:`send_text <send_text>` you can use the ``showkey`` utility. Run::
+
+    showkey -a
+
+Then press the key you want to emulate. On macOS, this utility is currently not
+available. The manual way to figure it out is:
+
+    1. Look up your key's decimal value in the table at the bottom of `this
+       page <http://ascii-table.com/ansi-escape-sequences.php>`_ or any
+       ANSI escape sequence table. There are different modifiers for :kbd:`ctrl`,
+       :kbd:`alt`, etc. For e.g., for :kbd:`ctrl+s`, find the ``S`` row and look at
+       the third column value, ``19``.
+
+    2. Convert the decimal value to hex with ``kitty +runpy "print(hex(19))"``.
+       This shows the hex value, ``13`` in this case.
+
+    3. Use ``\x(hexval)`` in your ``send_text`` command in kitty. So in this example, ``\x13``

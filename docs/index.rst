@@ -36,6 +36,8 @@ kitty - the fast, featureful, GPU based terminal emulator
       separate window using arbitrary programs of your choice. This is useful for
       browsing the history comfortably in a pager or editor.
 
+    * Has :ref:`multiple copy/paste buffers <cpbuf>`, like vim.
+
 
 .. figure:: screenshots/screenshot.png
     :alt: Screenshot, showing three programs in the 'Tall' layout
@@ -54,15 +56,18 @@ Pre-built binaries of |kitty| are available for both macOS and Linux.
 See the :doc:`binary install instructions </binary>`. You can also
 :doc:`build from source </build>`.
 
-If you are on Linux, you can also use your distribution's |kitty| package.
+You can also use your favorite package manager to install the |kitty| package.
 |kitty| packages are available for:
+`macOS with Homebrew (Cask) <https://formulae.brew.sh/cask/kitty>`_,
+`macOS and Linux with Nix <https://nixos.org/nixos/packages.html?channel=nixpkgs-unstable&query=kitty>`_,
+`Ubuntu <https://launchpad.net/ubuntu/+source/kitty>`_,
 `Debian <https://packages.debian.org/buster/kitty>`_,
 `openSUSE <https://build.opensuse.org/package/show/X11:terminals/kitty>`_,
 `Arch Linux <https://www.archlinux.org/packages/community/x86_64/kitty/>`_,
-`NixOS <https://github.com/NixOS/nixpkgs/blob/master/pkgs/applications/misc/kitty/default.nix>`_,
 `Gentoo <https://packages.gentoo.org/packages/x11-terms/kitty>`_,
 `Fedora <https://copr.fedorainfracloud.org/coprs/gagbo/kitty-latest/>`_,
-`Void Linux <https://github.com/void-linux/void-packages/blob/master/srcpkgs/kitty/template>`_.
+`Void Linux <https://github.com/void-linux/void-packages/blob/master/srcpkgs/kitty/template>`_,
+and `Solus <https://dev.getsol.us/source/kitty/>`_.
 
 See :doc:`Configuring kitty <conf>` for help on configuring |kitty| and
 :doc:`Invocation <invocation>` for the command line arguments |kitty| supports.
@@ -90,7 +95,7 @@ formatting, etc. It even extends existing text formatting escape codes,
 to add support for features not available elsewhere, such as colored and
 styled (curly) underlines. One of the design goals of |kitty| is to be
 easily extensible so that new features can be added in the future with
-relatively less effort.
+relatively little effort.
 
 Tabs and Windows
 -------------------
@@ -108,12 +113,12 @@ Scrolling
 ========================    =======================
 Action                      Shortcut
 ========================    =======================
-Scroll line up              :sc:`scroll_line_up`
-Scroll line down            :sc:`scroll_line_down`
-Scroll page up              :sc:`scroll_page_up`
-Scroll page down            :sc:`scroll_page_down`
-Scroll to top               :sc:`scroll_home`
-Scroll to bottom            :sc:`scroll_end`
+Scroll line up              :sc:`scroll_line_up` (also :kbd:`⌥+⌘+⇞` and :kbd:`⌘+↑` on macOS)
+Scroll line down            :sc:`scroll_line_down` (also :kbd:`⌥+⌘+⇟` and :kbd:`⌘+↓` on macOS)
+Scroll page up              :sc:`scroll_page_up` (also :kbd:`⌘+⇞` on macOS)
+Scroll page down            :sc:`scroll_page_down` (also :kbd:`⌘+⇟` on macOS)
+Scroll to top               :sc:`scroll_home` (also :kbd:`⌘+↖` on macOS)
+Scroll to bottom            :sc:`scroll_end` (also :kbd:`⌘+↘` on macOS)
 ========================    =======================
 
 Tabs
@@ -122,14 +127,14 @@ Tabs
 ========================    =======================
 Action                      Shortcut
 ========================    =======================
-New tab                     :sc:`new_tab`
-Close tab                   :sc:`close_tab`
-Next tab                    :sc:`next_tab` (also :kbd:`control+tab` on macOS)
-Previous tab                :sc:`previous_tab` (also :kbd:`control+shift+tab` on macOS)
+New tab                     :sc:`new_tab` (also :kbd:`⌘+t` on macOS)
+Close tab                   :sc:`close_tab` (also :kbd:`⌘+w` on macOS)
+Next tab                    :sc:`next_tab` (also :kbd:`^+⇥` and :kbd:`⇧+⌘+]` on macOS)
+Previous tab                :sc:`previous_tab` (also :kbd:`⇧+^+⇥` and :kbd:`⇧+⌘+[` on macOS)
 Next layout                 :sc:`next_layout`
 Move tab forward            :sc:`move_tab_forward`
 Move tab backward           :sc:`move_tab_backward`
-Set tab title               :sc:`set_tab_title`
+Set tab title               :sc:`set_tab_title` (also :kbd:`⇧+⌘+i` on macOS)
 ========================    =======================
 
 
@@ -139,15 +144,16 @@ Windows
 ========================    =======================
 Action                      Shortcut
 ========================    =======================
-New window                  :sc:`new_window`
+New window                  :sc:`new_window` (also :kbd:`⌘+↩` on macOS)
 New OS window               :sc:`new_os_window` (also :kbd:`⌘+n` on macOS)
-Close window                :sc:`close_window`
+Close window                :sc:`close_window` (also :kbd:`⇧+⌘+d` on macOS)
 Next window                 :sc:`next_window`
 Previous window             :sc:`previous_window`
 Move window forward         :sc:`move_window_forward`
 Move window backward        :sc:`move_window_backward`
 Move window to top          :sc:`move_window_to_top`
 Focus specific window       :sc:`first_window`, :sc:`second_window` ... :sc:`tenth_window`
+                            (also :kbd:`⌘+1`, :kbd:`⌘+2` ... :kbd:`⌘+9` on macOS)
                             (clockwise from the top-left)
 ========================    =======================
 
@@ -167,6 +173,19 @@ You can also define a shortcut to switch to the previously active window::
 ``nth_window`` will focus the nth window for positive numbers and the
 previously active windows for negative numbers.
 
+.. _detach_window:
+
+You can define shortcuts to detach the current window and
+move it to another tab or another OS window::
+
+    map ctrl+f2 detach_window         # moves the window into a new OS window
+    map ctrl+f3 detach_window new-tab # moves the window into a new Tab
+    map ctrl+f4 detach_window ask     # asks which tab to move the window into
+
+Similarly, you can detach the current tab, with::
+
+    map ctrl+f2 detach_tab         # moves the tab into a new OS window
+    map ctrl+f4 detach_tab ask     # asks which OS Window to move the tab into
 
 Other keyboard shortcuts
 ----------------------------------
@@ -177,11 +196,11 @@ Action                              Shortcut
 Copy to clipboard                   :sc:`copy_to_clipboard` (also :kbd:`⌘+c` on macOS)
 Paste from clipboard                :sc:`paste_from_clipboard` (also :kbd:`⌘+v` on macOS)
 Paste from selection                :sc:`paste_from_selection`
-Increase font size                  :sc:`increase_font_size`
-Decrease font size                  :sc:`decrease_font_size`
-Restore font size                   :sc:`reset_font_size`
-Toggle fullscreen                   :sc:`toggle_fullscreen` (also :kbd:`^⌘+f` on macOS)
-on
+Increase font size                  :sc:`increase_font_size` (also :kbd:`⌘++` on macOS)
+Decrease font size                  :sc:`decrease_font_size` (also :kbd:`⌘+-` on macOS)
+Restore font size                   :sc:`reset_font_size` (also :kbd:`⌘+0` on macOS)
+Toggle fullscreen                   :sc:`toggle_fullscreen` (also :kbd:`^+⌘+f` on macOS)
+Toggle maximized                    :sc:`toggle_maximized`
 Input unicode character             :sc:`input_unicode_character`
 Click URL using the keyboard        :sc:`open_url`
 Reset the terminal                  :sc:`reset_terminal`
@@ -216,7 +235,7 @@ You can switch between layouts using the :sc:`next_layout` key combination. You 
 also create shortcuts to select particular layouts, and choose which layouts
 you want to enable/disable, see :ref:`conf-kitty-shortcuts.layout` for examples.
 
-You can resize windows inside layouts. Press :sc:`start_resizing_window` to
+You can resize windows inside layouts. Press :sc:`start_resizing_window` (also :kbd:`⌘+r` on macOS) to
 enter resizing mode and follow the on-screen instructions.  In a given window
 layout only some operations may be possible for a particular window. For
 example, in the Tall layout you can make the first window wider/narrower, but
@@ -340,6 +359,12 @@ For example:
     # Set the current layout
     layout stack
     launch zsh
+
+    # Create a new OS window
+    new_os_window
+    # set new window size to 80x25 cells
+    os_window_size 80c 25c
+    launch sh
     # Make the current window the active (focused) window
     focus
     launch emacs
@@ -348,11 +373,16 @@ For example:
 Mouse features
 -------------------
 
-* You can also hold down :kbd:`ctrl+shift` and click on a URL to open it in a browser.
-* You can double click to select a word and triple click to select a line.
-* You can right click to extend a previous selection
+* You can hold down :kbd:`ctrl+shift` and click on a URL to open it in a browser.
+* You can double click to select a word and then drag to select more words.
+* You can triple click to select a line and then drag to select more lines.
+* You can right click to extend a previous selection.
 * You can hold down :kbd:`ctrl+alt` and drag with the mouse to select in
-  columns
+  columns.
+* Selecting text automatically copies it to the primary clipboard (on
+  platforms with a primary clipboard).
+* You can select text with kitty even when a terminal program has grabbed
+  the mouse by holding down the :kbd:`shift` key.
 
 
 Font control
@@ -385,7 +415,7 @@ comfortably within the pager.
 Additionally, you can pipe the contents of the scrollback buffer to an
 arbitrary, command running in a new window, tab or overlay, for example::
 
-   map f1 pipe @ansi window less +G -R
+   map f1 launch --stdin-source=@screen_scrollback --stdin-add-formatting less +G -R
 
 Would open the scrollback buffer in a new window when you press the :kbd:`F1`
 key. See :sc:`show_scrollback` for details.
@@ -393,6 +423,23 @@ key. See :sc:`show_scrollback` for details.
 If you wish to store very large amounts of scrollback to view using the piping or
 :sc:`show_scrollback` features, you can use the :opt:`scrollback_pager_history_size`
 option.
+
+.. _cpbuf:
+
+Multiple copy/paste buffers
+-----------------------------
+
+In addition to being able to copy/paste from the system clipboard, in |kitty| you
+can also setup an arbitrary number of copy paste buffers. To do so, simply add
+something like the following to your :file:`kitty.conf`::
+
+   map f1 copy_to_buffer a
+   map f2 paste_from_buffer a
+
+This will allow you to press :kbd:`F1` to copy the current selection to an
+internal buffer named ``a`` and :kbd:`F2` to paste from that buffer. The buffer
+names are arbitrary strings, so you can define as many such buffers as you
+need.
 
 Frequently Asked Questions
 ---------------------------------
@@ -416,6 +463,14 @@ Add the following to your :file:`~/.bashrc`
 
    source <(kitty + complete setup bash)
 
+Older versions of bash (for example, v3.2) do not support
+process substitution with the source command, in which
+case you can try an alternative:
+
+.. code-block:: sh
+
+    source /dev/stdin <<<"$(kitty + complete setup bash)"
+
 
 zsh
 ~~~~~~~~~
@@ -436,7 +491,8 @@ completions happens after the call to :file:`compinit`.
 fish
 ~~~~~~~~
 
-Add the following to your :file:`~/.config/fish/config.fish`
+For versions of fish earlier than 3.0.0, add the following to your
+:file:`~/.config/fish/config.fish`. Later versions source completions by default.
 
 .. code-block:: sh
 
@@ -454,3 +510,4 @@ See :doc:`changelog`.
 
     *
     kittens/*
+    generated/rc

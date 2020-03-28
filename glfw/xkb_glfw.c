@@ -1,5 +1,5 @@
 //========================================================================
-// GLFW 3.3 XKB - www.glfw.org
+// GLFW 3.4 XKB - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2018 Kovid Goyal <kovid@kovidgoyal.net>
 //
@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include "internal.h"
 #include "xkb_glfw.h"
+START_ALLOW_CASE_RANGE
 
 #define debug(...) if (_glfw.hints.init.debugKeyboard) printf(__VA_ARGS__);
 
@@ -36,18 +37,130 @@
 #define map_key(key) \
     switch(key) { \
         S(space, SPACE); \
+        S(exclam, EXCLAM); \
+        S(quotedbl, DOUBLE_QUOTE); \
+        S(numbersign, NUMBER_SIGN); \
+        S(dollar, DOLLAR); \
+        S(ampersand, AMPERSAND); \
         S(apostrophe, APOSTROPHE); \
+        S(parenleft, PARENTHESIS_LEFT); \
+        S(parenright, PARENTHESIS_RIGHT); \
+        S(plus, PLUS); \
         S(comma, COMMA); \
         S(minus, MINUS); \
         S(period, PERIOD); \
         S(slash, SLASH); \
+        R(0, 9, 0, 9); \
+        S(colon, COLON); \
         S(semicolon, SEMICOLON); \
+        S(less, LESS); \
         S(equal, EQUAL); \
+        S(greater, GREATER); \
+        S(at, AT); \
+        D(A, Z, A, Z); \
         S(bracketleft, LEFT_BRACKET); \
         S(backslash, BACKSLASH); \
         S(bracketright, RIGHT_BRACKET); \
-        S(plus, PLUS); \
+        S(underscore, UNDERSCORE); \
         S(grave, GRAVE_ACCENT); \
+        R(a, z, A, Z); \
+        S(paragraph, PARAGRAPH); \
+        S(masculine, MASCULINE); \
+        S(agrave, A_GRAVE); \
+        F(Agrave, A_GRAVE); \
+        S(adiaeresis, A_DIAERESIS); \
+        F(Adiaeresis, A_DIAERESIS); \
+        S(aring, A_RING); \
+        F(Aring, A_RING); \
+        S(ae, AE); \
+        F(AE, AE); \
+        S(ccedilla, C_CEDILLA); \
+        F(Ccedilla, C_CEDILLA); \
+        S(egrave, E_GRAVE); \
+        F(Egrave, E_GRAVE); \
+        S(aacute, E_ACUTE); \
+        F(Eacute, E_ACUTE); \
+        S(igrave, I_GRAVE); \
+        F(Igrave, I_GRAVE); \
+        S(ntilde, N_TILDE); \
+        F(Ntilde, N_TILDE); \
+        S(ograve, O_GRAVE); \
+        F(Ograve, O_GRAVE); \
+        S(odiaeresis, O_DIAERESIS); \
+        F(Odiaeresis, O_DIAERESIS); \
+        S(oslash, O_SLASH); \
+        F(Oslash, O_SLASH); \
+        S(ugrave, U_GRAVE); \
+        F(Ugrave, U_GRAVE); \
+        S(udiaeresis, U_DIAERESIS); \
+        F(Udiaeresis, U_DIAERESIS); \
+        S(ssharp, S_SHARP); \
+        S(Cyrillic_a, CYRILLIC_A); \
+        F(Cyrillic_A, CYRILLIC_A); \
+        S(Cyrillic_be, CYRILLIC_BE); \
+        F(Cyrillic_BE, CYRILLIC_BE); \
+        S(Cyrillic_ve, CYRILLIC_VE); \
+        F(Cyrillic_VE, CYRILLIC_VE); \
+        S(Cyrillic_ghe, CYRILLIC_GHE); \
+        F(Cyrillic_GHE, CYRILLIC_GHE); \
+        S(Cyrillic_de, CYRILLIC_DE); \
+        F(Cyrillic_DE, CYRILLIC_DE); \
+        S(Cyrillic_ie, CYRILLIC_IE); \
+        F(Cyrillic_IE, CYRILLIC_IE); \
+        S(Cyrillic_zhe, CYRILLIC_ZHE); \
+        F(Cyrillic_ZHE, CYRILLIC_ZHE); \
+        S(Cyrillic_ze, CYRILLIC_ZE); \
+        F(Cyrillic_ZE, CYRILLIC_ZE); \
+        S(Cyrillic_i, CYRILLIC_I); \
+        F(Cyrillic_I, CYRILLIC_I); \
+        S(Cyrillic_shorti, CYRILLIC_SHORT_I); \
+        F(Cyrillic_SHORTI, CYRILLIC_SHORT_I); \
+        S(Cyrillic_ka, CYRILLIC_KA); \
+        F(Cyrillic_KA, CYRILLIC_KA); \
+        S(Cyrillic_el, CYRILLIC_EL); \
+        F(Cyrillic_EL, CYRILLIC_EL); \
+        S(Cyrillic_em, CYRILLIC_EM); \
+        F(Cyrillic_EM, CYRILLIC_EM); \
+        S(Cyrillic_en, CYRILLIC_EN); \
+        F(Cyrillic_EN, CYRILLIC_EN); \
+        S(Cyrillic_o, CYRILLIC_O); \
+        F(Cyrillic_O, CYRILLIC_O); \
+        S(Cyrillic_pe, CYRILLIC_PE); \
+        F(Cyrillic_PE, CYRILLIC_PE); \
+        S(Cyrillic_er, CYRILLIC_ER); \
+        F(Cyrillic_ER, CYRILLIC_ER); \
+        S(Cyrillic_es, CYRILLIC_ES); \
+        F(Cyrillic_ES, CYRILLIC_ES); \
+        S(Cyrillic_te, CYRILLIC_TE); \
+        F(Cyrillic_TE, CYRILLIC_TE); \
+        S(Cyrillic_u, CYRILLIC_U); \
+        F(Cyrillic_U, CYRILLIC_U); \
+        S(Cyrillic_ef, CYRILLIC_EF); \
+        F(Cyrillic_EF, CYRILLIC_EF); \
+        S(Cyrillic_ha, CYRILLIC_HA); \
+        F(Cyrillic_HA, CYRILLIC_HA); \
+        S(Cyrillic_tse, CYRILLIC_TSE); \
+        F(Cyrillic_TSE, CYRILLIC_TSE); \
+        S(Cyrillic_che, CYRILLIC_CHE); \
+        F(Cyrillic_CHE, CYRILLIC_CHE); \
+        S(Cyrillic_sha, CYRILLIC_SHA); \
+        F(Cyrillic_SHA, CYRILLIC_SHA); \
+        S(Cyrillic_shcha, CYRILLIC_SHCHA); \
+        F(Cyrillic_SHCHA, CYRILLIC_SHCHA); \
+        S(Cyrillic_hardsign, CYRILLIC_HARD_SIGN); \
+        F(Cyrillic_HARDSIGN, CYRILLIC_HARD_SIGN); \
+        S(Cyrillic_yeru, CYRILLIC_YERU); \
+        F(Cyrillic_YERU, CYRILLIC_YERU); \
+        S(Cyrillic_softsign, CYRILLIC_SOFT_SIGN); \
+        F(Cyrillic_SOFTSIGN, CYRILLIC_SOFT_SIGN); \
+        S(Cyrillic_e, CYRILLIC_E); \
+        F(Cyrillic_E, CYRILLIC_E); \
+        S(Cyrillic_yu, CYRILLIC_YU); \
+        F(Cyrillic_YU, CYRILLIC_YU); \
+        S(Cyrillic_ya, CYRILLIC_YA); \
+        F(Cyrillic_YA, CYRILLIC_YA); \
+        S(Cyrillic_io, CYRILLIC_IO); \
+        F(Cyrillic_IO, CYRILLIC_IO); \
         S(Escape, ESCAPE); \
         S(Return, ENTER); \
         S(Tab, TAB); \
@@ -89,9 +202,6 @@
         S(Alt_R, RIGHT_ALT); \
         S(Super_R, RIGHT_SUPER); \
         S(Menu, MENU); \
-        R(0, 9, 0, 9); \
-        R(a, z, A, Z); \
-        D(A, Z, A, Z); \
         R(F1, F25, F1, F25); \
         R(KP_0, KP_9, KP_0, KP_9); \
 
@@ -100,7 +210,7 @@ glfw_key_for_sym(xkb_keysym_t key) {
 #define S(f, t) case XKB_KEY_##f: return GLFW_KEY_##t
 #define F(f, t) S(f, t)
 #define R(s, e, gs, ...) case XKB_KEY_##s ... XKB_KEY_##e: return GLFW_KEY_##gs + key - XKB_KEY_##s
-#define D(s, e, gs, ...) R(s, e, gs)
+#define D(s, e, gs, ...) R(s, e, gs, __VA_ARGS__)
     map_key(key)
         S(KP_Up, UP);
         S(KP_Down, DOWN);
@@ -114,7 +224,7 @@ glfw_key_for_sym(xkb_keysym_t key) {
 #undef D
 #undef R
 #undef S
-};
+}
 
 xkb_keysym_t
 glfw_xkb_sym_for_key(int key) {
@@ -132,33 +242,34 @@ glfw_xkb_sym_for_key(int key) {
 #undef R
 #undef S
 }
+END_ALLOW_CASE_RANGE
 
 #ifdef _GLFW_X11
 
-GLFWbool
+bool
 glfw_xkb_set_x11_events_mask(void) {
     if (!XkbSelectEvents(_glfw.x11.display, XkbUseCoreKbd, XkbNewKeyboardNotifyMask | XkbMapNotifyMask | XkbStateNotifyMask, XkbNewKeyboardNotifyMask | XkbMapNotifyMask | XkbStateNotifyMask)) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "Failed to set XKB events mask");
-        return GLFW_FALSE;
+        return false;
     }
-    return GLFW_TRUE;
+    return true;
 }
 
-GLFWbool
+bool
 glfw_xkb_update_x11_keyboard_id(_GLFWXKBData *xkb) {
     xkb->keyboard_device_id = -1;
     xcb_connection_t* conn = XGetXCBConnection(_glfw.x11.display);
     if (!conn) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "X11: Failed to retrieve XCB connection");
-        return GLFW_FALSE;
+        return false;
     }
 
     xkb->keyboard_device_id = xkb_x11_get_core_keyboard_device_id(conn);
     if (xkb->keyboard_device_id == -1) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "X11: Failed to retrieve core keyboard device id");
-        return GLFW_FALSE;
+        return false;
     }
-    return GLFW_TRUE;
+    return true;
 }
 
 #define xkb_glfw_load_keymap(keymap, ...) {\
@@ -166,7 +277,7 @@ glfw_xkb_update_x11_keyboard_id(_GLFWXKBData *xkb) {
     if (conn) keymap = xkb_x11_keymap_new_from_device(xkb->context, conn, xkb->keyboard_device_id, XKB_KEYMAP_COMPILE_NO_FLAGS); \
 }
 
-#define xkb_glfw_load_state(keymap, state, ...) {\
+#define xkb_glfw_load_state(keymap, state) {\
     xcb_connection_t* conn = XGetXCBConnection(_glfw.x11.display); \
     if (conn) state = xkb_x11_state_new_from_device(keymap, conn, xkb->keyboard_device_id); \
 }
@@ -174,7 +285,7 @@ glfw_xkb_update_x11_keyboard_id(_GLFWXKBData *xkb) {
 #else
 
 #define xkb_glfw_load_keymap(keymap, map_str) keymap = xkb_keymap_new_from_string(xkb->context, map_str, XKB_KEYMAP_FORMAT_TEXT_V1, 0);
-#define xkb_glfw_load_state(keymap, state, ...) state = xkb_state_new(keymap);
+#define xkb_glfw_load_state(keymap, state) state = xkb_state_new(keymap);
 
 #endif
 
@@ -203,17 +314,17 @@ glfw_xkb_release(_GLFWXKBData *xkb) {
     glfw_ibus_terminate(&xkb->ibus);
 }
 
-GLFWbool
+bool
 glfw_xkb_create_context(_GLFWXKBData *xkb) {
     xkb->context = xkb_context_new(0);
     if (!xkb->context)
     {
         _glfwInputError(GLFW_PLATFORM_ERROR,
                         "Failed to initialize XKB context");
-        return GLFW_FALSE;
+        return false;
     }
     glfw_connect_to_ibus(&xkb->ibus);
-    return GLFW_TRUE;
+    return true;
 }
 
 static const char*
@@ -259,7 +370,7 @@ load_compose_tables(_GLFWXKBData *xkb) {
     xkb_compose_table_unref(compose_table);
 }
 
-GLFWbool
+bool
 glfw_xkb_compile_keymap(_GLFWXKBData *xkb, const char *map_str) {
     const char *err;
     release_keyboard_data(xkb);
@@ -267,13 +378,13 @@ glfw_xkb_compile_keymap(_GLFWXKBData *xkb, const char *map_str) {
     if (err) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "%s", err);
         release_keyboard_data(xkb);
-        return GLFW_FALSE;
+        return false;
     }
     err = load_states(xkb);
     if (err) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "%s", err);
         release_keyboard_data(xkb);
-        return GLFW_FALSE;
+        return false;
     }
     load_compose_tables(xkb);
 #define S(a, n) xkb->a##Idx = xkb_keymap_mod_get_index(xkb->keymap, n); xkb->a##Mask = 1 << xkb->a##Idx;
@@ -291,7 +402,7 @@ glfw_xkb_compile_keymap(_GLFWXKBData *xkb, const char *map_str) {
     }
     xkb->states.modifiers = 0;
     xkb->states.activeUnknownModifiers = 0;
-    return GLFW_TRUE;
+    return true;
 }
 
 static inline xkb_mod_mask_t
@@ -325,25 +436,23 @@ glfw_xkb_update_modifiers(_GLFWXKBData *xkb, xkb_mod_mask_t depressed, xkb_mod_m
     update_modifiers(xkb, &xkb->states);
 }
 
-GLFWbool
-glfw_xkb_should_repeat(_GLFWXKBData *xkb, xkb_keycode_t scancode) {
+bool
+glfw_xkb_should_repeat(_GLFWXKBData *xkb, xkb_keycode_t keycode) {
 #ifdef _GLFW_WAYLAND
-    scancode += 8;
+    keycode += 8;
 #endif
-    return xkb_keymap_key_repeats(xkb->keymap, scancode);
+    return xkb_keymap_key_repeats(xkb->keymap, keycode);
 }
 
 
-static KeyEvent key_event = {};
-
 static inline xkb_keysym_t
-compose_symbol(struct xkb_compose_state *composeState, xkb_keysym_t sym, int *compose_completed) {
+compose_symbol(struct xkb_compose_state *composeState, xkb_keysym_t sym, int *compose_completed, char *key_text, int n) {
     *compose_completed = 0;
     if (sym == XKB_KEY_NoSymbol || !composeState) return sym;
     if (xkb_compose_state_feed(composeState, sym) != XKB_COMPOSE_FEED_ACCEPTED) return sym;
     switch (xkb_compose_state_get_status(composeState)) {
         case XKB_COMPOSE_COMPOSED:
-            xkb_compose_state_get_utf8(composeState, key_event.text, sizeof(key_event.text));
+            xkb_compose_state_get_utf8(composeState, key_text, n);
             *compose_completed = 1;
             return xkb_compose_state_get_one_sym(composeState);
         case XKB_COMPOSE_COMPOSING:
@@ -365,7 +474,7 @@ glfw_xkb_keysym_name(xkb_keysym_t sym) {
 }
 
 int
-glfw_xkb_keysym_from_name(const char *name, GLFWbool case_sensitive) {
+glfw_xkb_keysym_from_name(const char *name, bool case_sensitive) {
     return (int)xkb_keysym_from_name(name, case_sensitive ? XKB_KEYSYM_NO_FLAGS : XKB_KEYSYM_CASE_INSENSITIVE);
 }
 
@@ -412,7 +521,7 @@ glfw_xkb_update_ime_state(_GLFWwindow *w, _GLFWXKBData *xkb, int which, int a, i
     int x = 0, y = 0;
     switch(which) {
         case 1:
-            glfw_ibus_set_focused(&xkb->ibus, a ? GLFW_TRUE : GLFW_FALSE);
+            glfw_ibus_set_focused(&xkb->ibus, a ? true : false);
             break;
         case 2:
             _glfwPlatformGetWindowPos(w, &x, &y);
@@ -423,66 +532,74 @@ glfw_xkb_update_ime_state(_GLFWwindow *w, _GLFWXKBData *xkb, int which, int a, i
 }
 
 void
-glfw_xkb_key_from_ime(KeyEvent *ev, GLFWbool handled_by_ime, GLFWbool failed) {
+glfw_xkb_key_from_ime(_GLFWIBUSKeyEvent *ev, bool handled_by_ime, bool failed) {
     _GLFWwindow *window = _glfwWindowForId(ev->window_id);
     if (failed && window && window->callbacks.keyboard) {
         // notify application to remove any existing pre-edit text
-        window->callbacks.keyboard((GLFWwindow*) window, GLFW_KEY_UNKNOWN, 0, GLFW_PRESS, 0, "", 1);
+        GLFWkeyevent fake_ev;
+        _glfwInitializeKeyEvent(&fake_ev, GLFW_KEY_UNKNOWN, 0, GLFW_PRESS, 0);
+        fake_ev.ime_state = 1;
+        window->callbacks.keyboard((GLFWwindow*) window, &fake_ev);
     }
     static xkb_keycode_t last_handled_press_keycode = 0;
     // We filter out release events that correspond to the last press event
-    // handled by the IME system. This wont fix the case of multiple key
+    // handled by the IME system. This won't fix the case of multiple key
     // presses before a release, but is better than nothing. For that case
     // you'd need to implement a ring buffer to store pending key presses.
     xkb_keycode_t prev_handled_press = last_handled_press_keycode;
     last_handled_press_keycode = 0;
-    GLFWbool is_release = ev->action == GLFW_RELEASE;
-    debug("From IBUS: scancode: 0x%x name: %s is_release: %d\n", ev->keycode, glfw_xkb_keysym_name(ev->keysym), is_release);
-    if (window && !handled_by_ime && !(is_release && ev->keycode == prev_handled_press)) {
+    bool is_release = ev->glfw_ev.action == GLFW_RELEASE;
+    debug("From IBUS: native_key: 0x%x name: %s is_release: %d\n", ev->glfw_ev.native_key, glfw_xkb_keysym_name(ev->glfw_ev.key), is_release);
+    if (window && !handled_by_ime && !(is_release && ev->glfw_ev.native_key == (int) prev_handled_press)) {
         debug("↳ to application: glfw_keycode: 0x%x (%s) keysym: 0x%x (%s) action: %s %s text: %s\n",
-            ev->glfw_keycode, _glfwGetKeyName(ev->glfw_keycode), ev->keysym, glfw_xkb_keysym_name(ev->keysym),
-            (ev->action == GLFW_RELEASE ? "RELEASE" : (ev->action == GLFW_PRESS ? "PRESS" : "REPEAT")),
-            format_mods(ev->glfw_modifiers), ev->text
+            ev->glfw_ev.native_key, _glfwGetKeyName(ev->glfw_ev.native_key), ev->glfw_ev.key, glfw_xkb_keysym_name(ev->glfw_ev.key),
+            (ev->glfw_ev.action == GLFW_RELEASE ? "RELEASE" : (ev->glfw_ev.action == GLFW_PRESS ? "PRESS" : "REPEAT")),
+            format_mods(ev->glfw_ev.mods), ev->glfw_ev.text
         );
-        _glfwInputKeyboard(window, ev->glfw_keycode, ev->keysym, ev->action, ev->glfw_modifiers, ev->text, 0);
+
+        ev->glfw_ev.ime_state = 0;
+        _glfwInputKeyboard(window, &ev->glfw_ev);
     } else debug("↳ discarded\n");
-    if (!is_release && handled_by_ime) last_handled_press_keycode = ev->keycode;
+    if (!is_release && handled_by_ime)
+      last_handled_press_keycode = ev->glfw_ev.native_key;
 }
 
 void
-glfw_xkb_handle_key_event(_GLFWwindow *window, _GLFWXKBData *xkb, xkb_keycode_t scancode, int action) {
+glfw_xkb_handle_key_event(_GLFWwindow *window, _GLFWXKBData *xkb, xkb_keycode_t xkb_keycode, int action) {
+    static char key_text[64] = {0};
     const xkb_keysym_t *syms, *clean_syms, *default_syms;
-    xkb_keysym_t glfw_sym;
-    xkb_keycode_t code_for_sym = scancode;
-    key_event.ibus_keycode = scancode;
+    xkb_keysym_t xkb_sym;
+    xkb_keycode_t code_for_sym = xkb_keycode, ibus_keycode = xkb_keycode;
+    GLFWkeyevent glfw_ev;
+    _glfwInitializeKeyEvent(&glfw_ev, GLFW_KEY_UNKNOWN, 0, GLFW_PRESS, 0); // init with default values
 #ifdef _GLFW_WAYLAND
     code_for_sym += 8;
 #else
-    key_event.ibus_keycode -= 8;
+    ibus_keycode -= 8;
 #endif
-    debug("%s scancode: 0x%x ", action == GLFW_RELEASE ? "Release" : "Press", scancode);
+    debug("%s xkb_keycode: 0x%x ", action == GLFW_RELEASE ? "Release" : "Press", xkb_keycode);
     XKBStateGroup *sg = &xkb->states;
     int num_syms = xkb_state_key_get_syms(sg->state, code_for_sym, &syms);
     int num_clean_syms = xkb_state_key_get_syms(sg->clean_state, code_for_sym, &clean_syms);
-    key_event.text[0] = 0;
+    key_text[0] = 0;
     // According to the documentation of xkb_compose_state_feed it does not
     // support multi-sym events, so we ignore them
     if (num_syms != 1 || num_clean_syms != 1) {
         debug("num_syms: %d num_clean_syms: %d ignoring event\n", num_syms, num_clean_syms);
         return;
     }
-    glfw_sym = clean_syms[0];
+    xkb_sym = clean_syms[0];
     debug("clean_sym: %s ", glfw_xkb_keysym_name(clean_syms[0]));
     if (action == GLFW_PRESS || action == GLFW_REPEAT) {
         const char *text_type = "composed_text";
         int compose_completed;
-        glfw_sym = compose_symbol(sg->composeState, syms[0], &compose_completed);
-        if (glfw_sym == XKB_KEY_NoSymbol && !compose_completed) {
+        xkb_sym = compose_symbol(sg->composeState, syms[0], &compose_completed, key_text, sizeof(key_text));
+        if (xkb_sym == XKB_KEY_NoSymbol && !compose_completed) {
             debug("compose not complete, ignoring.\n");
             return;
         }
-        debug("composed_sym: %s ", glfw_xkb_keysym_name(glfw_sym));
-        if (glfw_sym == syms[0]) { // composed sym is the same as non-composed sym
+        debug("composed_sym: %s ", glfw_xkb_keysym_name(xkb_sym));
+        if (xkb_sym == syms[0]) { // composed sym is the same as non-composed sym
             // Only use the clean_sym if no mods other than the mods we report
             // are active (for example if ISO_Shift_Level_* mods are active
             // they are not reported by GLFW so the key should be the shifted
@@ -490,37 +607,58 @@ glfw_xkb_handle_key_event(_GLFWwindow *window, _GLFWXKBData *xkb, xkb_keycode_t 
             xkb_mod_mask_t consumed_unknown_mods = xkb_state_key_get_consumed_mods(sg->state, code_for_sym) & sg->activeUnknownModifiers;
             if (sg->activeUnknownModifiers) debug("%s", format_xkb_mods(xkb, "active_unknown_mods", sg->activeUnknownModifiers));
             if (consumed_unknown_mods) { debug("%s", format_xkb_mods(xkb, "consumed_unknown_mods", consumed_unknown_mods)); }
-            else glfw_sym = clean_syms[0];
+            else xkb_sym = clean_syms[0];
             // xkb returns text even if alt and/or super are pressed
-            if ( ((GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER) & sg->modifiers) == 0) xkb_state_key_get_utf8(sg->state, code_for_sym, key_event.text, sizeof(key_event.text));
+            if ( ((GLFW_MOD_CONTROL | GLFW_MOD_ALT | GLFW_MOD_SUPER) & sg->modifiers) == 0) {
+              xkb_state_key_get_utf8(sg->state, code_for_sym, key_text, sizeof(key_text));
+            }
             text_type = "text";
         }
-        if ((1 <= key_event.text[0] && key_event.text[0] <= 31) || key_event.text[0] == 127) key_event.text[0] = 0;  // don't send text for ascii control codes
-        if (key_event.text[0]) { debug("%s: %s ", text_type, key_event.text); }
+        if ((1 <= key_text[0] && key_text[0] <= 31) || key_text[0] == 127) {
+          key_text[0] = 0;  // don't send text for ascii control codes
+        }
+        if (key_text[0]) { debug("%s: %s ", text_type, key_text); }
     }
-    int glfw_keycode = glfw_key_for_sym(glfw_sym);
-    GLFWbool is_fallback = GLFW_FALSE;
-    if (glfw_keycode == GLFW_KEY_UNKNOWN && !key_event.text[0]) {
+    int glfw_sym = glfw_key_for_sym(xkb_sym);
+    bool is_fallback = false;
+    if (glfw_sym == GLFW_KEY_UNKNOWN && !key_text[0]) {
         int num_default_syms = xkb_state_key_get_syms(sg->default_state, code_for_sym, &default_syms);
         if (num_default_syms > 0) {
-            glfw_sym = default_syms[0];
-            glfw_keycode = glfw_key_for_sym(glfw_sym);
-            is_fallback = GLFW_TRUE;
+            xkb_sym = default_syms[0];
+            glfw_sym = glfw_key_for_sym(xkb_sym);
+            is_fallback = true;
         }
     }
     debug(
         "%s%s: %d (%s) xkb_key: %d (%s)\n",
         format_mods(sg->modifiers),
-        is_fallback ? "glfw_fallback_key" : "glfw_key", glfw_keycode, _glfwGetKeyName(glfw_keycode),
-        glfw_sym, glfw_xkb_keysym_name(glfw_sym)
+        is_fallback ? "glfw_fallback_key" : "glfw_key", glfw_sym, _glfwGetKeyName(glfw_sym),
+        xkb_sym, glfw_xkb_keysym_name(xkb_sym)
     );
-    key_event.action = action; key_event.glfw_modifiers = sg->modifiers;
-    key_event.keycode = scancode; key_event.keysym = glfw_sym;
-    key_event.window_id = window->id; key_event.glfw_keycode = glfw_keycode;
-    key_event.ibus_sym = syms[0];
-    if (ibus_process_key(&key_event, &xkb->ibus)) {
-        debug("↳ to IBUS: keycode: 0x%x keysym: 0x%x (%s) %s\n", key_event.ibus_keycode, key_event.ibus_sym, glfw_xkb_keysym_name(key_event.ibus_sym), format_mods(key_event.glfw_modifiers));
+
+    // NOTE: On linux, the reported native key identifier is the XKB keysym value.
+    // Do not confuse `native_key` with `xkb_keycode` (the native keycode reported for the
+    // glfw event VS the X internal code for a key).
+    //
+    // We use the XKB keysym instead of the X keycode to be able to go back-and-forth between
+    // the GLFW keysym and the XKB keysym when needed, which is not possible using the X keycode,
+    // because of the lost information when resolving the keycode to the keysym, like consumed
+    // mods.
+    glfw_ev.native_key = xkb_sym;
+
+    glfw_ev.action = action;
+    glfw_ev.key = glfw_sym;
+    glfw_ev.mods = sg->modifiers;
+    glfw_ev.text = key_text;
+
+    _GLFWIBUSKeyEvent ibus_ev;
+    ibus_ev.glfw_ev = glfw_ev;
+    ibus_ev.ibus_keycode = ibus_keycode;
+    ibus_ev.window_id = window->id;
+    ibus_ev.ibus_keysym = syms[0];
+    if (ibus_process_key(&ibus_ev, &xkb->ibus)) {
+        debug("↳ to IBUS: keycode: 0x%x keysym: 0x%x (%s) %s\n", ibus_ev.ibus_keycode, ibus_ev.ibus_keysym, glfw_xkb_keysym_name(ibus_ev.ibus_keysym), format_mods(ibus_ev.glfw_ev.mods));
     } else {
-        _glfwInputKeyboard(window, glfw_keycode, glfw_sym, action, sg->modifiers, key_event.text, 0);
+        _glfwInputKeyboard(window, &glfw_ev);
     }
 }

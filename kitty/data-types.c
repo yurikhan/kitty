@@ -5,6 +5,7 @@
  * Distributed under terms of the GPL3 license.
  */
 
+#define MONOTONIC_START_MODULE
 #ifdef __APPLE__
 // Needed for _CS_DARWIN_USER_CACHE_DIR
 #define _DARWIN_C_SOURCE
@@ -22,31 +23,10 @@
 #ifdef WITH_PROFILER
 #include <gperftools/profiler.h>
 #endif
-
-/* To millisecond (10^-3) */
-#define SEC_TO_MS 1000
-
-/* To microseconds (10^-6) */
-#define MS_TO_US 1000
-#define SEC_TO_US (SEC_TO_MS * MS_TO_US)
-
-/* To nanoseconds (10^-9) */
-#define US_TO_NS 1000
-#define MS_TO_NS (MS_TO_US * US_TO_NS)
-#define SEC_TO_NS (SEC_TO_MS * MS_TO_NS)
-
-/* Conversion from nanoseconds */
-#define NS_TO_MS (1000 * 1000)
-#define NS_TO_US (1000)
+#include "monotonic.h"
 
 #ifdef __APPLE__
 #include <libproc.h>
-#include <mach/mach_time.h>
-static mach_timebase_info_data_t timebase = {0};
-
-static inline double monotonic_() {
-	return ((double)(mach_absolute_time() * timebase.numer) / timebase.denom)/SEC_TO_NS;
-}
 
 static PyObject*
 user_cache_dir() {
@@ -73,23 +53,7 @@ process_group_map() {
     free(buf);
     return ans;
 }
-
-#else
-#include <time.h>
-static inline double monotonic_() {
-    struct timespec ts = {0};
-#ifdef CLOCK_HIGHRES
-	clock_gettime(CLOCK_HIGHRES, &ts);
-#elif CLOCK_MONOTONIC_RAW
-	clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-#else
-	clock_gettime(CLOCK_MONOTONIC, &ts);
 #endif
-	return (((double)ts.tv_nsec) / SEC_TO_NS) + (double)ts.tv_sec;
-}
-#endif
-
-double monotonic() { return monotonic_(); }
 
 static PyObject*
 redirect_std_streams(PyObject UNUSED *self, PyObject *args) {
@@ -146,7 +110,7 @@ open_tty(PyObject *self UNUSED, PyObject *args) {
     if (!read_with_timeout) flags |= O_NONBLOCK;
     static char ctty[L_ctermid+1];
     int fd = open(ctermid(ctty), flags);
-    if (fd == -1) { PyErr_SetFromErrno(PyExc_OSError); return NULL; }
+    if (fd == -1) { PyErr_Format(PyExc_OSError, "Failed to open controlling terminal: %s (identified with ctermid()) with error: %s", ctty, strerror(errno)); return NULL; }
     struct termios *termios_p = calloc(1, sizeof(struct termios));
     if (!termios_p) return PyErr_NoMemory();
     if (tcgetattr(fd, termios_p) != 0) { free(termios_p); PyErr_SetFromErrno(PyExc_OSError); return NULL; }
@@ -179,7 +143,7 @@ close_tty(PyObject *self UNUSED, PyObject *args) {
     TTY_ARGS
     tcsetattr(fd, TCSAFLUSH, termios_p);  // deliberately ignore failure
     free(termios_p);
-    close(fd);
+    safe_close(fd);
     Py_RETURN_NONE;
 }
 
@@ -190,7 +154,7 @@ static PyMethodDef module_methods[] = {
     {"normal_tty", normal_tty, METH_VARARGS, ""},
     {"raw_tty", raw_tty, METH_VARARGS, ""},
     {"close_tty", close_tty, METH_VARARGS, ""},
-    {"set_iutf8", (PyCFunction)pyset_iutf8, METH_VARARGS, ""},
+    {"set_iutf8_fd", (PyCFunction)pyset_iutf8, METH_VARARGS, ""},
     {"thread_write", (PyCFunction)cm_thread_write, METH_VARARGS, ""},
     {"parse_bytes", (PyCFunction)parse_bytes, METH_VARARGS, ""},
     {"parse_bytes_dump", (PyCFunction)parse_bytes_dump, METH_VARARGS, ""},
@@ -251,9 +215,7 @@ PyInit_fast_data_types(void) {
 
     m = PyModule_Create(&module);
     if (m == NULL) return NULL;
-#ifdef __APPLE__
-    mach_timebase_info(&timebase);
-#endif
+    init_monotonic();
 
     if (m != NULL) {
         if (!init_logging(m)) return NULL;

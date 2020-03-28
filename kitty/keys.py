@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -121,6 +121,7 @@ control_codes.update({
     enumerate(range(defines.GLFW_KEY_A, defines.GLFW_KEY_RIGHT_BRACKET + 1))
 })
 control_codes[defines.GLFW_KEY_GRAVE_ACCENT] = (0,)
+control_codes[defines.GLFW_KEY_UNDERSCORE] = (0,)
 control_codes[defines.GLFW_KEY_SPACE] = (0,)
 control_codes[defines.GLFW_KEY_2] = (0,)
 control_codes[defines.GLFW_KEY_3] = (27,)
@@ -160,7 +161,7 @@ action_map = {
 def extended_key_event(key, mods, action):
     if key >= defines.GLFW_KEY_LAST or key == defines.GLFW_KEY_UNKNOWN or (
         # Shifted printable key should be handled by on_text_input()
-        mods <= defines.GLFW_MOD_SHIFT and 32 <= key <= 126
+        mods <= defines.GLFW_MOD_SHIFT and defines.GLFW_KEY_SPACE <= key <= defines.GLFW_KEY_LAST_PRINTABLE
     ):
         return b''
     if mods == 0 and key in (
@@ -206,8 +207,8 @@ UN_SHIFTED_PRINTABLE.update(pmap(
     " ',-./;="
 ))
 UN_SHIFTED_PRINTABLE.update(pmap(
-    'LEFT_BRACKET BACKSLASH RIGHT_BRACKET GRAVE_ACCENT',
-    "[\\]`"
+    'LEFT_BRACKET BACKSLASH RIGHT_BRACKET GRAVE_ACCENT UNDERSCORE',
+    "[\\]`_"
 ))
 SHIFTED_PRINTABLE = UN_SHIFTED_PRINTABLE.copy()
 SHIFTED_PRINTABLE.update({
@@ -263,7 +264,7 @@ def key_to_bytes(key, smkx, extended, mods, action):
     return bytes(data)
 
 
-def interpret_key_event(key, scancode, mods, window, action):
+def interpret_key_event(key, native_key, mods, window, action):
     screen = window.screen
     if (
             action == defines.GLFW_PRESS or
@@ -274,26 +275,21 @@ def interpret_key_event(key, scancode, mods, window, action):
     return b''
 
 
-def get_shortcut(keymap, mods, key, scancode):
+def get_shortcut(keymap, mods, key, native_key):
     mods &= 0b1111
     ans = keymap.get((mods, False, key))
     if ans is None:
-        ans = keymap.get((mods, True, scancode))
+        ans = keymap.get((mods, True, native_key))
     return ans
 
 
-def shortcut_matches(s, mods, key, scancode):
+def shortcut_matches(s, mods, key, native_key):
     mods &= 0b1111
-    q = scancode if s[1] else key
+    q = native_key if s[1] else key
     return s[0] & 0b1111 == mods & 0b1111 and s[2] == q
 
 
-def generate_key_table():
-    # To run this, use: python3 . +runpy "from kitty.keys import *; generate_key_table()"
-    import os
-    from functools import partial
-    f = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'keys.h'), 'w')
-    w = partial(print, file=f)
+def generate_key_table_impl(w):
     w('// auto-generated from keys.py, do not edit!')
     w('#pragma once')
     w('#include <stddef.h>')
@@ -308,7 +304,7 @@ def generate_key_table():
     def key_name(k):
         return k[len('GLFW_KEY_'):]
 
-    keys = {v: k for k, v in vars(defines).items() if k.startswith('GLFW_KEY_') and k not in {'GLFW_KEY_LAST', 'GLFW_KEY_UNKNOWN'}}
+    keys = {v: k for k, v in vars(defines).items() if k.startswith('GLFW_KEY_') and k not in {'GLFW_KEY_LAST', 'GLFW_KEY_LAST_PRINTABLE', 'GLFW_KEY_UNKNOWN'}}
     key_rmap = []
     for i in range(number_of_keys):
         k = keys.get(i)
@@ -318,7 +314,7 @@ def generate_key_table():
             w('%d, /* %s */' % (key_count, key_name(k)))
             key_rmap.append(i)
             key_count += 1
-            if key_count > 128:
+            if key_count > 256:
                 raise OverflowError('Too many keys')
     w('};\n')
     w('static inline const char* key_name(int key) { switch(key) {')
@@ -358,7 +354,7 @@ def generate_key_table():
                     ind('case 0x{:x}:'.format(mods))
                     i += 1
                     if key_bytes:
-                        ind('switch(key & 0x7f) { default: return NULL;')
+                        ind('switch(key & 0xff) { default: return NULL;')
                         i += 1
                         for key, (data, glfw_key) in key_bytes.items():
                             ind('case {}: // {}'.format(key, key_name(keys[glfw_key])))
@@ -388,3 +384,12 @@ def generate_key_table():
     ind('return NULL;')
     i -= 1
     w('}')
+
+
+def generate_key_table():
+    # To run this, use: python3 . +runpy "from kitty.keys import *; generate_key_table()"
+    import os
+    from functools import partial
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'keys.h'), 'w') as f:
+        w = partial(print, file=f)
+        generate_key_table_impl(w)

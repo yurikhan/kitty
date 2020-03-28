@@ -12,9 +12,9 @@
 #include "unicode-data.h"
 
 #define MISSING_GLYPH 4
-#define MAX_NUM_EXTRA_GLYPHS 8
-#define CELLS_IN_CANVAS ((MAX_NUM_EXTRA_GLYPHS + 1) * 3)
-#define MAX_NUM_EXTRA_GLYPHS_PUA 4
+#define MAX_NUM_EXTRA_GLYPHS 8u
+#define CELLS_IN_CANVAS ((MAX_NUM_EXTRA_GLYPHS + 1u) * 3u)
+#define MAX_NUM_EXTRA_GLYPHS_PUA 4u
 
 typedef void (*send_sprite_to_gpu_func)(FONTS_DATA_HANDLE fg, unsigned int, unsigned int, unsigned int, pixel*);
 send_sprite_to_gpu_func current_send_sprite_to_gpu = NULL;
@@ -58,8 +58,10 @@ typedef struct {
 
 
 static hb_buffer_t *harfbuzz_buffer = NULL;
+static hb_feature_t hb_features[3] = {{0}};
 static char_type shape_buffer[4096] = {0};
 static size_t max_texture_size = 1024, max_array_len = 1024;
+typedef enum { LIGA_FEATURE, DLIG_FEATURE, CALT_FEATURE } HBFeature;
 
 typedef struct {
     char_type left, right;
@@ -75,6 +77,8 @@ typedef struct {
     PyObject *face;
     // Map glyphs to sprite map co-ords
     SpritePosition sprite_map[1024];
+    hb_feature_t hb_features[8];
+    size_t num_hb_features;
     SpecialGlyphCache special_glyph_cache[SPECIAL_GLYPH_CACHE_SIZE];
     bool bold, italic, emoji_presentation;
 } Font;
@@ -97,7 +101,7 @@ static id_type font_group_id_counter = 0;
 static void initialize_font_group(FontGroup *fg);
 
 static inline void
-save_window_font_groups() {
+save_window_font_groups(void) {
     for (size_t o = 0; o < global_state.num_os_windows; o++) {
         OSWindow *w = global_state.os_windows + o;
         w->temp_font_group_id = w->fonts_data ? ((FontGroup*)(w->fonts_data))->id : 0;
@@ -105,7 +109,7 @@ save_window_font_groups() {
 }
 
 static inline void
-restore_window_font_groups() {
+restore_window_font_groups(void) {
     for (size_t o = 0; o < global_state.num_os_windows; o++) {
         OSWindow *w = global_state.os_windows + o;
         w->fonts_data = NULL;
@@ -128,7 +132,7 @@ font_group_is_unused(FontGroup *fg) {
 }
 
 static inline void
-trim_unused_font_groups() {
+trim_unused_font_groups(void) {
     save_window_font_groups();
     size_t i = 0;
     while (i < num_font_groups) {
@@ -142,7 +146,7 @@ trim_unused_font_groups() {
 }
 
 static inline void
-add_font_group() {
+add_font_group(void) {
     if (num_font_groups) trim_unused_font_groups();
     if (num_font_groups >= font_groups_capacity) {
         save_window_font_groups();
@@ -162,7 +166,7 @@ font_group_for(double font_sz_in_pts, double logical_dpi_x, double logical_dpi_y
     }
     add_font_group();
     FontGroup *fg = font_groups + num_font_groups - 1;
-    memset(fg, 0, sizeof(FontGroup));
+    zero_at_ptr(fg);
     fg->font_sz_in_pts = font_sz_in_pts;
     fg->logical_dpi_x = logical_dpi_x;
     fg->logical_dpi_y = logical_dpi_y;
@@ -195,7 +199,7 @@ sprite_map_set_error(int error) {
 void
 sprite_tracker_set_limits(size_t max_texture_size_, size_t max_array_len_) {
     max_texture_size = max_texture_size_;
-    max_array_len = MIN(0xfff, max_array_len_);
+    max_array_len = MIN(0xfffu, max_array_len_);
 }
 
 static inline void
@@ -206,7 +210,7 @@ do_increment(FontGroup *fg, int *error) {
         fg->sprite_tracker.ynum = MIN(MAX(fg->sprite_tracker.ynum, fg->sprite_tracker.y + 1), fg->sprite_tracker.max_y);
         if (fg->sprite_tracker.y >= fg->sprite_tracker.max_y) {
             fg->sprite_tracker.y = 0; fg->sprite_tracker.z++;
-            if (fg->sprite_tracker.z >= MIN(UINT16_MAX, max_array_len)) *error = 2;
+            if (fg->sprite_tracker.z >= MIN((size_t)UINT16_MAX, max_array_len)) *error = 2;
         }
     }
 }
@@ -300,7 +304,7 @@ free_maps(Font *font) {
 
 void
 clear_sprite_map(Font *font) {
-#define CLEAR(s) s->filled = false; s->rendered = false; s->colored = false; s->glyph = 0; memset(&s->extra_glyphs, 0, sizeof(ExtraGlyphs)); s->x = 0; s->y = 0; s->z = 0; s->ligature_index = 0;
+#define CLEAR(s) s->filled = false; s->rendered = false; s->colored = false; s->glyph = 0; zero_at_ptr(&s->extra_glyphs); s->x = 0; s->y = 0; s->z = 0; s->ligature_index = 0;
     SpritePosition *s;
     for (size_t i = 0; i < sizeof(font->sprite_map)/sizeof(font->sprite_map[0]); i++) {
         s = font->sprite_map + i;
@@ -328,8 +332,8 @@ clear_special_glyph_cache(Font *font) {
 
 static void
 sprite_tracker_set_layout(GPUSpriteTracker *sprite_tracker, unsigned int cell_width, unsigned int cell_height) {
-    sprite_tracker->xnum = MIN(MAX(1, max_texture_size / cell_width), UINT16_MAX);
-    sprite_tracker->max_y = MIN(MAX(1, max_texture_size / cell_height), UINT16_MAX);
+    sprite_tracker->xnum = MIN(MAX(1u, max_texture_size / cell_width), (size_t)UINT16_MAX);
+    sprite_tracker->max_y = MIN(MAX(1u, max_texture_size / cell_height), (size_t)UINT16_MAX);
     sprite_tracker->ynum = 1;
     sprite_tracker->x = 0; sprite_tracker->y = 0; sprite_tracker->z = 0;
 }
@@ -344,11 +348,21 @@ desc_to_face(PyObject *desc, FONTS_DATA_HANDLE fg) {
     return ans;
 }
 
+static inline void
+copy_hb_feature(Font *f, HBFeature which) {
+    memcpy(f->hb_features + f->num_hb_features++, hb_features + which, sizeof(hb_features[0]));
+}
 
 static inline bool
 init_font(Font *f, PyObject *face, bool bold, bool italic, bool emoji_presentation) {
     f->face = face; Py_INCREF(f->face);
     f->bold = bold; f->italic = italic; f->emoji_presentation = emoji_presentation;
+    f->num_hb_features = 0;
+    const char *psname = postscript_name_for_face(face);
+    if (strstr(psname, "NimbusMonoPS-") == psname) {
+        copy_hb_feature(f, LIGA_FEATURE); copy_hb_feature(f, DLIG_FEATURE);
+    }
+    copy_hb_feature(f, CALT_FEATURE);
     return true;
 }
 
@@ -368,7 +382,7 @@ del_font_group(FontGroup *fg) {
 }
 
 static inline void
-free_font_groups() {
+free_font_groups(void) {
     if (font_groups) {
         for (size_t i = 0; i < num_font_groups; i++) del_font_group(font_groups + i);
         free(font_groups); font_groups = NULL;
@@ -393,13 +407,26 @@ calc_cell_metrics(FontGroup *fg) {
     cell_metrics(fg->fonts[fg->medium_font_idx].face, &cell_width, &cell_height, &baseline, &underline_position, &underline_thickness);
     if (!cell_width) fatal("Failed to calculate cell width for the specified font");
     unsigned int before_cell_height = cell_height;
-    if (OPT(adjust_line_height_px) != 0) cell_height += OPT(adjust_line_height_px);
-    if (OPT(adjust_line_height_frac) != 0.f) cell_height *= OPT(adjust_line_height_frac);
-    if (OPT(adjust_column_width_px != 0)) cell_width += OPT(adjust_column_width_px);
-    if (OPT(adjust_column_width_frac) != 0.f) cell_width *= OPT(adjust_column_width_frac);
+    int cw = cell_width, ch = cell_height;
+    if (OPT(adjust_line_height_px) != 0) ch += OPT(adjust_line_height_px);
+    if (OPT(adjust_line_height_frac) != 0.f) ch = (int)(ch * OPT(adjust_line_height_frac));
+    if (OPT(adjust_column_width_px != 0)) cw += OPT(adjust_column_width_px);
+    if (OPT(adjust_column_width_frac) != 0.f) cw = (int)(cw * OPT(adjust_column_width_frac));
+#define MAX_DIM 1000
+#define MIN_WIDTH 2
+#define MIN_HEIGHT 4
+    if (cw >= MIN_WIDTH && cw <= MAX_DIM) cell_width = cw;
+    else log_error("Cell width invalid after adjustment, ignoring adjust_column_width");
+    if (ch >= MIN_HEIGHT && ch <= MAX_DIM) cell_height = ch;
+    else log_error("Cell height invalid after adjustment, ignoring adjust_line_height");
     int line_height_adjustment = cell_height - before_cell_height;
-    if (cell_height < 4) fatal("line height too small after adjustment");
-    if (cell_height > 1000) fatal("line height too large after adjustment");
+    if (cell_height < MIN_HEIGHT) fatal("Line height too small: %u", cell_height);
+    if (cell_height > MAX_DIM) fatal("Line height too large: %u", cell_height);
+    if (cell_width < MIN_WIDTH) fatal("Cell width too small: %u", cell_width);
+    if (cell_width > MAX_DIM) fatal("Cell width too large: %u", cell_width);
+#undef MIN_WIDTH
+#undef MIN_HEIGHT
+#undef MAX_DIM
     underline_position = MIN(cell_height - 1, underline_position);
     // ensure there is at least a couple of pixels available to render styled underlines
     while (underline_position > baseline + 1 && cell_height - underline_position < 2) underline_position--;
@@ -470,6 +497,20 @@ load_fallback_font(FontGroup *fg, CPUCell *cell, bool bold, bool italic, bool em
     Font *af = &fg->fonts[ans];
     if (!init_font(af, face, bold, italic, emoji_presentation)) fatal("Out of memory");
     Py_DECREF(face);
+    if (!has_cell_text(af, cell)) {
+        if (global_state.debug_font_fallback) {
+            printf("The font chosen by the OS for the text: ");
+            printf("U+%x ", cell->ch);
+            for (unsigned i = 0; i < arraysz(cell->cc_idx) && cell->cc_idx[i]; i++) {
+                printf("U+%x ", codepoint_for_mark(cell->cc_idx[i]));
+            }
+            printf("is ");
+            PyObject_Print(af->face, stdout, 0);
+            printf(" but it does not actually contain glyphs for that text\n");
+        }
+        del_font(af);
+        return MISSING_FONT;
+    }
     fg->fallback_fonts_count++;
     fg->fonts_count++;
     return ans;
@@ -502,20 +543,33 @@ in_symbol_maps(FontGroup *fg, char_type ch) {
 }
 
 
-static ssize_t
-font_for_cell(FontGroup *fg, CPUCell *cpu_cell, GPUCell *gpu_cell) {
+// Decides which 'font' to use for a given cell.
+//
+// Possible results:
+// - NO_FONT
+// - MISSING_FONT
+// - BLANK_FONT
+// - BOX_FONT
+// - an index in the fonts list
+static inline ssize_t
+font_for_cell(FontGroup *fg, CPUCell *cpu_cell, GPUCell *gpu_cell, bool *is_fallback_font, bool *is_emoji_presentation) {
+    *is_fallback_font = false;
+    *is_emoji_presentation = false;
 START_ALLOW_CASE_RANGE
     ssize_t ans;
     switch(cpu_cell->ch) {
         case 0:
         case ' ':
+        case '\t':
             return BLANK_FONT;
-        case 0x2500 ... 0x2570:
+        case 0x2500 ... 0x2573:
         case 0x2574 ... 0x259f:
-        case 0xe0b0:
-        case 0xe0b2:
-        case 0xe0b4:
+        case 0xe0b0 ... 0xe0b4:
         case 0xe0b6:
+        case 0xe0b8: // 
+        case 0xe0ba: //   
+        case 0xe0bc: // 
+        case 0xe0be: //   
             return BOX_FONT;
         default:
             ans = in_symbol_maps(fg, cpu_cell->ch);
@@ -531,7 +585,9 @@ START_ALLOW_CASE_RANGE
                     ans = fg->bi_font_idx; break;
             }
             if (ans < 0) ans = fg->medium_font_idx;
-            if (!has_emoji_presentation(cpu_cell, gpu_cell) && has_cell_text(fg->fonts + ans, cpu_cell)) return ans;
+            *is_emoji_presentation = has_emoji_presentation(cpu_cell, gpu_cell);
+            if (!*is_emoji_presentation && has_cell_text(fg->fonts + ans, cpu_cell)) return ans;
+            *is_fallback_font = true;
             return fallback_font(fg, cpu_cell, gpu_cell);
     }
 END_ALLOW_CASE_RANGE
@@ -542,20 +598,15 @@ set_sprite(GPUCell *cell, sprite_index x, sprite_index y, sprite_index z) {
     cell->sprite_x = x; cell->sprite_y = y; cell->sprite_z = z;
 }
 
+// Gives a unique (arbitrary) id to a box glyph
 static inline glyph_index
 box_glyph_id(char_type ch) {
 START_ALLOW_CASE_RANGE
     switch(ch) {
         case 0x2500 ... 0x259f:
-            return ch - 0x2500;
-        case 0xe0b0:
-            return 0xfa;
-        case 0xe0b2:
-            return 0xfb;
-        case 0xe0b4:
-            return 0xfc;
-        case 0xe0b6:
-            return 0xfd;
+            return ch - 0x2500; // IDs from 0x00 to 0x9f
+        case 0xe0b0 ... 0xe0d4:
+            return 0xa0 + ch - 0xe0b0; // IDs from 0xa0 to 0xc4
         default:
             return 0xff;
     }
@@ -572,7 +623,7 @@ render_alpha_mask(uint8_t *alpha_mask, pixel* dest, Region *src_rect, Region *de
         for(size_t sc = src_rect->left, dc = dest_rect->left; sc < src_rect->right && dc < dest_rect->right; sc++, dc++) {
             pixel val = d[dc];
             uint8_t alpha = s[sc];
-            d[dc] = 0xffffff00 | MIN(0xff, alpha + (val & 0xff));
+            d[dc] = 0xffffff00 | MIN(0xffu, alpha + (val & 0xff));
         }
     }
 }
@@ -636,16 +687,11 @@ extract_cell_from_canvas(FontGroup *fg, unsigned int i, unsigned int num_cells) 
     return ans;
 }
 
-static inline bool
-is_private_use(char_type ch) {
-    return (0xe000 <= ch && ch <= 0xf8ff) || (0xF0000 <= ch && ch <= 0xFFFFF) || (0x100000 <= ch && ch <= 0x10FFFF);
-}
-
 static inline void
 render_group(FontGroup *fg, unsigned int num_cells, unsigned int num_glyphs, CPUCell *cpu_cells, GPUCell *gpu_cells, hb_glyph_info_t *info, hb_glyph_position_t *positions, Font *font, glyph_index glyph, ExtraGlyphs *extra_glyphs, bool center_glyph) {
     static SpritePosition* sprite_position[16];
     int error = 0;
-    num_cells = MIN(sizeof(sprite_position)/sizeof(sprite_position[0]), num_cells);
+    num_cells = MIN(arraysz(sprite_position), num_cells);
     for (unsigned int i = 0; i < num_cells; i++) {
         sprite_position[i] = sprite_position_for(fg, font, glyph, extra_glyphs, (uint8_t)i, &error);
         if (error != 0) { sprite_map_set_error(error); PyErr_Print(); return; }
@@ -680,6 +726,7 @@ typedef struct {
 
 typedef struct {
     unsigned int first_glyph_idx, first_cell_idx, num_glyphs, num_cells;
+    bool has_special_glyph, is_space_ligature;
 } Group;
 
 typedef struct {
@@ -704,9 +751,9 @@ num_codepoints_in_cell(CPUCell *cell) {
 }
 
 static inline void
-shape(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells, hb_font_t *font) {
+shape(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells, hb_font_t *font, Font *fobj, bool disable_ligature) {
     if (group_state.groups_capacity <= 2 * num_cells) {
-        group_state.groups_capacity = MAX(128, 2 * num_cells);  // avoid unnecessary reallocs
+        group_state.groups_capacity = MAX(128u, 2 * num_cells);  // avoid unnecessary reallocs
         group_state.groups = realloc(group_state.groups, sizeof(Group) * group_state.groups_capacity);
         if (!group_state.groups) fatal("Out of memory");
     }
@@ -718,7 +765,7 @@ shape(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells, hb
     group_state.current_cell_data.num_codepoints = num_codepoints_in_cell(first_cpu_cell);
     group_state.current_cell_data.codepoints_consumed = 0;
     group_state.current_cell_data.current_codepoint = first_cpu_cell->ch;
-    memset(group_state.groups, 0, sizeof(Group) * group_state.groups_capacity);
+    zero_at_ptr_count(group_state.groups, group_state.groups_capacity);
     group_state.group_idx = 0;
     group_state.glyph_idx = 0;
     group_state.cell_idx = 0;
@@ -728,7 +775,9 @@ shape(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells, hb
     group_state.last_cpu_cell = first_cpu_cell + (num_cells ? num_cells - 1 : 0);
     group_state.last_gpu_cell = first_gpu_cell + (num_cells ? num_cells - 1 : 0);
     load_hb_buffer(first_cpu_cell, first_gpu_cell, num_cells);
-    hb_shape(font, harfbuzz_buffer, NULL, 0);
+
+    hb_shape(font, harfbuzz_buffer, fobj->hb_features, fobj->num_hb_features - (disable_ligature ? 0 : 1));
+
     unsigned int info_length, positions_length;
     group_state.info = hb_buffer_get_glyph_infos(harfbuzz_buffer, &info_length);
     group_state.positions = hb_buffer_get_glyph_positions(harfbuzz_buffer, &positions_length);
@@ -783,9 +832,13 @@ check_cell_consumed(CellData *cell_data, CPUCell *last_cpu_cell) {
             case 0:
                 cell_data->current_codepoint = cell_data->cpu_cell->ch;
                 break;
-            default:
-                cell_data->current_codepoint = codepoint_for_mark(cell_data->cpu_cell->cc_idx[cell_data->codepoints_consumed - 1]);
+            default: {
+                index_type mark = cell_data->cpu_cell->cc_idx[cell_data->codepoints_consumed - 1];
+                // VS15/16 cause rendering to break, as they get marked as
+                // special glyphs, so map to 0, to avoid that
+                cell_data->current_codepoint = (mark == VS15 || mark == VS16) ? 0 : codepoint_for_mark(mark);
                 break;
+            }
         }
     }
     return 0;
@@ -793,13 +846,13 @@ check_cell_consumed(CellData *cell_data, CPUCell *last_cpu_cell) {
 
 
 static inline void
-shape_run(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells, Font *font) {
-    shape(first_cpu_cell, first_gpu_cell, num_cells, harfbuzz_font_for_face(font->face));
+shape_run(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells, Font *font, bool disable_ligature) {
+    shape(first_cpu_cell, first_gpu_cell, num_cells, harfbuzz_font_for_face(font->face), font, disable_ligature);
 #if 0
+        static char dbuf[1024];
         // You can also generate this easily using hb-shape --show-extents --cluster-level=1 --shapers=ot /path/to/font/file text
-        hb_buffer_serialize_glyphs(harfbuzz_buffer, 0, group_state.num_glyphs, (char*)canvas, sizeof(pixel) * CELLS_IN_CANVAS * cell_width * cell_height, NULL, harfbuzz_font_for_face(font->face), HB_BUFFER_SERIALIZE_FORMAT_TEXT, HB_BUFFER_SERIALIZE_FLAG_DEFAULT | HB_BUFFER_SERIALIZE_FLAG_GLYPH_EXTENTS);
-        printf("\n%s\n", (char*)canvas);
-        clear_canvas();
+        hb_buffer_serialize_glyphs(harfbuzz_buffer, 0, group_state.num_glyphs, dbuf, sizeof(dbuf), NULL, harfbuzz_font_for_face(font->face), HB_BUFFER_SERIALIZE_FORMAT_TEXT, HB_BUFFER_SERIALIZE_FLAG_DEFAULT | HB_BUFFER_SERIALIZE_FLAG_GLYPH_EXTENTS);
+        printf("\n%s\n", dbuf);
 #endif
     /* Now distribute the glyphs into groups of cells
      * Considerations to keep in mind:
@@ -817,7 +870,7 @@ shape_run(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells
     uint32_t cluster, next_cluster;
     bool add_to_current_group;
 #define G(x) (group_state.x)
-#define MAX_GLYPHS_IN_GROUP (MAX_NUM_EXTRA_GLYPHS + 1)
+#define MAX_GLYPHS_IN_GROUP (MAX_NUM_EXTRA_GLYPHS + 1u)
     while (G(glyph_idx) < G(num_glyphs) && G(cell_idx) < G(num_cells)) {
         glyph_index glyph_id = G(info)[G(glyph_idx)].codepoint;
         cluster = G(info)[G(glyph_idx)].cluster;
@@ -856,6 +909,7 @@ shape_run(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells
     current_group->num_glyphs = 1; \
     current_group->first_glyph_idx = G(glyph_idx); \
 }
+        if (is_special) current_group->has_special_glyph = true;
         if (is_last_glyph) {
             // soak up all remaining cells
             if (G(cell_idx) < G(num_cells)) {
@@ -906,7 +960,7 @@ shape_run(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells
 }
 
 static inline void
-merge_groups_for_pua_space_ligature() {
+merge_groups_for_pua_space_ligature(void) {
     while (G(group_idx) > 0) {
         Group *g = G(groups), *g1 = G(groups) + 1;
         g->num_cells += g1->num_cells;
@@ -914,7 +968,25 @@ merge_groups_for_pua_space_ligature() {
         g->num_glyphs = MIN(g->num_glyphs, MAX_NUM_EXTRA_GLYPHS + 1);
         G(group_idx)--;
     }
+    G(groups)->is_space_ligature = true;
 }
+
+static inline void
+split_run_at_offset(index_type cursor_offset, index_type *left, index_type *right) {
+    *left = 0; *right = 0;
+    for (unsigned idx = 0; idx < G(group_idx) + 1; idx++) {
+        Group *group = G(groups) + idx;
+        if (group->first_cell_idx <= cursor_offset && cursor_offset < group->first_cell_idx + group->num_cells) {
+            GPUCell *first_cell = G(first_gpu_cell) + group->first_cell_idx;
+            if (group->num_cells > 1 && group->has_special_glyph && (first_cell->attrs & WIDTH_MASK) == 1) {
+                // likely a calt ligature
+                *left = group->first_cell_idx; *right = group->first_cell_idx + group->num_cells;
+            }
+            break;
+        }
+    }
+}
+
 
 static inline void
 render_groups(FontGroup *fg, Font *font, bool center_glyph) {
@@ -930,7 +1002,11 @@ render_groups(FontGroup *fg, Font *font, bool center_glyph) {
         int last = -1;
         for (i = 1; i < MIN(arraysz(ed.data) + 1, group->num_glyphs); i++) { last = i - 1; ed.data[last] = G(info)[group->first_glyph_idx + i].codepoint; }
         if ((size_t)(last + 1) < arraysz(ed.data)) ed.data[last + 1] = 0;
-        render_group(fg, group->num_cells, group->num_glyphs, G(first_cpu_cell) + group->first_cell_idx, G(first_gpu_cell) + group->first_cell_idx, G(info) + group->first_glyph_idx, G(positions) + group->first_glyph_idx, font, primary, &ed, center_glyph);
+        // We dont want to render the spaces in a space ligature because
+        // there exist stupid fonts like Powerline that have no space glyph,
+        // so special case it: https://github.com/kovidgoyal/kitty/issues/1225
+        unsigned int num_glyphs = group->is_space_ligature ? 1 : group->num_glyphs;
+        render_group(fg, group->num_cells, num_glyphs, G(first_cpu_cell) + group->first_cell_idx, G(first_gpu_cell) + group->first_cell_idx, G(info) + group->first_glyph_idx, G(positions) + group->first_glyph_idx, font, primary, &ed, center_glyph);
         idx++;
     }
 }
@@ -951,11 +1027,13 @@ test_shape(PyObject UNUSED *self, PyObject *args) {
         if (face == NULL) return NULL;
         font = calloc(1, sizeof(Font));
         font->face = face;
+        font->hb_features[0] = hb_features[CALT_FEATURE];
+        font->num_hb_features = 1;
     } else {
         FontGroup *fg = font_groups;
         font = fg->fonts + fg->medium_font_idx;
     }
-    shape_run(line->cpu_cells, line->gpu_cells, num, font);
+    shape_run(line->cpu_cells, line->gpu_cells, num, font, false);
 
     PyObject *ans = PyList_New(0);
     unsigned int idx = 0;
@@ -976,11 +1054,28 @@ test_shape(PyObject UNUSED *self, PyObject *args) {
 #undef G
 
 static inline void
-render_run(FontGroup *fg, CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells, ssize_t font_idx, bool pua_space_ligature, bool center_glyph) {
+render_run(FontGroup *fg, CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells, ssize_t font_idx, bool pua_space_ligature, bool center_glyph, int cursor_offset, DisableLigature disable_ligature_strategy) {
     switch(font_idx) {
         default:
-            shape_run(first_cpu_cell, first_gpu_cell, num_cells, &fg->fonts[font_idx]);
+            shape_run(first_cpu_cell, first_gpu_cell, num_cells, &fg->fonts[font_idx], disable_ligature_strategy == DISABLE_LIGATURES_ALWAYS);
             if (pua_space_ligature) merge_groups_for_pua_space_ligature();
+            else if (cursor_offset > -1) {
+                index_type left, right;
+                split_run_at_offset(cursor_offset, &left, &right);
+                if (right > left) {
+                    if (left) {
+                        shape_run(first_cpu_cell, first_gpu_cell, left, &fg->fonts[font_idx], false);
+                        render_groups(fg, &fg->fonts[font_idx], center_glyph);
+                    }
+                        shape_run(first_cpu_cell + left, first_gpu_cell + left, right - left, &fg->fonts[font_idx], true);
+                        render_groups(fg, &fg->fonts[font_idx], center_glyph);
+                    if (right < num_cells) {
+                        shape_run(first_cpu_cell + right, first_gpu_cell + right, num_cells - right, &fg->fonts[font_idx], false);
+                        render_groups(fg, &fg->fonts[font_idx], center_glyph);
+                    }
+                    break;
+                }
+            }
             render_groups(fg, &fg->fonts[font_idx], center_glyph);
             break;
         case BLANK_FONT:
@@ -996,32 +1091,39 @@ render_run(FontGroup *fg, CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, inde
 }
 
 void
-render_line(FONTS_DATA_HANDLE fg_, Line *line) {
-#define RENDER if (run_font_idx != NO_FONT && i > first_cell_in_run) render_run(fg, line->cpu_cells + first_cell_in_run, line->gpu_cells + first_cell_in_run, i - first_cell_in_run, run_font_idx, false, center_glyph);
+render_line(FONTS_DATA_HANDLE fg_, Line *line, index_type lnum, Cursor *cursor, DisableLigature disable_ligature_strategy) {
+#define RENDER if (run_font_idx != NO_FONT && i > first_cell_in_run) { \
+    int cursor_offset = -1; \
+    if (disable_ligature_at_cursor && first_cell_in_run <= cursor->x && cursor->x <= i) cursor_offset = cursor->x - first_cell_in_run; \
+    render_run(fg, line->cpu_cells + first_cell_in_run, line->gpu_cells + first_cell_in_run, i - first_cell_in_run, run_font_idx, false, center_glyph, cursor_offset, disable_ligature_strategy); \
+}
     FontGroup *fg = (FontGroup*)fg_;
     ssize_t run_font_idx = NO_FONT;
     bool center_glyph = false;
+    bool disable_ligature_at_cursor = cursor != NULL && disable_ligature_strategy == DISABLE_LIGATURES_CURSOR && lnum == cursor->y;
     index_type first_cell_in_run, i;
     attrs_type prev_width = 0;
     for (i=0, first_cell_in_run=0; i < line->xnum; i++) {
         if (prev_width == 2) { prev_width = 0; continue; }
         CPUCell *cpu_cell = line->cpu_cells + i;
         GPUCell *gpu_cell = line->gpu_cells + i;
-        ssize_t cell_font_idx = font_for_cell(fg, cpu_cell, gpu_cell);
+        bool is_fallback_font, is_emoji_presentation;
+        ssize_t cell_font_idx = font_for_cell(fg, cpu_cell, gpu_cell, &is_fallback_font, &is_emoji_presentation);
 
-        if (is_private_use(cpu_cell->ch)
-                && cell_font_idx != BOX_FONT
-                && cell_font_idx != MISSING_FONT) {
-            int desired_cells = 1;
+        if (
+                cell_font_idx != MISSING_FONT &&
+                ((is_fallback_font && !is_emoji_presentation && is_symbol(cpu_cell->ch)) || (cell_font_idx != BOX_FONT && is_private_use(cpu_cell->ch)))
+        ) {
+            unsigned int desired_cells = 1;
             if (cell_font_idx > 0) {
                 Font *font = (fg->fonts + cell_font_idx);
                 glyph_index glyph_id = glyph_id_for_codepoint(font->face, cpu_cell->ch);
 
                 int width = get_glyph_width(font->face, glyph_id);
-                desired_cells = ceilf((float)width / fg->cell_width);
+                desired_cells = (unsigned int)ceilf((float)width / fg->cell_width);
             }
 
-            int num_spaces = 0;
+            unsigned int num_spaces = 0;
             while ((line->cpu_cells[i+num_spaces+1].ch == ' ')
                     && num_spaces < MAX_NUM_EXTRA_GLYPHS_PUA
                     && num_spaces < desired_cells
@@ -1029,19 +1131,18 @@ render_line(FONTS_DATA_HANDLE fg_, Line *line) {
                 num_spaces++;
                 // We have a private use char followed by space(s), render it as a multi-cell ligature.
                 GPUCell *space_cell = line->gpu_cells + i + num_spaces;
-                // Ensure the space cell uses the foreground/background colors from the PUA cell.
-                // This is needed because there are stupid applications like
-                // powerline that use PUA+space with different foreground colors
+                // Ensure the space cell uses the foreground color from the PUA cell.
+                // This is needed because there are applications like
+                // Powerline that use PUA+space with different foreground colors
                 // for the space and the PUA. See for example: https://github.com/kovidgoyal/kitty/issues/467
                 space_cell->fg = gpu_cell->fg;
-                space_cell->bg = gpu_cell->bg;
                 space_cell->decoration_fg = gpu_cell->decoration_fg;
             }
             if (num_spaces) {
                 center_glyph = true;
-                RENDER;
+                RENDER
                 center_glyph = false;
-                render_run(fg, line->cpu_cells + i, line->gpu_cells + i, num_spaces + 1, cell_font_idx, true, center_glyph);
+                render_run(fg, line->cpu_cells + i, line->gpu_cells + i, num_spaces + 1, cell_font_idx, true, center_glyph, -1, disable_ligature_strategy);
                 run_font_idx = NO_FONT;
                 first_cell_in_run = i + num_spaces + 1;
                 prev_width = line->gpu_cells[i+num_spaces].attrs & WIDTH_MASK;
@@ -1052,16 +1153,24 @@ render_line(FONTS_DATA_HANDLE fg_, Line *line) {
         prev_width = gpu_cell->attrs & WIDTH_MASK;
         if (run_font_idx == NO_FONT) run_font_idx = cell_font_idx;
         if (run_font_idx == cell_font_idx) continue;
-        RENDER;
+        RENDER
         run_font_idx = cell_font_idx;
         first_cell_in_run = i;
     }
-    RENDER;
+    RENDER
 #undef RENDER
 }
 
+StringCanvas
+render_simple_text(FONTS_DATA_HANDLE fg_, const char *text) {
+    FontGroup *fg = (FontGroup*)fg_;
+    if (fg->fonts_count && fg->medium_font_idx) return render_simple_text_impl(fg->fonts[fg->medium_font_idx].face, text, fg->baseline);
+    StringCanvas ans = {0};
+    return ans;
+}
+
 static inline void
-clear_symbol_maps() {
+clear_symbol_maps(void) {
     if (symbol_maps) { free(symbol_maps); symbol_maps = NULL; num_symbol_maps = 0; }
 }
 
@@ -1102,14 +1211,14 @@ send_prerendered_sprites(FontGroup *fg) {
     clear_canvas(fg);
     current_send_sprite_to_gpu((FONTS_DATA_HANDLE)fg, x, y, z, fg->canvas);
     do_increment(fg, &error);
-    if (error != 0) { sprite_map_set_error(error); PyErr_Print(); fatal("failed"); }
+    if (error != 0) { sprite_map_set_error(error); PyErr_Print(); fatal("Failed"); }
     PyObject *args = PyObject_CallFunction(prerender_function, "IIIIIdd", fg->cell_width, fg->cell_height, fg->baseline, fg->underline_position, fg->underline_thickness, fg->logical_dpi_x, fg->logical_dpi_y);
     if (args == NULL) { PyErr_Print(); fatal("Failed to pre-render cells"); }
     for (ssize_t i = 0; i < PyTuple_GET_SIZE(args) - 1; i++) {
         x = fg->sprite_tracker.x; y = fg->sprite_tracker.y; z = fg->sprite_tracker.z;
-        if (y > 0) { fatal("too many pre-rendered sprites for your GPU or the font size is too large"); }
+        if (y > 0) { fatal("Too many pre-rendered sprites for your GPU or the font size is too large"); }
         do_increment(fg, &error);
-        if (error != 0) { sprite_map_set_error(error); PyErr_Print(); fatal("failed"); }
+        if (error != 0) { sprite_map_set_error(error); PyErr_Print(); fatal("Failed"); }
         uint8_t *alpha_mask = PyLong_AsVoidPtr(PyTuple_GET_ITEM(args, i));
         clear_canvas(fg);
         Region r = { .right = fg->cell_width, .bottom = fg->cell_height };
@@ -1122,12 +1231,12 @@ send_prerendered_sprites(FontGroup *fg) {
 static inline size_t
 initialize_font(FontGroup *fg, unsigned int desc_idx, const char *ftype) {
     PyObject *d = PyObject_CallFunction(descriptor_for_idx, "I", desc_idx);
-    if (d == NULL) { PyErr_Print(); fatal("failed for %s font", ftype); }
+    if (d == NULL) { PyErr_Print(); fatal("Failed for %s font", ftype); }
     bool bold = PyObject_IsTrue(PyTuple_GET_ITEM(d, 1));
     bool italic = PyObject_IsTrue(PyTuple_GET_ITEM(d, 2));
     PyObject *face = desc_to_face(PyTuple_GET_ITEM(d, 0), (FONTS_DATA_HANDLE)fg);
     Py_CLEAR(d);
-    if (face == NULL) { PyErr_Print(); fatal("failed to convert descriptor to face for %s font", ftype); }
+    if (face == NULL) { PyErr_Print(); fatal("Failed to convert descriptor to face for %s font", ftype); }
     size_t idx = fg->fonts_count++;
     bool ok = init_font(fg->fonts + idx, face, bold, italic, false);
     Py_CLEAR(face);
@@ -1164,7 +1273,6 @@ send_prerendered_sprites_for_window(OSWindow *w) {
     FontGroup *fg = (FontGroup*)w->fonts_data;
     if (!fg->sprite_map) {
         fg->sprite_map = alloc_sprite_map(fg->cell_width, fg->cell_height);
-        if (!fg->sprite_map) fatal("Out of memory allocating a sprite map");
         send_prerendered_sprites(fg);
     }
 }
@@ -1225,7 +1333,7 @@ test_render_line(PyObject UNUSED *self, PyObject *args) {
     PyObject *line;
     if (!PyArg_ParseTuple(args, "O!", &Line_Type, &line)) return NULL;
     if (!num_font_groups) { PyErr_SetString(PyExc_RuntimeError, "must create font group first"); return NULL; }
-    render_line((FONTS_DATA_HANDLE)font_groups, (Line*)line);
+    render_line((FONTS_DATA_HANDLE)font_groups, (Line*)line, 0, NULL, DISABLE_LIGATURES_NEVER);
     Py_RETURN_NONE;
 }
 
@@ -1347,6 +1455,15 @@ init_fonts(PyObject *module) {
     harfbuzz_buffer = hb_buffer_create();
     if (harfbuzz_buffer == NULL || !hb_buffer_allocation_successful(harfbuzz_buffer) || !hb_buffer_pre_allocate(harfbuzz_buffer, 2048)) { PyErr_NoMemory(); return false; }
     hb_buffer_set_cluster_level(harfbuzz_buffer, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS);
+#define create_feature(feature, where) {\
+    if (!hb_feature_from_string(feature, sizeof(feature) - 1, &hb_features[where])) { \
+        PyErr_SetString(PyExc_RuntimeError, "Failed to create " feature " harfbuzz feature"); \
+        return false; \
+    }}
+    create_feature("-liga", LIGA_FEATURE);
+    create_feature("-dlig", DLIG_FEATURE);
+    create_feature("-calt", CALT_FEATURE);
+#undef create_feature
     if (PyModule_AddFunctions(module, module_methods) != 0) return false;
     current_send_sprite_to_gpu = send_sprite_to_gpu;
     return true;

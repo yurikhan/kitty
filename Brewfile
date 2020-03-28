@@ -1,0 +1,5 @@
+brew 'pkg-config'
+brew 'imagemagick'
+brew 'harfbuzz'
+brew 'python'
+brew 'sphinx-doc'

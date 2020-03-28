@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
@@ -293,11 +293,7 @@ class TestScreen(BaseTest):
             s.tab()
             s.draw('*')
         s.cursor_position(2, 2)
-        for col in range(2, s.columns - 1, 6):
-            for i in range(5):
-                s.draw(' ')
-            s.draw('*')
-        self.ae(str(s.line(0)), str(s.line(1)))
+        self.ae(str(s.line(0)), '\t*'*13)
 
     def test_margins(self):
         # Taken from vttest/main.c
@@ -338,7 +334,8 @@ class TestScreen(BaseTest):
                     s.cursor_position(region, s.columns), s.draw(ch.lower())
             for l in range(2, region + 2):
                 c = chr(ord('I') + l - 2)
-                self.ae(c + ' ' * (s.columns - 2) + c.lower(), str(s.line(l)))
+                before = '\t' if l % 4 == 0 else ' '
+                self.ae(c + ' ' * (s.columns - 3) + before + c.lower(), str(s.line(l)))
             s.reset_mode(DECOM)
         # Test that moving cursor outside the margins works as expected
         s = self.create_screen(10, 10)
@@ -428,6 +425,20 @@ class TestScreen(BaseTest):
         self.ae(s.text_for_selection(), expected)
         s.scroll(2, True)
         self.ae(s.text_for_selection(), expected)
+
+    def test_variation_selectors(self):
+        s = self.create_screen()
+        s.draw('\U0001f610')
+        self.ae(s.cursor.x, 2)
+        s.carriage_return(), s.linefeed()
+        s.draw('\U0001f610\ufe0e')
+        self.ae(s.cursor.x, 1)
+        s.carriage_return(), s.linefeed()
+        s.draw('\u25b6')
+        self.ae(s.cursor.x, 1)
+        s.carriage_return(), s.linefeed()
+        s.draw('\u25b6\ufe0f')
+        self.ae(s.cursor.x, 2)
 
     def test_serialize(self):
         s = self.create_screen()

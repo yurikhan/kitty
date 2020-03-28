@@ -1,8 +1,8 @@
 //========================================================================
-// GLFW 3.3 - www.glfw.org
+// GLFW 3.4 - www.glfw.org
 //------------------------------------------------------------------------
 // Copyright (c) 2002-2006 Marcus Geelnard
-// Copyright (c) 2006-2016 Camilla Löwy <elmindreda@glfw.org>
+// Copyright (c) 2006-2019 Camilla Löwy <elmindreda@glfw.org>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -24,8 +24,11 @@
 //    distribution.
 //
 //========================================================================
+// Please use C89 style variable declarations in this file because VS 2010
+//========================================================================
 
 #include "internal.h"
+#include "../kitty/monotonic.h"
 
 #include <assert.h>
 #include <float.h>
@@ -58,17 +61,17 @@ static _GLFWmapping* findMapping(const char* guid)
 
 // Checks whether a gamepad mapping element is present in the hardware
 //
-static GLFWbool isValidElementForJoystick(const _GLFWmapelement* e,
+static bool isValidElementForJoystick(const _GLFWmapelement* e,
                                           const _GLFWjoystick* js)
 {
     if (e->type == _GLFW_JOYSTICK_HATBIT && (e->index >> 4) >= js->hatCount)
-        return GLFW_FALSE;
+        return false;
     else if (e->type == _GLFW_JOYSTICK_BUTTON && e->index >= js->buttonCount)
-        return GLFW_FALSE;
+        return false;
     else if (e->type == _GLFW_JOYSTICK_AXIS && e->index >= js->axisCount)
-        return GLFW_FALSE;
+        return false;
 
-    return GLFW_TRUE;
+    return true;
 }
 
 // Finds a mapping based on joystick GUID and verifies element indices
@@ -110,7 +113,7 @@ static _GLFWmapping* findValidMapping(const _GLFWjoystick* js)
 
 // Parses an SDL_GameControllerDB line and adds it to the mapping list
 //
-static GLFWbool parseMapping(_GLFWmapping* mapping, const char* string)
+static bool parseMapping(_GLFWmapping* mapping, const char* string)
 {
     const char* c = string;
     size_t i, length;
@@ -148,7 +151,7 @@ static GLFWbool parseMapping(_GLFWmapping* mapping, const char* string)
     if (length != 32 || c[length] != ',')
     {
         _glfwInputError(GLFW_INVALID_VALUE, NULL);
-        return GLFW_FALSE;
+        return false;
     }
 
     memcpy(mapping->guid, c, length);
@@ -158,7 +161,7 @@ static GLFWbool parseMapping(_GLFWmapping* mapping, const char* string)
     if (length >= sizeof(mapping->name) || c[length] != ',')
     {
         _glfwInputError(GLFW_INVALID_VALUE, NULL);
-        return GLFW_FALSE;
+        return false;
     }
 
     memcpy(mapping->name, c, length);
@@ -168,7 +171,7 @@ static GLFWbool parseMapping(_GLFWmapping* mapping, const char* string)
     {
         // TODO: Implement output modifiers
         if (*c == '+' || *c == '-')
-            return GLFW_FALSE;
+            return false;
 
         for (i = 0;  i < sizeof(fields) / sizeof(fields[0]);  i++)
         {
@@ -229,7 +232,7 @@ static GLFWbool parseMapping(_GLFWmapping* mapping, const char* string)
             {
                 length = strlen(_GLFW_PLATFORM_MAPPING_NAME);
                 if (strncmp(c, _GLFW_PLATFORM_MAPPING_NAME, length) != 0)
-                    return GLFW_FALSE;
+                    return false;
             }
 
             break;
@@ -246,7 +249,7 @@ static GLFWbool parseMapping(_GLFWmapping* mapping, const char* string)
     }
 
     _glfwPlatformUpdateGamepadGUID(mapping->guid);
-    return GLFW_TRUE;
+    return true;
 }
 
 
@@ -254,33 +257,44 @@ static GLFWbool parseMapping(_GLFWmapping* mapping, const char* string)
 //////                         GLFW event API                       //////
 //////////////////////////////////////////////////////////////////////////
 
-// Notifies shared code of a key event
-//
-void _glfwInputKeyboard(_GLFWwindow* window, int key, int scancode, int action, int mods, const char* text, int state)
+void _glfwInitializeKeyEvent(GLFWkeyevent *ev, int key, int native_key, int action, int mods)
 {
-    if (key >= 0 && key <= GLFW_KEY_LAST)
-    {
-        GLFWbool repeated = GLFW_FALSE;
+    ev->key = key;
+    ev->native_key = native_key;
+    ev->action = action;
+    ev->mods = mods;
+    ev->text = NULL;
+    ev->ime_state = 0;
+}
 
-        if (action == GLFW_RELEASE && window->keys[key] == GLFW_RELEASE)
+// Notifies shared code of a physical key event
+//
+void _glfwInputKeyboard(_GLFWwindow* window, GLFWkeyevent* ev)
+{
+    if (ev->key >= 0 && ev->key <= GLFW_KEY_LAST)
+    {
+        bool repeated = false;
+
+        if (ev->action == GLFW_RELEASE && window->keys[ev->key] == GLFW_RELEASE)
             return;
 
-        if (action == GLFW_PRESS && window->keys[key] == GLFW_PRESS)
-            repeated = GLFW_TRUE;
+        if (ev->action == GLFW_PRESS && window->keys[ev->key] == GLFW_PRESS)
+            repeated = true;
 
-        if (action == GLFW_RELEASE && window->stickyKeys)
-            window->keys[key] = _GLFW_STICK;
+        if (ev->action == GLFW_RELEASE && window->stickyKeys)
+            window->keys[ev->key] = _GLFW_STICK;
         else
-            window->keys[key] = (char) action;
+            window->keys[ev->key] = (char) ev->action;
 
         if (repeated)
-            action = GLFW_REPEAT;
+            ev->action = GLFW_REPEAT;
     }
 
 
+    // FIXME: will need to update ev->virtual_mods here too?
     if (window->callbacks.keyboard) {
-        if (!window->lockKeyMods) mods &= ~(GLFW_MOD_CAPS_LOCK | GLFW_MOD_NUM_LOCK);
-        window->callbacks.keyboard((GLFWwindow*) window, key, scancode, action, mods, text, state);
+        if (!window->lockKeyMods) ev->mods &= ~(GLFW_MOD_CAPS_LOCK | GLFW_MOD_NUM_LOCK);
+        window->callbacks.keyboard((GLFWwindow*) window, ev);
     }
 }
 
@@ -312,7 +326,7 @@ void _glfwInputMouseClick(_GLFWwindow* window, int button, int action, int mods)
 }
 
 // Notifies shared code of a cursor motion event
-// The position is specified in client-area relative screen coordinates
+// The position is specified in content area relative screen coordinates
 //
 void _glfwInputCursorPos(_GLFWwindow* window, double xpos, double ypos)
 {
@@ -328,7 +342,7 @@ void _glfwInputCursorPos(_GLFWwindow* window, double xpos, double ypos)
 
 // Notifies shared code of a cursor enter/leave event
 //
-void _glfwInputCursorEnter(_GLFWwindow* window, GLFWbool entered)
+void _glfwInputCursorEnter(_GLFWwindow* window, bool entered)
 {
     if (window->callbacks.cursorEnter)
         window->callbacks.cursorEnter((GLFWwindow*) window, entered);
@@ -406,16 +420,16 @@ _GLFWjoystick* _glfwAllocJoystick(const char* name,
         return NULL;
 
     js = _glfw.joysticks + jid;
-    js->present     = GLFW_TRUE;
+    js->present     = true;
     js->name        = _glfw_strdup(name);
     js->axes        = calloc(axisCount, sizeof(float));
-    js->buttons     = calloc(buttonCount + hatCount * 4, 1);
+    js->buttons     = calloc(buttonCount + (size_t) hatCount * 4, 1);
     js->hats        = calloc(hatCount, 1);
     js->axisCount   = axisCount;
     js->buttonCount = buttonCount;
     js->hatCount    = hatCount;
 
-    strcpy(js->guid, guid);
+    strncpy(js->guid, guid, sizeof(js->guid) - 1);
     js->mapping = findValidMapping(js);
 
     return js;
@@ -437,133 +451,206 @@ const char* _glfwGetKeyName(int key)
     switch (key)
     {
         // Printable keys
-        case GLFW_KEY_A:            return "A";
-        case GLFW_KEY_B:            return "B";
-        case GLFW_KEY_C:            return "C";
-        case GLFW_KEY_D:            return "D";
-        case GLFW_KEY_E:            return "E";
-        case GLFW_KEY_F:            return "F";
-        case GLFW_KEY_G:            return "G";
-        case GLFW_KEY_H:            return "H";
-        case GLFW_KEY_I:            return "I";
-        case GLFW_KEY_J:            return "J";
-        case GLFW_KEY_K:            return "K";
-        case GLFW_KEY_L:            return "L";
-        case GLFW_KEY_M:            return "M";
-        case GLFW_KEY_N:            return "N";
-        case GLFW_KEY_O:            return "O";
-        case GLFW_KEY_P:            return "P";
-        case GLFW_KEY_Q:            return "Q";
-        case GLFW_KEY_R:            return "R";
-        case GLFW_KEY_S:            return "S";
-        case GLFW_KEY_T:            return "T";
-        case GLFW_KEY_U:            return "U";
-        case GLFW_KEY_V:            return "V";
-        case GLFW_KEY_W:            return "W";
-        case GLFW_KEY_X:            return "X";
-        case GLFW_KEY_Y:            return "Y";
-        case GLFW_KEY_Z:            return "Z";
-        case GLFW_KEY_1:            return "1";
-        case GLFW_KEY_2:            return "2";
-        case GLFW_KEY_3:            return "3";
-        case GLFW_KEY_4:            return "4";
-        case GLFW_KEY_5:            return "5";
-        case GLFW_KEY_6:            return "6";
-        case GLFW_KEY_7:            return "7";
-        case GLFW_KEY_8:            return "8";
-        case GLFW_KEY_9:            return "9";
-        case GLFW_KEY_0:            return "0";
-        case GLFW_KEY_SPACE:        return "SPACE";
-        case GLFW_KEY_MINUS:        return "MINUS";
-        case GLFW_KEY_EQUAL:        return "EQUAL";
-        case GLFW_KEY_LEFT_BRACKET: return "LEFT BRACKET";
-        case GLFW_KEY_RIGHT_BRACKET: return "RIGHT BRACKET";
-        case GLFW_KEY_BACKSLASH:    return "BACKSLASH";
-        case GLFW_KEY_SEMICOLON:    return "SEMICOLON";
-        case GLFW_KEY_APOSTROPHE:   return "APOSTROPHE";
-        case GLFW_KEY_GRAVE_ACCENT: return "GRAVE ACCENT";
-        case GLFW_KEY_COMMA:        return "COMMA";
-        case GLFW_KEY_PERIOD:       return "PERIOD";
-        case GLFW_KEY_SLASH:        return "SLASH";
-        case GLFW_KEY_WORLD_1:      return "WORLD 1";
-        case GLFW_KEY_WORLD_2:      return "WORLD 2";
-        case GLFW_KEY_PLUS:         return "PLUS";
+        case GLFW_KEY_SPACE:              return "SPACE";
+        case GLFW_KEY_EXCLAM:             return "EXCLAM";
+        case GLFW_KEY_DOUBLE_QUOTE:       return "DOUBLE_QUOTE";
+        case GLFW_KEY_NUMBER_SIGN:        return "NUMBER_SIGN";
+        case GLFW_KEY_DOLLAR:             return "DOLLAR";
+        case GLFW_KEY_AMPERSAND:          return "AMPERSAND";
+        case GLFW_KEY_APOSTROPHE:         return "APOSTROPHE";
+        case GLFW_KEY_PARENTHESIS_LEFT:   return "PARENTHESIS_LEFT";
+        case GLFW_KEY_PARENTHESIS_RIGHT:  return "PARENTHESIS_RIGHT";
+        case GLFW_KEY_PLUS:               return "PLUS";
+        case GLFW_KEY_COMMA:              return "COMMA";
+        case GLFW_KEY_MINUS:              return "MINUS";
+        case GLFW_KEY_PERIOD:             return "PERIOD";
+        case GLFW_KEY_SLASH:              return "SLASH";
+        case GLFW_KEY_0:                  return "0";
+        case GLFW_KEY_1:                  return "1";
+        case GLFW_KEY_2:                  return "2";
+        case GLFW_KEY_3:                  return "3";
+        case GLFW_KEY_4:                  return "4";
+        case GLFW_KEY_5:                  return "5";
+        case GLFW_KEY_6:                  return "6";
+        case GLFW_KEY_7:                  return "7";
+        case GLFW_KEY_8:                  return "8";
+        case GLFW_KEY_9:                  return "9";
+        case GLFW_KEY_COLON:              return "COLON";
+        case GLFW_KEY_SEMICOLON:          return "SEMICOLON";
+        case GLFW_KEY_LESS:               return "LESS";
+        case GLFW_KEY_EQUAL:              return "EQUAL";
+        case GLFW_KEY_GREATER:            return "GREATER";
+        case GLFW_KEY_AT:                 return "AT";
+        case GLFW_KEY_A:                  return "A";
+        case GLFW_KEY_B:                  return "B";
+        case GLFW_KEY_C:                  return "C";
+        case GLFW_KEY_D:                  return "D";
+        case GLFW_KEY_E:                  return "E";
+        case GLFW_KEY_F:                  return "F";
+        case GLFW_KEY_G:                  return "G";
+        case GLFW_KEY_H:                  return "H";
+        case GLFW_KEY_I:                  return "I";
+        case GLFW_KEY_J:                  return "J";
+        case GLFW_KEY_K:                  return "K";
+        case GLFW_KEY_L:                  return "L";
+        case GLFW_KEY_M:                  return "M";
+        case GLFW_KEY_N:                  return "N";
+        case GLFW_KEY_O:                  return "O";
+        case GLFW_KEY_P:                  return "P";
+        case GLFW_KEY_Q:                  return "Q";
+        case GLFW_KEY_R:                  return "R";
+        case GLFW_KEY_S:                  return "S";
+        case GLFW_KEY_T:                  return "T";
+        case GLFW_KEY_U:                  return "U";
+        case GLFW_KEY_V:                  return "V";
+        case GLFW_KEY_W:                  return "W";
+        case GLFW_KEY_X:                  return "X";
+        case GLFW_KEY_Y:                  return "Y";
+        case GLFW_KEY_Z:                  return "Z";
+        case GLFW_KEY_LEFT_BRACKET:       return "LEFT_BRACKET";
+        case GLFW_KEY_BACKSLASH:          return "BACKSLASH";
+        case GLFW_KEY_RIGHT_BRACKET:      return "RIGHT_BRACKET";
+        case GLFW_KEY_UNDERSCORE:         return "UNDERSCORE";
+        case GLFW_KEY_GRAVE_ACCENT:       return "GRAVE_ACCENT";
+        case GLFW_KEY_WORLD_1:            return "WORLD_1";
+        case GLFW_KEY_WORLD_2:            return "WORLD_2";
+        case GLFW_KEY_PARAGRAPH:          return "PARAGRAPH";
+        case GLFW_KEY_MASCULINE:          return "MASCULINE";
+        case GLFW_KEY_A_GRAVE:            return "A_GRAVE";
+        case GLFW_KEY_A_DIAERESIS:        return "A_DIAERESIS";
+        case GLFW_KEY_A_RING:             return "A_RING";
+        case GLFW_KEY_AE:                 return "AE";
+        case GLFW_KEY_C_CEDILLA:          return "C_CEDILLA";
+        case GLFW_KEY_E_GRAVE:            return "E_GRAVE";
+        case GLFW_KEY_E_ACUTE:            return "E_ACUTE";
+        case GLFW_KEY_I_GRAVE:            return "I_GRAVE";
+        case GLFW_KEY_N_TILDE:            return "N_TILDE";
+        case GLFW_KEY_O_GRAVE:            return "O_GRAVE";
+        case GLFW_KEY_O_DIAERESIS:        return "O_DIAERESIS";
+        case GLFW_KEY_O_SLASH:            return "O_SLASH";
+        case GLFW_KEY_U_GRAVE:            return "U_GRAVE";
+        case GLFW_KEY_U_DIAERESIS:        return "U_DIAERESIS";
+        case GLFW_KEY_S_SHARP:            return "S_SHARP";
+        case GLFW_KEY_CYRILLIC_A:         return "CYRILLIC_A";
+        case GLFW_KEY_CYRILLIC_BE:        return "CYRILLIC_BE";
+        case GLFW_KEY_CYRILLIC_VE:        return "CYRILLIC_VE";
+        case GLFW_KEY_CYRILLIC_GHE:       return "CYRILLIC_GHE";
+        case GLFW_KEY_CYRILLIC_DE:        return "CYRILLIC_DE";
+        case GLFW_KEY_CYRILLIC_IE:        return "CYRILLIC_IE";
+        case GLFW_KEY_CYRILLIC_ZHE:       return "CYRILLIC_ZHE";
+        case GLFW_KEY_CYRILLIC_ZE:        return "CYRILLIC_ZE";
+        case GLFW_KEY_CYRILLIC_I:         return "CYRILLIC_I";
+        case GLFW_KEY_CYRILLIC_SHORT_I:   return "CYRILLIC_SHORT_I";
+        case GLFW_KEY_CYRILLIC_KA:        return "CYRILLIC_KA";
+        case GLFW_KEY_CYRILLIC_EL:        return "CYRILLIC_EL";
+        case GLFW_KEY_CYRILLIC_EM:        return "CYRILLIC_EM";
+        case GLFW_KEY_CYRILLIC_EN:        return "CYRILLIC_EN";
+        case GLFW_KEY_CYRILLIC_O:         return "CYRILLIC_O";
+        case GLFW_KEY_CYRILLIC_PE:        return "CYRILLIC_PE";
+        case GLFW_KEY_CYRILLIC_ER:        return "CYRILLIC_ER";
+        case GLFW_KEY_CYRILLIC_ES:        return "CYRILLIC_ES";
+        case GLFW_KEY_CYRILLIC_TE:        return "CYRILLIC_TE";
+        case GLFW_KEY_CYRILLIC_U:         return "CYRILLIC_U";
+        case GLFW_KEY_CYRILLIC_EF:        return "CYRILLIC_EF";
+        case GLFW_KEY_CYRILLIC_HA:        return "CYRILLIC_HA";
+        case GLFW_KEY_CYRILLIC_TSE:       return "CYRILLIC_TSE";
+        case GLFW_KEY_CYRILLIC_CHE:       return "CYRILLIC_CHE";
+        case GLFW_KEY_CYRILLIC_SHA:       return "CYRILLIC_SHA";
+        case GLFW_KEY_CYRILLIC_SHCHA:     return "CYRILLIC_SHCHA";
+        case GLFW_KEY_CYRILLIC_HARD_SIGN: return "CYRILLIC_HARD_SIGN";
+        case GLFW_KEY_CYRILLIC_YERU:      return "CYRILLIC_YERU";
+        case GLFW_KEY_CYRILLIC_SOFT_SIGN: return "CYRILLIC_SOFT_SIGN";
+        case GLFW_KEY_CYRILLIC_E:         return "CYRILLIC_E";
+        case GLFW_KEY_CYRILLIC_YU:        return "CYRILLIC_YU";
+        case GLFW_KEY_CYRILLIC_YA:        return "CYRILLIC_YA";
+        case GLFW_KEY_CYRILLIC_IO:        return "CYRILLIC_IO";
 
         // Function keys
-        case GLFW_KEY_ESCAPE:       return "ESCAPE";
-        case GLFW_KEY_F1:           return "F1";
-        case GLFW_KEY_F2:           return "F2";
-        case GLFW_KEY_F3:           return "F3";
-        case GLFW_KEY_F4:           return "F4";
-        case GLFW_KEY_F5:           return "F5";
-        case GLFW_KEY_F6:           return "F6";
-        case GLFW_KEY_F7:           return "F7";
-        case GLFW_KEY_F8:           return "F8";
-        case GLFW_KEY_F9:           return "F9";
-        case GLFW_KEY_F10:          return "F10";
-        case GLFW_KEY_F11:          return "F11";
-        case GLFW_KEY_F12:          return "F12";
-        case GLFW_KEY_F13:          return "F13";
-        case GLFW_KEY_F14:          return "F14";
-        case GLFW_KEY_F15:          return "F15";
-        case GLFW_KEY_F16:          return "F16";
-        case GLFW_KEY_F17:          return "F17";
-        case GLFW_KEY_F18:          return "F18";
-        case GLFW_KEY_F19:          return "F19";
-        case GLFW_KEY_F20:          return "F20";
-        case GLFW_KEY_F21:          return "F21";
-        case GLFW_KEY_F22:          return "F22";
-        case GLFW_KEY_F23:          return "F23";
-        case GLFW_KEY_F24:          return "F24";
-        case GLFW_KEY_F25:          return "F25";
-        case GLFW_KEY_UP:           return "UP";
-        case GLFW_KEY_DOWN:         return "DOWN";
-        case GLFW_KEY_LEFT:         return "LEFT";
-        case GLFW_KEY_RIGHT:        return "RIGHT";
-        case GLFW_KEY_LEFT_SHIFT:   return "LEFT SHIFT";
-        case GLFW_KEY_RIGHT_SHIFT:  return "RIGHT SHIFT";
-        case GLFW_KEY_LEFT_CONTROL: return "LEFT CONTROL";
-        case GLFW_KEY_RIGHT_CONTROL: return "RIGHT CONTROL";
-        case GLFW_KEY_LEFT_ALT:     return "LEFT ALT";
-        case GLFW_KEY_RIGHT_ALT:    return "RIGHT ALT";
-        case GLFW_KEY_TAB:          return "TAB";
-        case GLFW_KEY_ENTER:        return "ENTER";
-        case GLFW_KEY_BACKSPACE:    return "BACKSPACE";
-        case GLFW_KEY_INSERT:       return "INSERT";
-        case GLFW_KEY_DELETE:       return "DELETE";
-        case GLFW_KEY_PAGE_UP:      return "PAGE UP";
-        case GLFW_KEY_PAGE_DOWN:    return "PAGE DOWN";
-        case GLFW_KEY_HOME:         return "HOME";
-        case GLFW_KEY_END:          return "END";
-        case GLFW_KEY_KP_0:         return "KEYPAD 0";
-        case GLFW_KEY_KP_1:         return "KEYPAD 1";
-        case GLFW_KEY_KP_2:         return "KEYPAD 2";
-        case GLFW_KEY_KP_3:         return "KEYPAD 3";
-        case GLFW_KEY_KP_4:         return "KEYPAD 4";
-        case GLFW_KEY_KP_5:         return "KEYPAD 5";
-        case GLFW_KEY_KP_6:         return "KEYPAD 6";
-        case GLFW_KEY_KP_7:         return "KEYPAD 7";
-        case GLFW_KEY_KP_8:         return "KEYPAD 8";
-        case GLFW_KEY_KP_9:         return "KEYPAD 9";
-        case GLFW_KEY_KP_DIVIDE:    return "KEYPAD DIVIDE";
-        case GLFW_KEY_KP_MULTIPLY:  return "KEYPAD MULTPLY";
-        case GLFW_KEY_KP_SUBTRACT:  return "KEYPAD SUBTRACT";
-        case GLFW_KEY_KP_ADD:       return "KEYPAD ADD";
-        case GLFW_KEY_KP_DECIMAL:   return "KEYPAD DECIMAL";
-        case GLFW_KEY_KP_EQUAL:     return "KEYPAD EQUAL";
-        case GLFW_KEY_KP_ENTER:     return "KEYPAD ENTER";
-        case GLFW_KEY_PRINT_SCREEN: return "PRINT SCREEN";
-        case GLFW_KEY_NUM_LOCK:     return "NUM LOCK";
-        case GLFW_KEY_CAPS_LOCK:    return "CAPS LOCK";
-        case GLFW_KEY_SCROLL_LOCK:  return "SCROLL LOCK";
-        case GLFW_KEY_PAUSE:        return "PAUSE";
-        case GLFW_KEY_LEFT_SUPER:   return "LEFT SUPER";
-        case GLFW_KEY_RIGHT_SUPER:  return "RIGHT SUPER";
-        case GLFW_KEY_MENU:         return "MENU";
+        case GLFW_KEY_ESCAPE:             return "ESCAPE";
+        case GLFW_KEY_F1:                 return "F1";
+        case GLFW_KEY_F2:                 return "F2";
+        case GLFW_KEY_F3:                 return "F3";
+        case GLFW_KEY_F4:                 return "F4";
+        case GLFW_KEY_F5:                 return "F5";
+        case GLFW_KEY_F6:                 return "F6";
+        case GLFW_KEY_F7:                 return "F7";
+        case GLFW_KEY_F8:                 return "F8";
+        case GLFW_KEY_F9:                 return "F9";
+        case GLFW_KEY_F10:                return "F10";
+        case GLFW_KEY_F11:                return "F11";
+        case GLFW_KEY_F12:                return "F12";
+        case GLFW_KEY_F13:                return "F13";
+        case GLFW_KEY_F14:                return "F14";
+        case GLFW_KEY_F15:                return "F15";
+        case GLFW_KEY_F16:                return "F16";
+        case GLFW_KEY_F17:                return "F17";
+        case GLFW_KEY_F18:                return "F18";
+        case GLFW_KEY_F19:                return "F19";
+        case GLFW_KEY_F20:                return "F20";
+        case GLFW_KEY_F21:                return "F21";
+        case GLFW_KEY_F22:                return "F22";
+        case GLFW_KEY_F23:                return "F23";
+        case GLFW_KEY_F24:                return "F24";
+        case GLFW_KEY_F25:                return "F25";
+        case GLFW_KEY_UP:                 return "UP";
+        case GLFW_KEY_DOWN:               return "DOWN";
+        case GLFW_KEY_LEFT:               return "LEFT";
+        case GLFW_KEY_RIGHT:              return "RIGHT";
+        case GLFW_KEY_LEFT_SHIFT:         return "LEFT SHIFT";
+        case GLFW_KEY_RIGHT_SHIFT:        return "RIGHT SHIFT";
+        case GLFW_KEY_LEFT_CONTROL:       return "LEFT CONTROL";
+        case GLFW_KEY_RIGHT_CONTROL:      return "RIGHT CONTROL";
+        case GLFW_KEY_LEFT_ALT:           return "LEFT ALT";
+        case GLFW_KEY_RIGHT_ALT:          return "RIGHT ALT";
+        case GLFW_KEY_TAB:                return "TAB";
+        case GLFW_KEY_ENTER:              return "ENTER";
+        case GLFW_KEY_BACKSPACE:          return "BACKSPACE";
+        case GLFW_KEY_INSERT:             return "INSERT";
+        case GLFW_KEY_DELETE:             return "DELETE";
+        case GLFW_KEY_PAGE_UP:            return "PAGE UP";
+        case GLFW_KEY_PAGE_DOWN:          return "PAGE DOWN";
+        case GLFW_KEY_HOME:               return "HOME";
+        case GLFW_KEY_END:                return "END";
+        case GLFW_KEY_KP_0:               return "KEYPAD 0";
+        case GLFW_KEY_KP_1:               return "KEYPAD 1";
+        case GLFW_KEY_KP_2:               return "KEYPAD 2";
+        case GLFW_KEY_KP_3:               return "KEYPAD 3";
+        case GLFW_KEY_KP_4:               return "KEYPAD 4";
+        case GLFW_KEY_KP_5:               return "KEYPAD 5";
+        case GLFW_KEY_KP_6:               return "KEYPAD 6";
+        case GLFW_KEY_KP_7:               return "KEYPAD 7";
+        case GLFW_KEY_KP_8:               return "KEYPAD 8";
+        case GLFW_KEY_KP_9:               return "KEYPAD 9";
+        case GLFW_KEY_KP_DIVIDE:          return "KEYPAD DIVIDE";
+        case GLFW_KEY_KP_MULTIPLY:        return "KEYPAD MULTIPLY";
+        case GLFW_KEY_KP_SUBTRACT:        return "KEYPAD SUBTRACT";
+        case GLFW_KEY_KP_ADD:             return "KEYPAD ADD";
+        case GLFW_KEY_KP_DECIMAL:         return "KEYPAD DECIMAL";
+        case GLFW_KEY_KP_EQUAL:           return "KEYPAD EQUAL";
+        case GLFW_KEY_KP_ENTER:           return "KEYPAD ENTER";
+        case GLFW_KEY_PRINT_SCREEN:       return "PRINT SCREEN";
+        case GLFW_KEY_NUM_LOCK:           return "NUM LOCK";
+        case GLFW_KEY_CAPS_LOCK:          return "CAPS LOCK";
+        case GLFW_KEY_SCROLL_LOCK:        return "SCROLL LOCK";
+        case GLFW_KEY_PAUSE:              return "PAUSE";
+        case GLFW_KEY_LEFT_SUPER:         return "LEFT SUPER";
+        case GLFW_KEY_RIGHT_SUPER:        return "RIGHT SUPER";
+        case GLFW_KEY_MENU:               return "MENU";
 
-        default:                    return "UNKNOWN";
+        default:                          return "UNKNOWN";
     }
 }
+
+// Center the cursor in the content area of the specified window
+//
+void _glfwCenterCursorInContentArea(_GLFWwindow* window)
+{
+    int width, height;
+
+    _glfwPlatformGetWindowSize(window, &width, &height);
+    _glfwPlatformSetCursorPos(window, width / 2.0, height / 2.0);
+}
+
 
 //////////////////////////////////////////////////////////////////////////
 //////                        GLFW public API                       //////
@@ -623,7 +710,7 @@ GLFWAPI void glfwSetInputMode(GLFWwindow* handle, int mode, int value)
     }
     else if (mode == GLFW_STICKY_KEYS)
     {
-        value = value ? GLFW_TRUE : GLFW_FALSE;
+        value = value ? true : false;
         if (window->stickyKeys == value)
             return;
 
@@ -643,7 +730,7 @@ GLFWAPI void glfwSetInputMode(GLFWwindow* handle, int mode, int value)
     }
     else if (mode == GLFW_STICKY_MOUSE_BUTTONS)
     {
-        value = value ? GLFW_TRUE : GLFW_FALSE;
+        value = value ? true : false;
         if (window->stickyMouseButtons == value)
             return;
 
@@ -662,12 +749,14 @@ GLFWAPI void glfwSetInputMode(GLFWwindow* handle, int mode, int value)
         window->stickyMouseButtons = value;
     }
     else if (mode == GLFW_LOCK_KEY_MODS)
-        window->lockKeyMods = value ? GLFW_TRUE : GLFW_FALSE;
+    {
+        window->lockKeyMods = value ? true : false;
+    }
     else
         _glfwInputError(GLFW_INVALID_ENUM, "Invalid input mode 0x%08X", mode);
 }
 
-GLFWAPI const char* glfwGetKeyName(int key, int scancode)
+GLFWAPI const char* glfwGetKeyName(int key, int native_key)
 {
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
 
@@ -675,18 +764,18 @@ GLFWAPI const char* glfwGetKeyName(int key, int scancode)
     {
         if (key != GLFW_KEY_KP_EQUAL &&
             (key < GLFW_KEY_KP_0 || key > GLFW_KEY_KP_ADD) &&
-            (key < GLFW_KEY_APOSTROPHE || key > GLFW_KEY_WORLD_2))
+            (key < GLFW_KEY_APOSTROPHE || key > GLFW_KEY_LAST_PRINTABLE))
         {
             return NULL;
         }
 
-        scancode = _glfwPlatformGetKeyScancode(key);
+        native_key = _glfwPlatformGetNativeKeyForKey(key);
     }
 
-    return _glfwPlatformGetScancodeName(scancode);
+    return _glfwPlatformGetNativeKeyName(native_key);
 }
 
-GLFWAPI int glfwGetKeyScancode(int key)
+GLFWAPI int glfwGetNativeKeyForKey(int key)
 {
     _GLFW_REQUIRE_INIT_OR_RETURN(-1);
 
@@ -696,7 +785,7 @@ GLFWAPI int glfwGetKeyScancode(int key)
         return GLFW_RELEASE;
     }
 
-    return _glfwPlatformGetKeyScancode(key);
+    return _glfwPlatformGetNativeKeyForKey(key);
 }
 
 GLFWAPI int glfwGetKey(GLFWwindow* handle, int key)
@@ -822,20 +911,15 @@ GLFWAPI GLFWcursor* glfwCreateCursor(const GLFWimage* image, int xhot, int yhot,
     return (GLFWcursor*) cursor;
 }
 
-GLFWAPI GLFWcursor* glfwCreateStandardCursor(int shape)
+GLFWAPI GLFWcursor* glfwCreateStandardCursor(GLFWCursorShape shape)
 {
     _GLFWcursor* cursor;
 
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
 
-    if (shape != GLFW_ARROW_CURSOR &&
-        shape != GLFW_IBEAM_CURSOR &&
-        shape != GLFW_CROSSHAIR_CURSOR &&
-        shape != GLFW_HAND_CURSOR &&
-        shape != GLFW_HRESIZE_CURSOR &&
-        shape != GLFW_VRESIZE_CURSOR)
+    if (shape >= GLFW_INVALID_CURSOR)
     {
-        _glfwInputError(GLFW_INVALID_ENUM, "Invalid standard cursor 0x%08X", shape);
+        _glfwInputError(GLFW_INVALID_ENUM, "Invalid standard cursor: %d", shape);
         return NULL;
     }
 
@@ -915,7 +999,7 @@ GLFWAPI void glfwUpdateIMEState(GLFWwindow* handle, int which, int a, int b, int
     assert(window != NULL);
 
     _GLFW_REQUIRE_INIT();
-#if defined(_GLFW_X11) || defined(_GLFW_WAYLAND)
+#if defined(_GLFW_X11) || defined(_GLFW_WAYLAND) || defined(_GLFW_COCOA)
     _glfwPlatformUpdateIMEState(window, which, a, b, c, d);
 #else
     (void)window; (void)which; (void)a; (void)b; (void)c; (void)d;
@@ -983,17 +1067,17 @@ GLFWAPI int glfwJoystickPresent(int jid)
     assert(jid >= GLFW_JOYSTICK_1);
     assert(jid <= GLFW_JOYSTICK_LAST);
 
-    _GLFW_REQUIRE_INIT_OR_RETURN(GLFW_FALSE);
+    _GLFW_REQUIRE_INIT_OR_RETURN(false);
 
     if (jid < 0 || jid > GLFW_JOYSTICK_LAST)
     {
         _glfwInputError(GLFW_INVALID_ENUM, "Invalid joystick ID %i", jid);
-        return GLFW_FALSE;
+        return false;
     }
 
     js = _glfw.joysticks + jid;
     if (!js->present)
-        return GLFW_FALSE;
+        return false;
 
     return _glfwPlatformPollJoystick(js, _GLFW_POLL_PRESENCE);
 }
@@ -1185,7 +1269,7 @@ GLFWAPI int glfwUpdateGamepadMappings(const char* string)
 
     assert(string != NULL);
 
-    _GLFW_REQUIRE_INIT_OR_RETURN(GLFW_FALSE);
+    _GLFW_REQUIRE_INIT_OR_RETURN(false);
 
     while (*c)
     {
@@ -1235,7 +1319,7 @@ GLFWAPI int glfwUpdateGamepadMappings(const char* string)
             js->mapping = findValidMapping(js);
     }
 
-    return GLFW_TRUE;
+    return true;
 }
 
 GLFWAPI int glfwJoystickIsGamepad(int jid)
@@ -1245,20 +1329,20 @@ GLFWAPI int glfwJoystickIsGamepad(int jid)
     assert(jid >= GLFW_JOYSTICK_1);
     assert(jid <= GLFW_JOYSTICK_LAST);
 
-    _GLFW_REQUIRE_INIT_OR_RETURN(GLFW_FALSE);
+    _GLFW_REQUIRE_INIT_OR_RETURN(false);
 
     if (jid < 0 || jid > GLFW_JOYSTICK_LAST)
     {
         _glfwInputError(GLFW_INVALID_ENUM, "Invalid joystick ID %i", jid);
-        return GLFW_FALSE;
+        return false;
     }
 
     js = _glfw.joysticks + jid;
     if (!js->present)
-        return GLFW_FALSE;
+        return false;
 
     if (!_glfwPlatformPollJoystick(js, _GLFW_POLL_PRESENCE))
-        return GLFW_FALSE;
+        return false;
 
     return js->mapping != NULL;
 }
@@ -1302,23 +1386,23 @@ GLFWAPI int glfwGetGamepadState(int jid, GLFWgamepadstate* state)
 
     memset(state, 0, sizeof(GLFWgamepadstate));
 
-    _GLFW_REQUIRE_INIT_OR_RETURN(GLFW_FALSE);
+    _GLFW_REQUIRE_INIT_OR_RETURN(false);
 
     if (jid < 0 || jid > GLFW_JOYSTICK_LAST)
     {
         _glfwInputError(GLFW_INVALID_ENUM, "Invalid joystick ID %i", jid);
-        return GLFW_FALSE;
+        return false;
     }
 
     js = _glfw.joysticks + jid;
     if (!js->present)
-        return GLFW_FALSE;
+        return false;
 
     if (!_glfwPlatformPollJoystick(js, _GLFW_POLL_ALL))
-        return GLFW_FALSE;
+        return false;
 
     if (!js->mapping)
-        return GLFW_FALSE;
+        return false;
 
     for (i = 0;  i <= GLFW_GAMEPAD_BUTTON_LAST;  i++)
     {
@@ -1354,15 +1438,17 @@ GLFWAPI int glfwGetGamepadState(int jid, GLFWgamepadstate* state)
             const unsigned int bit = e->index & 0xf;
             if (js->hats[hat] & bit)
                 state->axes[i] = 1.f;
+            else
+                state->axes[i] = -1.f;
         }
         else if (e->type == _GLFW_JOYSTICK_BUTTON)
-            state->axes[i] = (float) js->buttons[e->index];
+            state->axes[i] = js->buttons[e->index] * 2.f - 1.f;
     }
 
-    return GLFW_TRUE;
+    return true;
 }
 
-GLFWAPI void glfwSetClipboardString(GLFWwindow* handle, const char* string)
+GLFWAPI void glfwSetClipboardString(GLFWwindow* handle UNUSED, const char* string)
 {
     assert(string != NULL);
 
@@ -1370,14 +1456,14 @@ GLFWAPI void glfwSetClipboardString(GLFWwindow* handle, const char* string)
     _glfwPlatformSetClipboardString(string);
 }
 
-GLFWAPI const char* glfwGetClipboardString(GLFWwindow* handle)
+GLFWAPI const char* glfwGetClipboardString(GLFWwindow* handle UNUSED)
 {
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
     return _glfwPlatformGetClipboardString();
 }
 
 #if defined(_GLFW_X11) || defined(_GLFW_WAYLAND)
-GLFWAPI void glfwSetPrimarySelectionString(GLFWwindow* handle, const char* string)
+GLFWAPI void glfwSetPrimarySelectionString(GLFWwindow* handle UNUSED, const char* string)
 {
     assert(string != NULL);
 
@@ -1385,32 +1471,30 @@ GLFWAPI void glfwSetPrimarySelectionString(GLFWwindow* handle, const char* strin
     _glfwPlatformSetPrimarySelectionString(string);
 }
 
-GLFWAPI const char* glfwGetPrimarySelectionString(GLFWwindow* handle)
+GLFWAPI const char* glfwGetPrimarySelectionString(GLFWwindow* handle UNUSED)
 {
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
     return _glfwPlatformGetPrimarySelectionString();
 }
 #endif
 
-GLFWAPI double glfwGetTime(void)
+GLFWAPI monotonic_t glfwGetTime(void)
 {
-    _GLFW_REQUIRE_INIT_OR_RETURN(0.0);
-    return (double) (_glfwPlatformGetTimerValue() - _glfw.timer.offset) /
-        _glfwPlatformGetTimerFrequency();
+    _GLFW_REQUIRE_INIT_OR_RETURN(0);
+    return monotonic();
 }
 
-GLFWAPI void glfwSetTime(double time)
+GLFWAPI void glfwSetTime(monotonic_t time)
 {
     _GLFW_REQUIRE_INIT();
 
-    if (time != time || time < 0.0 || time > 18446744073.0)
+    if (time < 0)
     {
-        _glfwInputError(GLFW_INVALID_VALUE, "Invalid time %f", time);
+        _glfwInputError(GLFW_INVALID_VALUE, "Invalid time %f", monotonic_t_to_s_double(time));
         return;
     }
 
-    _glfw.timer.offset = _glfwPlatformGetTimerValue() -
-        (uint64_t) (time * _glfwPlatformGetTimerFrequency());
+    // Do nothing
 }
 
 GLFWAPI uint64_t glfwGetTimerValue(void)

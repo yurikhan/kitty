@@ -1,8 +1,8 @@
 ifdef V
-		VVAL=--verbose
+	VVAL=--verbose
 endif
 ifdef VERBOSE
-		VVAL=--verbose
+	VVAL=--verbose
 endif
 
 all:
@@ -18,6 +18,9 @@ clean:
 debug:
 	python3 setup.py build $(VVAL) --debug
 
+debug-event-loop:
+	python3 setup.py build $(VVAL) --debug --extra-logging=event-loop
+
 # Build with the ASAN and UBSAN sanitizers
 asan:
 	python3 setup.py build $(VVAL) --debug --sanitize
@@ -25,12 +28,7 @@ asan:
 profile:
 	python3 setup.py build $(VVAL) --profile
 
-logo/kitty.iconset/icon_256x256.png: logo/kitty.svg logo/make.py
-	logo/make.py
-
-rendered_logo: logo/kitty.iconset/icon_256x256.png
-
-app: rendered_logo
+app:
 	python3 setup.py kitty.app $(VVAL)
 
 man:

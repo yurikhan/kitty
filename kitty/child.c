@@ -32,8 +32,8 @@ serialize_string_tuple(PyObject *src) {
 static inline void
 free_string_tuple(char** data) {
     size_t i = 0;
-	while(data[i]) free(data[i++]);
-	free(data);
+    while(data[i]) free(data[i++]);
+    free(data);
 }
 
 extern char **environ;
@@ -78,8 +78,14 @@ spawn(PyObject *self UNUSED, PyObject *args) {
 
     pid_t pid = fork();
     switch(pid) {
-        case 0:
+        case 0: {
             // child
+            sigset_t signals = {0};
+            struct sigaction act = {.sa_handler=SIG_DFL};
+#define SA(which) { if (sigaction(which, &act, NULL) != 0) exit_on_err("sigaction() in child process failed"); }
+            SA(SIGINT); SA(SIGTERM); SA(SIGCHLD);
+#undef SA
+            if (sigprocmask(SIG_SETMASK, &signals, NULL) != 0) exit_on_err("sigprocmask() in child process failed");
             // Use only signal-safe functions (man 7 signal-safety)
             if (chdir(cwd) != 0) { if (chdir("/") != 0) {} };  // ignore failure to chdir to /
             if (setsid() == -1) exit_on_err("setsid() in child process failed");
@@ -91,28 +97,28 @@ spawn(PyObject *self UNUSED, PyObject *args) {
             // On BSD open() does not establish the controlling terminal
             if (ioctl(tfd, TIOCSCTTY, 0) == -1) exit_on_err("Failed to set controlling terminal with TIOCSCTTY");
 #endif
-            close(tfd);
+            safe_close(tfd);
 
             // Redirect stdin/stdout/stderr to the pty
             if (dup2(slave, 1) == -1) exit_on_err("dup2() failed for fd number 1");
             if (dup2(slave, 2) == -1) exit_on_err("dup2() failed for fd number 2");
             if (stdin_read_fd > -1) {
                 if (dup2(stdin_read_fd, 0) == -1) exit_on_err("dup2() failed for fd number 0");
-                close(stdin_read_fd);
-                close(stdin_write_fd);
+                safe_close(stdin_read_fd);
+                safe_close(stdin_write_fd);
             } else {
                 if (dup2(slave, 0) == -1) exit_on_err("dup2() failed for fd number 0");
             }
-            close(slave);
-            close(master);
+            safe_close(slave);
+            safe_close(master);
 
             // Wait for READY_SIGNAL which indicates kitty has setup the screen object
-            close(ready_write_fd);
+            safe_close(ready_write_fd);
             wait_for_terminal_ready(ready_read_fd);
-            close(ready_read_fd);
+            safe_close(ready_read_fd);
 
             // Close any extra fds inherited from parent
-            for (int c = 3; c < 201; c++) close(c);
+            for (int c = 3; c < 201; c++) safe_close(c);
 
             environ = env;
             // for some reason SIGPIPE is set to SIG_IGN, so reset it, needed by bash,
@@ -129,6 +135,7 @@ spawn(PyObject *self UNUSED, PyObject *args) {
             execlp("sh", "sh", "-c", "read w", NULL);
             exit(EXIT_FAILURE);
             break;
+        }
         case -1:
             PyErr_SetFromErrno(PyExc_OSError);
             break;

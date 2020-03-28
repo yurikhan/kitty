@@ -1,7 +1,7 @@
 //========================================================================
-// GLFW 3.3 macOS - www.glfw.org
+// GLFW 3.4 macOS - www.glfw.org
 //------------------------------------------------------------------------
-// Copyright (c) 2009-2016 Camilla Löwy <elmindreda@glfw.org>
+// Copyright (c) 2009-2019 Camilla Löwy <elmindreda@glfw.org>
 //
 // This software is provided 'as-is', without any express or implied
 // warranty. In no event will the authors be held liable for any damages
@@ -30,14 +30,47 @@
 #include <Carbon/Carbon.h>
 #if defined(__OBJC__)
 #import <Cocoa/Cocoa.h>
+#import <CoreVideo/CoreVideo.h>
 #else
 typedef void* id;
+typedef void* CVDisplayLinkRef;
 #endif
 
+// NOTE: Many Cocoa enum values have been renamed and we need to build across
+//       SDK versions where one is unavailable or the other deprecated
+//       We use the newer names in code and these macros to handle compatibility
+#if MAC_OS_X_VERSION_MAX_ALLOWED < 101200
+ #define NSBitmapFormatAlphaNonpremultiplied NSAlphaNonpremultipliedBitmapFormat
+ #define NSEventMaskAny NSAnyEventMask
+ #define NSEventMaskKeyUp NSKeyUpMask
+ #define NSEventModifierFlagCapsLock NSAlphaShiftKeyMask
+ #define NSEventModifierFlagCommand NSCommandKeyMask
+ #define NSEventModifierFlagControl NSControlKeyMask
+ #define NSEventModifierFlagDeviceIndependentFlagsMask NSDeviceIndependentModifierFlagsMask
+ #define NSEventModifierFlagOption NSAlternateKeyMask
+ #define NSEventModifierFlagShift NSShiftKeyMask
+ #define NSEventTypeApplicationDefined NSApplicationDefined
+ #define NSWindowStyleMaskBorderless NSBorderlessWindowMask
+ #define NSWindowStyleMaskClosable NSClosableWindowMask
+ #define NSWindowStyleMaskMiniaturizable NSMiniaturizableWindowMask
+ #define NSWindowStyleMaskResizable NSResizableWindowMask
+ #define NSWindowStyleMaskTitled NSTitledWindowMask
+#endif
+
+#if (MAC_OS_X_VERSION_MAX_ALLOWED < 101400)
+ #define NSPasteboardTypeFileURL NSFilenamesPboardType
+ #define NSBitmapFormatAlphaNonpremultiplied NSAlphaNonpremultipliedBitmapFormat
+ #define NSPasteboardTypeString NSStringPboardType
+ #define NSOpenGLContextParameterSurfaceOpacity NSOpenGLCPSurfaceOpacity
+#endif
+
+
 typedef VkFlags VkMacOSSurfaceCreateFlagsMVK;
-typedef int (* GLFWcocoatextinputfilterfun)(int,int,int);
-typedef int (* GLFWapplicationshouldhandlereopenfun)(int);
-typedef int (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
+typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int, unsigned long);
+typedef bool (* GLFWapplicationshouldhandlereopenfun)(int);
+typedef void (* GLFWapplicationwillfinishlaunchingfun)(void);
+typedef bool (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
+typedef void (* GLFWcocoarenderframefun)(GLFWwindow*);
 
 typedef struct VkMacOSSurfaceCreateInfoMVK
 {
@@ -87,7 +120,8 @@ typedef struct _GLFWwindowNS
     id              view;
     id              layer;
 
-    GLFWbool        maximized;
+    bool            maximized;
+    bool            retina;
 
     // Cached window properties to filter out duplicate events
     int             width, height;
@@ -105,7 +139,17 @@ typedef struct _GLFWwindowNS
     GLFWcocoatogglefullscreenfun toggleFullscreenCallback;
     // Dead key state
     UInt32 deadKeyState;
+    // Whether a render frame has been requested for this window
+    bool renderFrameRequested;
+    GLFWcocoarenderframefun renderFrameCallback;
 } _GLFWwindowNS;
+
+typedef struct _GLFWDisplayLinkNS
+{
+    CVDisplayLinkRef displayLink;
+    CGDirectDisplayID displayID;
+    monotonic_t lastRenderFrameRequestedAt;
+} _GLFWDisplayLinkNS;
 
 // Cocoa-specific global data
 //
@@ -113,19 +157,20 @@ typedef struct _GLFWlibraryNS
 {
     CGEventSourceRef    eventSource;
     id                  delegate;
-    id                  autoreleasePool;
-    GLFWbool            cursorHidden;
+    bool                finishedLaunching;
+    bool                cursorHidden;
     TISInputSourceRef   inputSource;
     IOHIDManagerRef     hidManager;
     id                  unicodeData;
     id                  helper;
     id                  keyUpMonitor;
     id                  keyDownMonitor;
+    id                  nibObjects;
 
     char                keyName[64];
     char                text[256];
     short int           keycodes[256];
-    short int           scancodes[GLFW_KEY_LAST + 1];
+    short int           key_to_keycode[GLFW_KEY_LAST + 1];
     char*               clipboardString;
     CGPoint             cascadePoint;
     // Where to place the cursor when re-enabled
@@ -140,6 +185,11 @@ typedef struct _GLFWlibraryNS
         PFN_LMGetKbdType GetKbdType;
         CFStringRef     kPropertyUnicodeKeyLayoutData;
     } tis;
+
+    struct {
+        _GLFWDisplayLinkNS entries[256];
+        size_t count;
+    } displayLinks;
 
 } _GLFWlibraryNS;
 
@@ -176,3 +226,12 @@ void _glfwInitTimerNS(void);
 void _glfwPollMonitorsNS(void);
 void _glfwSetVideoModeNS(_GLFWmonitor* monitor, const GLFWvidmode* desired);
 void _glfwRestoreVideoModeNS(_GLFWmonitor* monitor);
+
+float _glfwTransformYNS(float y);
+
+void _glfwClearDisplayLinks(void);
+void _glfwRestartDisplayLinks(void);
+void _glfwDispatchTickCallback(void);
+void _glfwDispatchRenderFrame(CGDirectDisplayID);
+void _glfwShutdownCVDisplayLink(unsigned long long, void*);
+void _glfwCocoaPostEmptyEvent(void);

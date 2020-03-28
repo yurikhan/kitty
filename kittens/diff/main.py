@@ -1,12 +1,16 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
+import atexit
 import os
 import signal
+import subprocess
 import sys
+import tempfile
 import warnings
 from collections import defaultdict
+from contextlib import suppress
 from functools import partial
 from gettext import gettext as _
 
@@ -208,7 +212,7 @@ class DiffHandler(Handler):
                 break
 
         if num is not None:
-            self.scroll_pos = min(num, self.max_scroll_pos)
+            self.scroll_pos = max(0, min(num, self.max_scroll_pos))
 
     @property
     def num_lines(self):
@@ -505,16 +509,28 @@ def showwarning(message, category, filename, lineno, file=None, line=None):
 
 
 showwarning.warnings = []
-help_text = 'Show a side-by-side diff of the specified files/directories'
+help_text = 'Show a side-by-side diff of the specified files/directories. You can also use ssh:hostname:remote-file-path to diff remote files.'
 usage = 'file_or_directory_left file_or_directory_right'
 
 
 def terminate_processes(processes):
     for pid in processes:
-        try:
+        with suppress(Exception):
             os.kill(pid, signal.SIGKILL)
-        except Exception:
-            pass
+
+
+def get_remote_file(path):
+    if path.startswith('ssh:'):
+        parts = path.split(':', 2)
+        if len(parts) == 3:
+            hostname, rpath = parts[1:]
+            with tempfile.NamedTemporaryFile(suffix='-' + os.path.basename(rpath), prefix='remote:', delete=False) as tf:
+                atexit.register(os.remove, tf.name)
+                p = subprocess.Popen(['ssh', hostname, 'cat', rpath], stdout=tf)
+                if p.wait() != 0:
+                    raise SystemExit(p.returncode)
+                return tf.name
+    return path
 
 
 def main(args):
@@ -529,6 +545,7 @@ def main(args):
     opts = init_config(args)
     set_diff_command(opts.diff_cmd)
     lines_for_path.replace_tab_by = opts.replace_tab_by
+    left, right = map(get_remote_file, (left, right))
     for f in left, right:
         if not os.path.exists(f):
             raise SystemExit('{} does not exist'.format(f))

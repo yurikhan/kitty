@@ -50,4 +50,7 @@ override_dh_python3:
 	dh_python3 --no-ext-rename
 
 override_dh_installchangelogs:
-	dh_installchangelogs CHANGELOG.rst
+	dh_installchangelogs docs/changelog.rst
+
+override_dh_compress:
+	dh_compress -X/html/
