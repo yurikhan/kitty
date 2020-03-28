@@ -1,3 +1,9 @@
+kitty (0.17.1-1yk1eoan) eoan; urgency=medium
+
+  * New upstream release
+
+ -- Yuri Khan <yurivkhan@gmail.com>  Sat, 28 Mar 2020 19:50:18 +0700
+
 kitty (0.15.0-1) unstable; urgency=medium
 
   * New upstream release
