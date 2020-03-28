@@ -9,18 +9,23 @@ import sys
 from contextlib import suppress
 from functools import lru_cache
 from gettext import gettext as _
+from typing import (
+    Any, Dict, FrozenSet, Generator, Iterable, List, Optional, Sequence, Tuple,
+    Union
+)
 
 from kitty.cli import parse_args
+from kitty.cli_stub import UnicodeCLIOptions
 from kitty.config import cached_values_for
 from kitty.constants import config_dir
-from kitty.fast_data_types import wcswidth, is_emoji_presentation_base
+from kitty.fast_data_types import is_emoji_presentation_base, wcswidth
 from kitty.key_encoding import (
-    DOWN, ESCAPE, F1, F2, F3, F4, F12, LEFT, RELEASE, RIGHT, SHIFT, TAB, UP,
-    enter_key
+    CTRL, RELEASE, SHIFT, KeyEvent, enter_key, key_defs as K
 )
-from kitty.utils import get_editor
+from kitty.typing import BossType
+from kitty.utils import ScreenSize, get_editor
 
-from ..tui.handler import Handler
+from ..tui.handler import Handler, result_handler
 from ..tui.line_edit import LineEdit
 from ..tui.loop import Loop
 from ..tui.operations import (
@@ -29,6 +34,17 @@ from ..tui.operations import (
 )
 
 HEX, NAME, EMOTICONS, FAVORITES = 'HEX', 'NAME', 'EMOTICONS', 'FAVORITES'
+UP = K['UP']
+DOWN = K['DOWN']
+LEFT = K['LEFT']
+RIGHT = K['RIGHT']
+TAB = K['TAB']
+ESCAPE = K['ESCAPE']
+F1 = K['F1']
+F2 = K['F2']
+F3 = K['F3']
+F4 = K['F4']
+F12 = K['F12']
 favorites_path = os.path.join(config_dir, 'unicode-input-favorites.conf')
 INDEX_CHAR = '.'
 DEFAULT_SET = tuple(map(
@@ -38,28 +54,33 @@ DEFAULT_SET = tuple(map(
     'îïðñòóôõöøœš' 'ùúûüýÿþªºαΩ∞'
 ))
 EMOTICONS_SET = tuple(range(0x1f600, 0x1f64f + 1))
+all_modes = (
+    (_('Code'), 'F1', HEX),
+    (_('Name'), 'F2', NAME),
+    (_('Emoji'), 'F3', EMOTICONS),
+    (_('Favorites'), 'F4', FAVORITES),
+)
 
 
-def codepoint_ok(code):
+def codepoint_ok(code: int) -> bool:
     return not (code <= 32 or code == 127 or 128 <= code <= 159 or 0xd800 <= code <= 0xdbff or 0xDC00 <= code <= 0xDFFF)
 
 
 @lru_cache(maxsize=256)
-def points_for_word(w):
+def points_for_word(w: str) -> FrozenSet[int]:
     from .unicode_names import codepoints_for_word
     return codepoints_for_word(w.lower())
 
 
 @lru_cache(maxsize=4096)
-def name(cp):
+def name(cp: Union[int, str]) -> str:
     from .unicode_names import name_for_codepoint
-    if isinstance(cp, str):
-        cp = ord(cp[0])
-    return (name_for_codepoint(cp) or '').capitalize()
+    c = ord(cp[0]) if isinstance(cp, str) else cp
+    return (name_for_codepoint(c) or '').capitalize()
 
 
 @lru_cache(maxsize=256)
-def codepoints_matching_search(parts):
+def codepoints_matching_search(parts: Sequence[str]) -> List[int]:
     ans = []
     if parts and parts[0] and len(parts[0]) > 1:
         codepoints = points_for_word(parts[0])
@@ -70,13 +91,13 @@ def codepoints_matching_search(parts):
                 if intersection:
                     codepoints = intersection
                     continue
-            codepoints = {c for c in codepoints if word in name(c).lower()}
+            codepoints = frozenset(c for c in codepoints if word in name(c).lower())
         if codepoints:
             ans = list(sorted(codepoints))
     return ans
 
 
-def parse_favorites(raw):
+def parse_favorites(raw: str) -> Generator[int, None, None]:
     for line in raw.splitlines():
         line = line.strip()
         if line.startswith('#') or not line:
@@ -94,7 +115,7 @@ def parse_favorites(raw):
                 yield code
 
 
-def serialize_favorites(favorites):
+def serialize_favorites(favorites: Iterable[int]) -> str:
     ans = '''\
 # Favorite characters for unicode input
 # Enter the hex code for each favorite character on a new line. Blank lines are
@@ -106,19 +127,20 @@ def serialize_favorites(favorites):
     return '\n'.join(ans)
 
 
-def load_favorites(refresh=False):
-    ans = getattr(load_favorites, 'ans', None)
+def load_favorites(refresh: bool = False) -> List[int]:
+    ans: Optional[List[int]] = getattr(load_favorites, 'ans', None)
     if ans is None or refresh:
         try:
             with open(favorites_path, 'rb') as f:
                 raw = f.read().decode('utf-8')
-            ans = load_favorites.ans = list(parse_favorites(raw)) or list(DEFAULT_SET)
+            ans = list(parse_favorites(raw)) or list(DEFAULT_SET)
         except FileNotFoundError:
-            ans = load_favorites.ans = list(DEFAULT_SET)
+            ans = list(DEFAULT_SET)
+        setattr(load_favorites, 'ans', ans)
     return ans
 
 
-def encode_hint(num, digits=string.digits + string.ascii_lowercase):
+def encode_hint(num: int, digits: str = string.digits + string.ascii_lowercase) -> str:
     res = ''
     d = len(digits)
     while not res or num > 0:
@@ -127,53 +149,53 @@ def encode_hint(num, digits=string.digits + string.ascii_lowercase):
     return res
 
 
-def decode_hint(x):
+def decode_hint(x: str) -> int:
     return int(x, 36)
 
 
 class Table:
 
-    def __init__(self, emoji_variation):
+    def __init__(self, emoji_variation: str) -> None:
         self.emoji_variation = emoji_variation
-        self.layout_dirty = True
+        self.layout_dirty: bool = True
         self.last_rows = self.last_cols = -1
-        self.codepoints = []
+        self.codepoints: List[int] = []
         self.current_idx = 0
         self.text = ''
         self.num_cols = 0
         self.mode = HEX
 
     @property
-    def current_codepoint(self):
+    def current_codepoint(self) -> Optional[int]:
         if self.codepoints:
             return self.codepoints[self.current_idx]
 
-    def set_codepoints(self, codepoints, mode=HEX):
+    def set_codepoints(self, codepoints: List[int], mode: str = HEX) -> None:
         self.codepoints = codepoints
         self.mode = mode
         self.layout_dirty = True
         self.current_idx = 0
 
-    def codepoint_at_hint(self, hint):
+    def codepoint_at_hint(self, hint: str) -> int:
         return self.codepoints[decode_hint(hint)]
 
-    def layout(self, rows, cols):
+    def layout(self, rows: int, cols: int) -> Optional[str]:
         if not self.layout_dirty and self.last_cols == cols and self.last_rows == rows:
             return self.text
         self.last_cols, self.last_rows = cols, rows
         self.layout_dirty = False
 
-        def safe_chr(codepoint):
+        def safe_chr(codepoint: int) -> str:
             ans = chr(codepoint).encode('utf-8', 'replace').decode('utf-8')
             if self.emoji_variation and is_emoji_presentation_base(codepoint):
                 ans += self.emoji_variation
             return ans
 
         if self.mode is NAME:
-            def as_parts(i, codepoint):
+            def as_parts(i: int, codepoint: int) -> Tuple[str, str, str]:
                 return encode_hint(i).ljust(idx_size), safe_chr(codepoint), name(codepoint)
 
-            def cell(i, idx, c, desc):
+            def cell(i: int, idx: str, c: str, desc: str) -> Generator[str, None, None]:
                 is_current = i == self.current_idx
                 text = colored(idx, 'green') + ' ' + sgr('49') + c + ' '
                 w = wcswidth(c)
@@ -190,10 +212,10 @@ class Table:
                 yield styled(text, reverse=True if is_current else None)
 
         else:
-            def as_parts(i, codepoint):
+            def as_parts(i: int, codepoint: int) -> Tuple[str, str, str]:
                 return encode_hint(i).ljust(idx_size), safe_chr(codepoint), ''
 
-            def cell(i, idx, c, desc):
+            def cell(i: int, idx: str, c: str, desc: str) -> Generator[str, None, None]:
                 yield colored(idx, 'green') + ' '
                 yield colored(c, 'gray', True)
                 w = wcswidth(c)
@@ -217,7 +239,7 @@ class Table:
         col_width = min(col_width, 40)
         space_for_desc = col_width - 2 - idx_size - 4
         num_cols = self.num_cols = max(cols // col_width, 1)
-        buf = []
+        buf: List[str] = []
         a = buf.append
         rows_left = rows
 
@@ -226,13 +248,13 @@ class Table:
                 rows_left -= 1
                 if rows_left == 0:
                     break
-                buf.append('\r\n')
+                a('\r\n')
             buf.extend(cell(i, idx, c, desc))
             a('  ')
         self.text = ''.join(buf)
         return self.text
 
-    def move_current(self, rows=0, cols=0):
+    def move_current(self, rows: int = 0, cols: int = 0) -> None:
         if len(self.codepoints) == 0:
             return
         if cols:
@@ -245,16 +267,17 @@ class Table:
             self.layout_dirty = True
 
 
-def is_index(w):
-    with suppress(Exception):
+def is_index(w: str) -> bool:
+    try:
         int(w.lstrip(INDEX_CHAR), 16)
         return True
-    return False
+    except Exception:
+        return False
 
 
 class UnicodeInput(Handler):
 
-    def __init__(self, cached_values, emoji_variation='none'):
+    def __init__(self, cached_values: Dict[str, Any], emoji_variation: str = 'none') -> None:
         self.cached_values = cached_values
         self.emoji_variation = ''
         if emoji_variation == 'text':
@@ -263,26 +286,26 @@ class UnicodeInput(Handler):
             self.emoji_variation = '\ufe0f'
         self.line_edit = LineEdit()
         self.recent = list(self.cached_values.get('recent', DEFAULT_SET))
-        self.current_char = None
+        self.current_char: Optional[str] = None
         self.prompt_template = '{}> '
-        self.last_updated_code_point_at = None
+        self.last_updated_code_point_at: Optional[Tuple[str, Union[Sequence[int], None, str]]] = None
         self.choice_line = ''
         self.mode = globals().get(cached_values.get('mode', 'HEX'), 'HEX')
         self.table = Table(self.emoji_variation)
         self.update_prompt()
 
     @property
-    def resolved_current_char(self):
+    def resolved_current_char(self) -> Optional[str]:
         ans = self.current_char
         if ans:
             if self.emoji_variation and is_emoji_presentation_base(ord(ans[0])):
                 ans += self.emoji_variation
         return ans
 
-    def update_codepoints(self):
+    def update_codepoints(self) -> None:
         codepoints = None
         if self.mode is HEX:
-            q = self.mode, None
+            q: Tuple[str, Optional[Union[str, Sequence[int]]]] = (self.mode, None)
             codepoints = self.recent
         elif self.mode is EMOTICONS:
             q = self.mode, None
@@ -301,14 +324,14 @@ class UnicodeInput(Handler):
                     words = words[:index_words[0]]
                 codepoints = codepoints_matching_search(tuple(words))
                 if index_words:
-                    index_word = int(index_word.lstrip(INDEX_CHAR), 16)
-                    if index_word < len(codepoints):
-                        codepoints = [codepoints[index_word]]
+                    iindex_word = int(index_word.lstrip(INDEX_CHAR), 16)
+                    if codepoints and iindex_word < len(codepoints):
+                        codepoints = [codepoints[iindex_word]]
         if q != self.last_updated_code_point_at:
             self.last_updated_code_point_at = q
-            self.table.set_codepoints(codepoints, self.mode)
+            self.table.set_codepoints(codepoints or [], self.mode)
 
-    def update_current_char(self):
+    def update_current_char(self) -> None:
         self.update_codepoints()
         self.current_char = None
         if self.mode is HEX:
@@ -332,7 +355,7 @@ class UnicodeInput(Handler):
             if not codepoint_ok(code):
                 self.current_char = None
 
-    def update_prompt(self):
+    def update_prompt(self) -> None:
         self.update_current_char()
         if self.current_char is None:
             c, color = '??', 'red'
@@ -345,22 +368,17 @@ class UnicodeInput(Handler):
                 colored(c, 'green'), hex(ord(c[0]))[2:], faint(styled(name(c) or '', italic=True)))
         self.prompt = self.prompt_template.format(colored(c, color))
 
-    def init_terminal_state(self):
+    def init_terminal_state(self) -> None:
         self.write(set_line_wrapping(False))
         self.write(set_window_title(_('Unicode input')))
 
-    def initialize(self):
+    def initialize(self) -> None:
         self.init_terminal_state()
         self.draw_screen()
 
-    def draw_title_bar(self):
+    def draw_title_bar(self) -> None:
         entries = []
-        for name, key, mode in [
-                (_('Code'), 'F1', HEX),
-                (_('Name'), 'F2', NAME),
-                (_('Emoji'), 'F3', EMOTICONS),
-                (_('Favorites'), 'F4', FAVORITES),
-        ]:
+        for name, key, mode in all_modes:
             entry = ' {} ({}) '.format(name, key)
             if mode is self.mode:
                 entry = styled(entry, reverse=False, bold=True)
@@ -371,12 +389,12 @@ class UnicodeInput(Handler):
             text += ' ' * extra
         self.print(styled(text, reverse=True))
 
-    def draw_screen(self):
+    def draw_screen(self) -> None:
         self.write(clear_screen())
         self.draw_title_bar()
         y = 1
 
-        def writeln(text=''):
+        def writeln(text: str = '') -> None:
             nonlocal y
             self.print(text)
             y += 1
@@ -398,17 +416,19 @@ class UnicodeInput(Handler):
             elif self.mode is FAVORITES:
                 writeln(faint(_('Press F12 to edit the list of favorites')))
             self.table_at = y
-            self.write(self.table.layout(self.screen_size.rows - self.table_at, self.screen_size.cols))
+            q = self.table.layout(self.screen_size.rows - self.table_at, self.screen_size.cols)
+            if q:
+                self.write(q)
 
-    def refresh(self):
+    def refresh(self) -> None:
         self.update_prompt()
         self.draw_screen()
 
-    def on_text(self, text, in_bracketed_paste):
+    def on_text(self, text: str, in_bracketed_paste: bool = False) -> None:
         self.line_edit.on_text(text, in_bracketed_paste)
         self.refresh()
 
-    def on_key(self, key_event):
+    def on_key(self, key_event: KeyEvent) -> None:
         if self.mode is HEX and key_event.type is not RELEASE and not key_event.mods:
             try:
                 val = int(self.line_edit.current_input, 16)
@@ -430,21 +450,27 @@ class UnicodeInput(Handler):
         if self.mode is NAME and key_event.type is not RELEASE and not key_event.mods:
             if key_event.key is TAB:
                 if key_event.mods == SHIFT:
-                    self.table.move_current(cols=-1), self.refresh()
+                    self.table.move_current(cols=-1)
+                    self.refresh()
                 elif not key_event.mods:
-                    self.table.move_current(cols=1), self.refresh()
+                    self.table.move_current(cols=1)
+                    self.refresh()
                 return
             elif key_event.key is LEFT and not key_event.mods:
-                self.table.move_current(cols=-1), self.refresh()
+                self.table.move_current(cols=-1)
+                self.refresh()
                 return
             elif key_event.key is RIGHT and not key_event.mods:
-                self.table.move_current(cols=1), self.refresh()
+                self.table.move_current(cols=1)
+                self.refresh()
                 return
             elif key_event.key is UP and not key_event.mods:
-                self.table.move_current(rows=-1), self.refresh()
+                self.table.move_current(rows=-1)
+                self.refresh()
                 return
             elif key_event.key is DOWN and not key_event.mods:
-                self.table.move_current(rows=1), self.refresh()
+                self.table.move_current(rows=1)
+                self.refresh()
                 return
 
         if self.line_edit.on_key(key_event):
@@ -452,21 +478,26 @@ class UnicodeInput(Handler):
             return
         if key_event is enter_key:
             self.quit_loop(0)
-        elif key_event.type is RELEASE and not key_event.mods:
-            if key_event.key is ESCAPE:
-                self.quit_loop(1)
-            elif key_event.key is F1:
-                self.switch_mode(HEX)
-            elif key_event.key is F2:
-                self.switch_mode(NAME)
-            elif key_event.key is F3:
-                self.switch_mode(EMOTICONS)
-            elif key_event.key is F4:
-                self.switch_mode(FAVORITES)
-            elif key_event.key is F12 and self.mode is FAVORITES:
-                self.edit_favorites()
+        elif key_event.type is RELEASE:
+            if not key_event.mods:
+                if key_event.key is ESCAPE:
+                    self.quit_loop(1)
+                elif key_event.key is F1:
+                    self.switch_mode(HEX)
+                elif key_event.key is F2:
+                    self.switch_mode(NAME)
+                elif key_event.key is F3:
+                    self.switch_mode(EMOTICONS)
+                elif key_event.key is F4:
+                    self.switch_mode(FAVORITES)
+                elif key_event.key is F12 and self.mode is FAVORITES:
+                    self.edit_favorites()
+            elif key_event.mods == CTRL and key_event.key is TAB:
+                self.next_mode()
+            elif key_event.mods == CTRL | SHIFT and key_event.key is TAB:
+                self.next_mode(-1)
 
-    def edit_favorites(self):
+    def edit_favorites(self) -> None:
         if not os.path.exists(favorites_path):
             with open(favorites_path, 'wb') as f:
                 f.write(serialize_favorites(load_favorites()).encode('utf-8'))
@@ -477,7 +508,7 @@ class UnicodeInput(Handler):
         self.init_terminal_state()
         self.refresh()
 
-    def switch_mode(self, mode):
+    def switch_mode(self, mode: str) -> None:
         if mode is not self.mode:
             self.mode = mode
             self.cached_values['mode'] = mode
@@ -486,13 +517,18 @@ class UnicodeInput(Handler):
             self.choice_line = ''
             self.refresh()
 
-    def on_interrupt(self):
+    def next_mode(self, delta: int = 1) -> None:
+        modes = tuple(x[-1] for x in all_modes)
+        idx = (modes.index(self.mode) + delta + len(modes)) % len(modes)
+        self.switch_mode(modes[idx])
+
+    def on_interrupt(self) -> None:
         self.quit_loop(1)
 
-    def on_eot(self):
+    def on_eot(self) -> None:
         self.quit_loop(1)
 
-    def on_resize(self, new_size):
+    def on_resize(self, new_size: ScreenSize) -> None:
         self.refresh()
 
 
@@ -510,22 +546,22 @@ default form specified in the unicode standard for the symbol is used.
 '''.format
 
 
-def parse_unicode_input_args(args):
-    return parse_args(args, OPTIONS, usage, help_text, 'kitty +kitten unicode_input')
+def parse_unicode_input_args(args: List[str]) -> Tuple[UnicodeCLIOptions, List[str]]:
+    return parse_args(args, OPTIONS, usage, help_text, 'kitty +kitten unicode_input', result_class=UnicodeCLIOptions)
 
 
-def main(args):
+def main(args: List[str]) -> Optional[str]:
     try:
-        args, items = parse_unicode_input_args(args[1:])
+        cli_opts, items = parse_unicode_input_args(args[1:])
     except SystemExit as e:
         if e.code != 0:
             print(e.args[0], file=sys.stderr)
             input(_('Press Enter to quit'))
-        return
+        return None
 
     loop = Loop()
     with cached_values_for('unicode-input') as cached_values:
-        handler = UnicodeInput(cached_values, args.emoji_variation)
+        handler = UnicodeInput(cached_values, cli_opts.emoji_variation)
         loop.loop(handler)
         if handler.current_char and loop.return_code == 0:
             with suppress(Exception):
@@ -535,9 +571,11 @@ def main(args):
             return handler.resolved_current_char
     if loop.return_code != 0:
         raise SystemExit(loop.return_code)
+    return None
 
 
-def handle_result(args, current_char, target_window_id, boss):
+@result_handler()
+def handle_result(args: List[str], current_char: str, target_window_id: int, boss: BossType) -> None:
     w = boss.window_id_map.get(target_window_id)
     if w is not None:
         w.paste(current_char)
@@ -548,6 +586,7 @@ if __name__ == '__main__':
     if ans:
         print(ans)
 elif __name__ == '__doc__':
-    sys.cli_docs['usage'] = usage
-    sys.cli_docs['options'] = OPTIONS
-    sys.cli_docs['help_text'] = help_text
+    cd = sys.cli_docs  # type: ignore
+    cd['usage'] = usage
+    cd['options'] = OPTIONS
+    cd['help_text'] = help_text

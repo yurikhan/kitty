@@ -1,6 +1,8 @@
 *.so
 *.pyc
 *.pyo
+*_stub.pyi
+/.dmypy.json
 /tags
 /build/
 /linux-package/
@@ -14,4 +16,5 @@ __pycache__/
 /glfw/wayland-*-client-protocol.[ch]
 /docs/_build/
 /docs/generated/
+/.mypy_cache
 .DS_Store

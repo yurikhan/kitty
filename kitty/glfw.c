@@ -5,7 +5,6 @@
  */
 
 #include "state.h"
-#include "glfw_tests.h"
 #include "fonts.h"
 #include "monotonic.h"
 #include <structmember.h>
@@ -14,6 +13,7 @@ extern bool cocoa_make_window_resizable(void *w, bool);
 extern void cocoa_focus_window(void *w);
 extern void cocoa_create_global_menu(void);
 extern void cocoa_hide_window_title(void *w);
+extern void cocoa_hide_titlebar(void *w);
 extern void cocoa_set_activation_policy(bool);
 extern void cocoa_set_titlebar_color(void *w, color_type color);
 extern bool cocoa_alt_option_key_pressed(unsigned long);
@@ -320,17 +320,26 @@ window_focus_callback(GLFWwindow *w, int focused) {
     global_state.callback_os_window = NULL;
 }
 
-static void
-drop_callback(GLFWwindow *w, int count, const char **strings) {
-    if (!set_callback_window(w)) return;
-    PyObject *s = PyTuple_New(count);
-    if (s) {
-        for (int i = 0; i < count; i++) PyTuple_SET_ITEM(s, i, PyUnicode_FromString(strings[i]));
-        WINDOW_CALLBACK(on_drop, "O", s);
-        Py_CLEAR(s);
-        request_tick_callback();
+static int
+drop_callback(GLFWwindow *w, const char *mime, const char *data, size_t sz) {
+    if (!set_callback_window(w)) return 0;
+    if (!data) {
+        if (strcmp(mime, "text/uri-list") == 0) return 3;
+        if (strcmp(mime, "text/plain;charset=utf-8") == 0) return 2;
+        if (strcmp(mime, "text/plain") == 0) return 1;
+        return 0;
     }
+    WINDOW_CALLBACK(on_drop, "sy#", mime, data, (int)sz);
+    request_tick_callback();
+    /* PyObject *s = PyTuple_New(count); */
+    /* if (s) { */
+    /*     for (int i = 0; i < count; i++) PyTuple_SET_ITEM(s, i, PyUnicode_FromString(strings[i])); */
+    /*     WINDOW_CALLBACK(on_drop, "O", s); */
+    /*     Py_CLEAR(s); */
+    /*     request_tick_callback(); */
+    /* } */
     global_state.callback_os_window = NULL;
+    return 0;
 }
 
 // }}}
@@ -384,8 +393,8 @@ get_window_content_scale(GLFWwindow *w, float *xscale, float *yscale, double *xd
         if (monitor) glfwGetMonitorContentScale(monitor, xscale, yscale);
     }
     // check for zero, negative, NaN or excessive values of xscale/yscale
-    if (*xscale <= 0 || *xscale != *xscale || *xscale >= 24) *xscale = 1.0;
-    if (*yscale <= 0 || *yscale != *yscale || *yscale >= 24) *yscale = 1.0;
+    if (*xscale <= 0.0001 || *xscale != *xscale || *xscale >= 24) *xscale = 1.0;
+    if (*yscale <= 0.0001 || *yscale != *yscale || *yscale >= 24) *yscale = 1.0;
 #ifdef __APPLE__
     const double factor = 72.0;
 #else
@@ -513,12 +522,12 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
         // We don't use depth and stencil buffers
         glfwWindowHint(GLFW_DEPTH_BITS, 0);
         glfwWindowHint(GLFW_STENCIL_BITS, 0);
+        if (OPT(hide_window_decorations) & 1) glfwWindowHint(GLFW_DECORATED, false);
 #ifdef __APPLE__
         cocoa_set_activation_policy(OPT(macos_hide_from_tasks));
         glfwWindowHint(GLFW_COCOA_GRAPHICS_SWITCHING, true);
         glfwSetApplicationShouldHandleReopen(on_application_reopen);
         glfwSetApplicationWillFinishLaunching(cocoa_create_global_menu);
-        if (OPT(hide_window_decorations)) glfwWindowHint(GLFW_DECORATED, false);
 #endif
 
     }
@@ -527,7 +536,6 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
     glfwWindowHintString(GLFW_X11_INSTANCE_NAME, wm_class_name);
     glfwWindowHintString(GLFW_X11_CLASS_NAME, wm_class_class);
     glfwWindowHintString(GLFW_WAYLAND_APP_ID, wm_class_class);
-    if (OPT(hide_window_decorations)) glfwWindowHint(GLFW_DECORATED, false);
 #endif
 
     if (global_state.num_os_windows >= MAX_CHILDREN) {
@@ -625,6 +633,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
     w->fonts_data = fonts_data;
     w->shown_once = true;
     w->last_focused_counter = ++focus_counter;
+    if (OPT(resize_in_steps)) os_window_update_size_increments(w);
 #ifdef __APPLE__
     if (OPT(macos_option_as_alt)) glfwSetCocoaTextInputFilter(glfw_window, filter_option);
     glfwSetCocoaToggleFullscreenIntercept(glfw_window, intercept_cocoa_fullscreen);
@@ -652,7 +661,9 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
     glfwSetDropCallback(glfw_window, drop_callback);
 #ifdef __APPLE__
     if (glfwGetCocoaWindow) {
-        if (!(OPT(macos_show_window_title_in) & WINDOW)) {
+        if (OPT(hide_window_decorations) & 2) {
+            cocoa_hide_titlebar(glfwGetCocoaWindow(glfw_window));
+        } else if (!(OPT(macos_show_window_title_in) & WINDOW)) {
             cocoa_hide_window_title(glfwGetCocoaWindow(glfw_window));
         }
         cocoa_make_window_resizable(glfwGetCocoaWindow(glfw_window), OPT(macos_window_resizable));
@@ -671,6 +682,12 @@ create_os_window(PyObject UNUSED *self, PyObject *args) {
         }
     }
     return PyLong_FromUnsignedLongLong(w->id);
+}
+
+void
+os_window_update_size_increments(OSWindow *window) {
+    if (window->handle && window->fonts_data) glfwSetWindowSizeIncrements(
+            window->handle, window->fonts_data->cell_width, window->fonts_data->cell_height);
 }
 
 #ifdef __APPLE__
@@ -834,7 +851,10 @@ static PyObject*
 glfw_get_key_name(PyObject UNUSED *self, PyObject *args) {
     int key, native_key;
     if (!PyArg_ParseTuple(args, "ii", &key, &native_key)) return NULL;
-    return Py_BuildValue("s", glfwGetKeyName(key, native_key));
+    if (!glfwGetKeyName) {
+        return PyUnicode_FromFormat("key: %d native_key: %d", key, native_key);
+    }
+    return Py_BuildValue("z", glfwGetKeyName(key, native_key));
 }
 
 static PyObject*
@@ -1079,8 +1099,8 @@ set_custom_cursor(PyObject *self UNUSED, PyObject *args) {
 
 #ifdef __APPLE__
 void
-get_cocoa_key_equivalent(int key, int mods, unsigned short *cocoa_key, int *cocoa_mods) {
-    glfwGetCocoaKeyEquivalent(key, mods, cocoa_key, cocoa_mods);
+get_cocoa_key_equivalent(int key, int mods, char *cocoa_key, size_t key_sz, int *cocoa_mods) {
+    glfwGetCocoaKeyEquivalent(key, mods, cocoa_key, key_sz, cocoa_mods);
 }
 
 static void
@@ -1167,18 +1187,6 @@ stop_main_loop(void) {
 }
 
 
-static PyObject*
-test_empty_event(PYNOARG) {
-    // To run this, use
-    // kitty +runpy "from kitty.main import init_glfw_module; init_glfw_module('x11'); from kitty.fast_data_types import glfw_test_empty_event; glfw_test_empty_event()"
-    int ret = empty_main();
-    if (ret != EXIT_SUCCESS) {
-        PyErr_Format(PyExc_RuntimeError, "Empty test returned failure code: %d", ret);
-        return NULL;
-    }
-    Py_RETURN_NONE;
-}
-
 // Boilerplate {{{
 
 static PyMethodDef module_methods[] = {
@@ -1207,7 +1215,6 @@ static PyMethodDef module_methods[] = {
     {"glfw_get_key_name", (PyCFunction)glfw_get_key_name, METH_VARARGS, ""},
     {"glfw_primary_monitor_size", (PyCFunction)primary_monitor_size, METH_NOARGS, ""},
     {"glfw_primary_monitor_content_scale", (PyCFunction)primary_monitor_content_scale, METH_NOARGS, ""},
-    {"glfw_test_empty_event", (PyCFunction)test_empty_event, METH_NOARGS, ""},
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 
@@ -1296,6 +1303,7 @@ init_glfw(PyObject *m) {
     ADDC(GLFW_KEY_LEFT_BRACKET);
     ADDC(GLFW_KEY_BACKSLASH);
     ADDC(GLFW_KEY_RIGHT_BRACKET);
+    ADDC(GLFW_KEY_CIRCUMFLEX);
     ADDC(GLFW_KEY_UNDERSCORE);
     ADDC(GLFW_KEY_GRAVE_ACCENT);
     ADDC(GLFW_KEY_WORLD_1);

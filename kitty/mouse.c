@@ -132,11 +132,12 @@ distance_to_window(Window *w, OSWindow *os_window) {
 static bool clamp_to_window = false;
 
 static inline bool
-cell_for_pos(Window *w, unsigned int *x, unsigned int *y, OSWindow *os_window) {
+cell_for_pos(Window *w, unsigned int *x, unsigned int *y, bool *in_left_half_of_cell, OSWindow *os_window) {
     WindowGeometry *g = &w->geometry;
     Screen *screen = w->render_data.screen;
     if (!screen) return false;
     unsigned int qx = 0, qy = 0;
+    bool in_left_half = true;
     double mouse_x = global_state.callback_os_window->mouse_x;
     double mouse_y = global_state.callback_os_window->mouse_y;
     double left = window_left(w, os_window), top = window_top(w, os_window), right = window_right(w, os_window), bottom = window_bottom(w, os_window);
@@ -146,12 +147,20 @@ cell_for_pos(Window *w, unsigned int *x, unsigned int *y, OSWindow *os_window) {
     }
     w->mouse_pos.x = mouse_x - left; w->mouse_pos.y = mouse_y - top;
     if (mouse_x < left || mouse_y < top || mouse_x > right || mouse_y > bottom) return false;
-    if (mouse_x >= g->right) qx = screen->columns - 1;
-    else if (mouse_x >= g->left) qx = (unsigned int)((double)(mouse_x - g->left) / os_window->fonts_data->cell_width);
+    if (mouse_x >= g->right) {
+        qx = screen->columns - 1;
+        in_left_half = false;
+    } else if (mouse_x >= g->left) {
+        double xval = (double)(mouse_x - g->left) / os_window->fonts_data->cell_width;
+        double fxval = floor(xval);
+        qx = (unsigned int)fxval;
+        in_left_half = (xval - fxval <= 0.5) ? true : false;
+    }
     if (mouse_y >= g->bottom) qy = screen->lines - 1;
     else if (mouse_y >= g->top) qy = (unsigned int)((double)(mouse_y - g->top) / os_window->fonts_data->cell_height);
     if (qx < screen->columns && qy < screen->lines) {
         *x = qx; *y = qy;
+        *in_left_half_of_cell = in_left_half;
         return true;
     }
     return false;
@@ -167,17 +176,31 @@ update_drag(bool from_button, Window *w, bool is_release, int modifiers) {
             global_state.active_drag_in_window = 0;
             w->last_drag_scroll_at = 0;
             if (screen->selection.in_progress)
-                screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, true);
+                screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, w->mouse_pos.in_left_half_of_cell, true, false);
         }
         else {
             global_state.active_drag_in_window = w->id;
-            screen_start_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, modifiers == (int)OPT(rectangle_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | (int)OPT(terminal_select_modifiers)), EXTEND_CELL);
+            screen_start_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, w->mouse_pos.in_left_half_of_cell, modifiers == (int)OPT(rectangle_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | (int)OPT(terminal_select_modifiers)), EXTEND_CELL);
         }
     } else if (screen->selection.in_progress) {
-        screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, false);
+        screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, w->mouse_pos.in_left_half_of_cell, false, false);
     }
 }
 
+static inline bool
+do_drag_scroll(Window *w, bool upwards) {
+    Screen *screen = w->render_data.screen;
+    if (screen->linebuf == screen->main_linebuf) {
+        screen_history_scroll(screen, SCROLL_LINE, upwards);
+        update_drag(false, w, false, 0);
+        if (mouse_cursor_shape != ARROW) {
+            mouse_cursor_shape = ARROW;
+            set_mouse_cursor(mouse_cursor_shape);
+        }
+        return true;
+    }
+    return false;
+}
 
 bool
 drag_scroll(Window *w, OSWindow *frame) {
@@ -185,15 +208,8 @@ drag_scroll(Window *w, OSWindow *frame) {
     double y = frame->mouse_y;
     bool upwards = y <= (w->geometry.top + margin);
     if (upwards || y >= w->geometry.bottom - margin) {
-        Screen *screen = w->render_data.screen;
-        if (screen->linebuf == screen->main_linebuf) {
-            screen_history_scroll(screen, SCROLL_LINE, upwards);
-            update_drag(false, w, false, 0);
+        if (do_drag_scroll(w, upwards)) {
             frame->last_mouse_activity_at = monotonic();
-            if (mouse_cursor_shape != ARROW) {
-                mouse_cursor_shape = ARROW;
-                set_mouse_cursor(mouse_cursor_shape);
-            }
             return true;
         }
     }
@@ -201,10 +217,10 @@ drag_scroll(Window *w, OSWindow *frame) {
 }
 
 static inline void
-extend_selection(Window *w) {
+extend_selection(Window *w, bool ended) {
     Screen *screen = w->render_data.screen;
     if (screen_has_selection(screen)) {
-        screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, true);
+        screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, w->mouse_pos.in_left_half_of_cell, ended, false);
     }
 }
 
@@ -213,9 +229,14 @@ extend_url(Screen *screen, Line *line, index_type *x, index_type *y, char_type s
     unsigned int count = 0;
     while(count++ < 10) {
         if (*x != line->xnum - 1) break;
+        bool next_line_starts_with_url_chars = false;
+        line = screen_visual_line(screen, *y + 2);
+        if (line) next_line_starts_with_url_chars = line_startswith_url_chars(line);
         line = screen_visual_line(screen, *y + 1);
-        if (!line) break; // we deliberately allow non-continued lines as some programs, like mutt split URLs with newlines at line boundaries
-        index_type new_x = line_url_end_at(line, 0, false, sentinel);
+        if (!line) break;
+        // we deliberately allow non-continued lines as some programs, like
+        // mutt split URLs with newlines at line boundaries
+        index_type new_x = line_url_end_at(line, 0, false, sentinel, next_line_starts_with_url_chars);
         if (!new_x) break;
         *y += 1; *x = new_x;
     }
@@ -258,7 +279,15 @@ detect_url(Screen *screen, unsigned int x, unsigned int y) {
     if (line) {
         url_start = line_url_start_at(line, x);
         sentinel = get_url_sentinel(line, url_start);
-        if (url_start < line->xnum) url_end = line_url_end_at(line, x, true, sentinel);
+        if (url_start < line->xnum) {
+            bool next_line_starts_with_url_chars = false;
+            if (y < screen->lines - 1) {
+                line = screen_visual_line(screen, y+1);
+                next_line_starts_with_url_chars = line_startswith_url_chars(line);
+                line = screen_visual_line(screen, y);
+            }
+            url_end = line_url_end_at(line, x, true, sentinel, next_line_starts_with_url_chars);
+        }
         has_url = url_end > url_start;
     }
     if (has_url) {
@@ -272,6 +301,18 @@ detect_url(Screen *screen, unsigned int x, unsigned int y) {
     }
 }
 
+static inline void
+handle_mouse_movement_in_kitty(Window *w, int button, bool mouse_cell_changed) {
+    Screen *screen = w->render_data.screen;
+    if (screen->selection.in_progress && (button == GLFW_MOUSE_BUTTON_LEFT || button == GLFW_MOUSE_BUTTON_RIGHT)) {
+        monotonic_t now = monotonic();
+        if ((now - w->last_drag_scroll_at) >= ms_to_monotonic_t(20ll) || mouse_cell_changed) {
+            update_drag(false, w, false, 0);
+            w->last_drag_scroll_at = now;
+        }
+    }
+
+}
 
 HANDLER(handle_move_event) {
     unsigned int x = 0, y = 0;
@@ -281,24 +322,21 @@ HANDLER(handle_move_event) {
             call_boss(switch_focus_to, "I", window_idx);
         }
     }
-    if (!cell_for_pos(w, &x, &y, global_state.callback_os_window)) return;
+    bool in_left_half_of_cell = false;
+    if (!cell_for_pos(w, &x, &y, &in_left_half_of_cell, global_state.callback_os_window)) return;
     Screen *screen = w->render_data.screen;
     detect_url(screen, x, y);
     bool mouse_cell_changed = x != w->mouse_pos.cell_x || y != w->mouse_pos.cell_y;
+    bool cell_half_changed = in_left_half_of_cell != w->mouse_pos.in_left_half_of_cell;
     w->mouse_pos.cell_x = x; w->mouse_pos.cell_y = y;
+    w->mouse_pos.in_left_half_of_cell = in_left_half_of_cell;
     bool in_tracking_mode = (
         screen->modes.mouse_tracking_mode == ANY_MODE ||
         (screen->modes.mouse_tracking_mode == MOTION_MODE && button >= 0));
     bool has_terminal_select_modifiers = modifiers == (int)OPT(terminal_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | (int)OPT(terminal_select_modifiers));
     bool handle_in_kitty = !in_tracking_mode || has_terminal_select_modifiers;
     if (handle_in_kitty) {
-        if (screen->selection.in_progress && button == GLFW_MOUSE_BUTTON_LEFT) {
-            monotonic_t now = monotonic();
-            if ((now - w->last_drag_scroll_at) >= ms_to_monotonic_t(20ll) || mouse_cell_changed) {
-                update_drag(false, w, false, 0);
-                w->last_drag_scroll_at = now;
-            }
-        }
+        handle_mouse_movement_in_kitty(w, button, mouse_cell_changed | cell_half_changed);
     } else {
         if (!mouse_cell_changed) return;
         int sz = encode_mouse_event(w, MAX(0, button), button >=0 ? DRAG : MOVE, 0);
@@ -310,30 +348,32 @@ static inline void
 multi_click(Window *w, unsigned int count) {
     Screen *screen = w->render_data.screen;
     index_type start, end;
-    bool found_selection = false;
     SelectionExtendMode mode = EXTEND_CELL;
-    unsigned int y1 = w->mouse_pos.cell_y, y2 = w->mouse_pos.cell_y;
+    unsigned int y1, y2;
     switch(count) {
         case 2:
-            found_selection = screen_selection_range_for_word(screen, w->mouse_pos.cell_x, &y1, &y2, &start, &end, true);
-            mode = EXTEND_WORD;
+            if (screen_selection_range_for_word(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, &y1, &y2, &start, &end, true)) mode = EXTEND_WORD;
             break;
         case 3:
-            found_selection = screen_selection_range_for_line(screen, w->mouse_pos.cell_y, &start, &end);
-            mode = EXTEND_LINE;
+            if (screen_selection_range_for_line(screen, w->mouse_pos.cell_y, &start, &end)) mode = EXTEND_LINE;
             break;
         default:
             break;
     }
-    if (found_selection) {
-        screen_start_selection(screen, start, y1, false, mode);
-        screen_update_selection(screen, end, y2, false);
+    if (mode != EXTEND_CELL) {
+        screen_start_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, w->mouse_pos.in_left_half_of_cell, false, mode);
+        screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, w->mouse_pos.in_left_half_of_cell, false, true);
     }
 }
 
 static inline double
 distance(double x1, double y1, double x2, double y2) {
     return sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2));
+}
+
+static inline void
+clear_click_queue(Window *w) {
+    w->click_queue.length = 0;
 }
 
 HANDLER(add_click) {
@@ -343,7 +383,7 @@ HANDLER(add_click) {
 #define N(n) (q->clicks[q->length - n])
     N(0).at = now; N(0).button = button; N(0).modifiers = modifiers; N(0).x = w->mouse_pos.x; N(0).y = w->mouse_pos.y;
     q->length++;
-    double multi_click_allowed_radius = 1.2 * global_state.callback_os_window->fonts_data->cell_height;
+    double multi_click_allowed_radius = 1.2 * (global_state.callback_os_window ? global_state.callback_os_window->fonts_data->cell_height : 20);
     // Now dispatch the multi-click if any
     if (q->length > 2) {
         // possible triple-click
@@ -374,6 +414,24 @@ open_url(Window *w) {
     screen_open_url(screen);
 }
 
+static inline void
+handle_button_event_in_kitty(Window *w, int button, int modifiers, bool is_release) {
+    switch(button) {
+        case GLFW_MOUSE_BUTTON_LEFT:
+            update_drag(true, w, is_release, modifiers);
+            if (is_release) {
+                if (modifiers == (int)OPT(open_url_modifiers)) open_url(w);
+            } else add_click(w, button, modifiers, 0);
+            break;
+        case GLFW_MOUSE_BUTTON_MIDDLE:
+            if (is_release) { call_boss(paste_from_selection, NULL); return; }
+            break;
+        case GLFW_MOUSE_BUTTON_RIGHT:
+            extend_selection(w, is_release);
+            break;
+    }
+}
+
 HANDLER(handle_button_event) {
     Tab *t = global_state.callback_os_window->tabs + global_state.callback_os_window->active_tab;
     bool is_release = !global_state.callback_os_window->mouse_button_pressed[button];
@@ -382,28 +440,14 @@ HANDLER(handle_button_event) {
     }
     Screen *screen = w->render_data.screen;
     if (!screen) return;
+    const int ts1 = OPT(terminal_select_modifiers), ts2 = OPT(terminal_select_modifiers) | OPT(rectangle_select_modifiers);
     bool handle_in_kitty = (
-            modifiers == (int)OPT(terminal_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | (int)OPT(terminal_select_modifiers)) ||
+            modifiers == ts1 || modifiers == ts2 ||
             screen->modes.mouse_tracking_mode == 0 ||
-            button == GLFW_MOUSE_BUTTON_MIDDLE ||
             (modifiers == (int)OPT(open_url_modifiers) && button == GLFW_MOUSE_BUTTON_LEFT)
         );
-    if (handle_in_kitty) {
-        switch(button) {
-            case GLFW_MOUSE_BUTTON_LEFT:
-                update_drag(true, w, is_release, modifiers);
-                if (is_release) {
-                    if (modifiers == (int)OPT(open_url_modifiers)) open_url(w);
-                } else add_click(w, button, modifiers, window_idx);
-                break;
-            case GLFW_MOUSE_BUTTON_MIDDLE:
-                if (is_release && !modifiers) { call_boss(paste_from_selection, NULL); return; }
-                break;
-            case GLFW_MOUSE_BUTTON_RIGHT:
-                if (is_release) { extend_selection(w); }
-                break;
-        }
-    } else {
+    if (handle_in_kitty) handle_button_event_in_kitty(w, button, modifiers, is_release);
+    else {
         int sz = encode_mouse_event(w, button, is_release ? RELEASE : PRESS, modifiers);
         if (sz > 0) { mouse_event_buf[sz] = 0; write_escape_code_to_child(screen, CSI, mouse_event_buf); }
     }
@@ -663,8 +707,33 @@ test_encode_mouse(PyObject *self UNUSED, PyObject *args) {
     return PyUnicode_FromStringAndSize(mouse_event_buf, sz);
 }
 
+static PyObject*
+send_mock_mouse_event_to_window(PyObject *self UNUSED, PyObject *args) {
+    PyObject *capsule;
+    int button, modifiers, is_release, clear_clicks, in_left_half_of_cell;
+    unsigned int x, y;
+    if (!PyArg_ParseTuple(args, "O!iipIIpp", &PyCapsule_Type, &capsule, &button, &modifiers, &is_release, &x, &y, &clear_clicks, &in_left_half_of_cell)) return NULL;
+    Window *w = PyCapsule_GetPointer(capsule, "Window");
+    if (!w) return NULL;
+    if (clear_clicks) clear_click_queue(w);
+    bool mouse_cell_changed = x != w->mouse_pos.cell_x || y != w->mouse_pos.cell_y || w->mouse_pos.in_left_half_of_cell != in_left_half_of_cell;
+    w->mouse_pos.x = 10 * x; w->mouse_pos.y = 20 * y;
+    w->mouse_pos.cell_x = x; w->mouse_pos.cell_y = y;
+    w->mouse_pos.in_left_half_of_cell = in_left_half_of_cell;
+    if (button < 0) {
+        if (button == -2) do_drag_scroll(w, true);
+        else if (button == -3) do_drag_scroll(w, false);
+        else handle_mouse_movement_in_kitty(w, GLFW_MOUSE_BUTTON_LEFT, mouse_cell_changed);
+    }
+    else {
+        handle_button_event_in_kitty(w, button, modifiers, (bool)is_release);
+    }
+    Py_RETURN_NONE;
+}
+
 static PyMethodDef module_methods[] = {
     METHODB(test_encode_mouse, METH_VARARGS),
+    METHODB(send_mock_mouse_event_to_window, METH_VARARGS),
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };
 

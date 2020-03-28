@@ -4,8 +4,10 @@
 
 import os
 import sys
+from typing import List, NoReturn, Optional
 
 from kitty.cli import parse_args
+from kitty.cli_stub import ClipboardCLIOptions
 
 from ..tui.handler import Handler
 from ..tui.loop import Loop
@@ -13,12 +15,12 @@ from ..tui.loop import Loop
 
 class Clipboard(Handler):
 
-    def __init__(self, data_to_send, args):
+    def __init__(self, data_to_send: Optional[bytes], args: ClipboardCLIOptions):
         self.args = args
-        self.clipboard_contents = None
+        self.clipboard_contents: Optional[str] = None
         self.data_to_send = data_to_send
 
-    def initialize(self):
+    def initialize(self) -> None:
         if self.data_to_send is not None:
             self.cmd.write_to_clipboard(self.data_to_send, self.args.use_primary)
         if not self.args.get_clipboard:
@@ -32,17 +34,17 @@ class Clipboard(Handler):
             return
         self.cmd.request_from_clipboard(self.args.use_primary)
 
-    def on_clipboard_response(self, text, from_primary=False):
+    def on_clipboard_response(self, text: str, from_primary: bool = False) -> None:
         self.clipboard_contents = text
         self.quit_loop(0)
 
-    def on_capability_response(self, name, val):
+    def on_capability_response(self, name: str, val: str) -> None:
         self.quit_loop(0)
 
-    def on_interrupt(self):
+    def on_interrupt(self) -> None:
         self.quit_loop(1)
 
-    def on_eot(self):
+    def on_eot(self) -> None:
         self.quit_loop(1)
 
 
@@ -80,16 +82,16 @@ To set the clipboard text, pipe in the new text on stdin. Use the
 usage = ''
 
 
-def main(args):
-    args, items = parse_args(args[1:], OPTIONS, usage, help_text, 'kitty +kitten clipboard')
+def main(args: List[str]) -> NoReturn:
+    cli_opts, items = parse_args(args[1:], OPTIONS, usage, help_text, 'kitty +kitten clipboard', result_class=ClipboardCLIOptions)
     if items:
         raise SystemExit('Unrecognized extra command line arguments')
-    data = None
+    data: Optional[bytes] = None
     if not sys.stdin.isatty():
         data = sys.stdin.buffer.read()
         sys.stdin = open(os.ctermid(), 'r')
     loop = Loop()
-    handler = Clipboard(data, args)
+    handler = Clipboard(data, cli_opts)
     loop.loop(handler)
     if loop.return_code == 0 and handler.clipboard_contents:
         sys.stdout.write(handler.clipboard_contents)
@@ -100,6 +102,7 @@ def main(args):
 if __name__ == '__main__':
     main(sys.argv)
 elif __name__ == '__doc__':
-    sys.cli_docs['usage'] = usage
-    sys.cli_docs['options'] = OPTIONS
-    sys.cli_docs['help_text'] = help_text
+    cd = sys.cli_docs  # type: ignore
+    cd['usage'] = usage
+    cd['options'] = OPTIONS
+    cd['help_text'] = help_text

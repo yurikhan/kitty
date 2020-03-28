@@ -9,18 +9,26 @@ import signal
 import sys
 import zlib
 from base64 import standard_b64encode
-from collections import namedtuple
+from functools import lru_cache
 from math import ceil
 from tempfile import NamedTemporaryFile
+from typing import (
+    Dict, Generator, List, NamedTuple, Optional, Pattern, Tuple, Union
+)
 
 from kitty.cli import parse_args
+from kitty.cli_stub import IcatCLIOptions
 from kitty.constants import appname
-from kitty.utils import TTYIO, fit_image, screen_size_function
+from kitty.typing import GRT_f, GRT_t
+from kitty.utils import (
+    TTYIO, ScreenSize, ScreenSizeGetter, fit_image, screen_size_function
+)
 
 from ..tui.images import (
-    ConvertFailed, NoImageMagick, OpenFailed, convert, fsenc, identify
+    ConvertFailed, GraphicsCommand, NoImageMagick, OpenFailed, convert, fsenc,
+    identify
 )
-from ..tui.operations import clear_images_on_screen, serialize_gr_command
+from ..tui.operations import clear_images_on_screen
 
 OPTIONS = '''\
 --align
@@ -93,38 +101,43 @@ but you can turn it off or on explicitly, if needed.
 --silent
 type=bool-set
 Do not print out anything to stdout during operation.
+
+
+--z-index -z
+default=0
+Z-index of the image. When negative, text will be displayed on top of the image. Use
+a double minus for values under the threshold for drawing images under cell background
+colors. For example, --1 evaluates as -1,073,741,825.
 '''
 
 
-screen_size = None
+screen_size: Optional[ScreenSizeGetter] = None
+can_transfer_with_files = False
 
 
-def get_screen_size_function():
+def get_screen_size_function() -> ScreenSizeGetter:
     global screen_size
     if screen_size is None:
         screen_size = screen_size_function()
     return screen_size
 
 
-def get_screen_size():
+def get_screen_size() -> ScreenSize:
     screen_size = get_screen_size_function()
     return screen_size()
 
 
-def options_spec():
-    if not hasattr(options_spec, 'ans'):
-        options_spec.ans = OPTIONS.format(
-            appname='{}-icat'.format(appname),
-        )
-    return options_spec.ans
+@lru_cache(maxsize=2)
+def options_spec() -> str:
+    return OPTIONS.format(appname='{}-icat'.format(appname))
 
 
-def write_gr_cmd(cmd, payload=None):
-    sys.stdout.buffer.write(serialize_gr_command(cmd, payload))
+def write_gr_cmd(cmd: GraphicsCommand, payload: Optional[bytes] = None) -> None:
+    sys.stdout.buffer.write(cmd.serialize(payload or b''))
     sys.stdout.flush()
 
 
-def calculate_in_cell_x_offset(width, cell_width, align):
+def calculate_in_cell_x_offset(width: int, cell_width: int, align: str) -> int:
     if align == 'left':
         return 0
     extra_pixels = width % cell_width
@@ -135,7 +148,7 @@ def calculate_in_cell_x_offset(width, cell_width, align):
     return (cell_width - extra_pixels) // 2
 
 
-def set_cursor(cmd, width, height, align):
+def set_cursor(cmd: GraphicsCommand, width: int, height: int, align: str) -> None:
     ss = get_screen_size()
     cw = int(ss.width / ss.cols)
     num_of_cells_needed = int(ceil(width / cw))
@@ -143,9 +156,9 @@ def set_cursor(cmd, width, height, align):
         w, h = fit_image(width, height, ss.width, height)
         ch = int(ss.height / ss.rows)
         num_of_rows_needed = int(ceil(height / ch))
-        cmd['c'], cmd['r'] = ss.cols, num_of_rows_needed
+        cmd.c, cmd.r = ss.cols, num_of_rows_needed
     else:
-        cmd['X'] = calculate_in_cell_x_offset(width, cw, align)
+        cmd.X = calculate_in_cell_x_offset(width, cw, align)
         extra_cells = 0
         if align == 'center':
             extra_cells = (ss.cols - num_of_cells_needed) // 2
@@ -155,12 +168,12 @@ def set_cursor(cmd, width, height, align):
             sys.stdout.buffer.write(b' ' * extra_cells)
 
 
-def set_cursor_for_place(place, cmd, width, height, align):
+def set_cursor_for_place(place: 'Place', cmd: GraphicsCommand, width: int, height: int, align: str) -> None:
     x = place.left + 1
     ss = get_screen_size()
     cw = int(ss.width / ss.cols)
     num_of_cells_needed = int(ceil(width / cw))
-    cmd['X'] = calculate_in_cell_x_offset(width, cw, align)
+    cmd.X = calculate_in_cell_x_offset(width, cw, align)
     extra_cells = 0
     if align == 'center':
         extra_cells = (place.width - num_of_cells_needed) // 2
@@ -169,27 +182,38 @@ def set_cursor_for_place(place, cmd, width, height, align):
     sys.stdout.buffer.write('\033[{};{}H'.format(place.top + 1, x + extra_cells).encode('ascii'))
 
 
-def write_chunked(cmd, data):
-    if cmd['f'] != 100:
+def write_chunked(cmd: GraphicsCommand, data: bytes) -> None:
+    if cmd.f != 100:
         data = zlib.compress(data)
-        cmd['o'] = 'z'
+        cmd.o = 'z'
     data = standard_b64encode(data)
     while data:
         chunk, data = data[:4096], data[4096:]
-        m = 1 if data else 0
-        cmd['m'] = m
+        cmd.m = 1 if data else 0
         write_gr_cmd(cmd, chunk)
         cmd.clear()
 
 
-def show(outfile, width, height, fmt, transmit_mode='t', align='center', place=None):
-    cmd = {'a': 'T', 'f': fmt, 's': width, 'v': height}
+def show(
+    outfile: str,
+    width: int, height: int, zindex: int,
+    fmt: 'GRT_f',
+    transmit_mode: 'GRT_t' = 't',
+    align: str = 'center',
+    place: Optional['Place'] = None
+) -> None:
+    cmd = GraphicsCommand()
+    cmd.a = 'T'
+    cmd.f = fmt
+    cmd.s = width
+    cmd.v = height
+    cmd.z = zindex
     if place:
         set_cursor_for_place(place, cmd, width, height, align)
     else:
         set_cursor(cmd, width, height, align)
-    if detect_support.has_files:
-        cmd['t'] = transmit_mode
+    if can_transfer_with_files:
+        cmd.t = transmit_mode
         write_gr_cmd(cmd, standard_b64encode(os.path.abspath(outfile).encode(fsenc)))
     else:
         with open(outfile, 'rb') as f:
@@ -197,35 +221,49 @@ def show(outfile, width, height, fmt, transmit_mode='t', align='center', place=N
         if transmit_mode == 't':
             os.unlink(outfile)
         if fmt == 100:
-            cmd['S'] = len(data)
+            cmd.S = len(data)
         write_chunked(cmd, data)
 
 
-def process(path, args, is_tempfile):
+def parse_z_index(val: str) -> int:
+    origin = 0
+    if val.startswith('--'):
+        val = val[1:]
+        origin = -1073741824
+    return origin + int(val)
+
+
+class ParsedOpts:
+
+    place: Optional['Place'] = None
+    z_index: int = 0
+
+
+def process(path: str, args: IcatCLIOptions, parsed_opts: ParsedOpts, is_tempfile: bool) -> bool:
     m = identify(path)
     ss = get_screen_size()
-    available_width = args.place.width * (ss.width / ss.cols) if args.place else ss.width
-    available_height = args.place.height * (ss.height / ss.rows) if args.place else 10 * m.height
+    available_width = parsed_opts.place.width * (ss.width // ss.cols) if parsed_opts.place else ss.width
+    available_height = parsed_opts.place.height * (ss.height // ss.rows) if parsed_opts.place else 10 * m.height
     needs_scaling = m.width > available_width or m.height > available_height
     needs_scaling = needs_scaling or args.scale_up
     file_removed = False
     if m.fmt == 'png' and not needs_scaling:
         outfile = path
-        transmit_mode = 't' if is_tempfile else 'f'
-        fmt = 100
+        transmit_mode: 'GRT_t' = 't' if is_tempfile else 'f'
+        fmt: 'GRT_f' = 100
         width, height = m.width, m.height
         file_removed = transmit_mode == 't'
     else:
         fmt = 24 if m.mode == 'rgb' else 32
         transmit_mode = 't'
         outfile, width, height = convert(path, m, available_width, available_height, args.scale_up)
-    show(outfile, width, height, fmt, transmit_mode, align=args.align, place=args.place)
+    show(outfile, width, height, parsed_opts.z_index, fmt, transmit_mode, align=args.align, place=parsed_opts.place)
     if not args.place:
         print()  # ensure cursor is on a new line
     return file_removed
 
 
-def scan(d):
+def scan(d: str) -> Generator[Tuple[str, str], None, None]:
     for dirpath, dirnames, filenames in os.walk(d):
         for f in filenames:
             mt = mimetypes.guess_type(f)[0]
@@ -233,23 +271,24 @@ def scan(d):
                 yield os.path.join(dirpath, f), mt
 
 
-def detect_support(wait_for=10, silent=False):
+def detect_support(wait_for: float = 10, silent: bool = False) -> bool:
+    global can_transfer_with_files
     if not silent:
         print('Checking for graphics ({}s max. wait)...'.format(wait_for), end='\r')
     sys.stdout.flush()
     try:
         received = b''
-        responses = {}
+        responses: Dict[int, bool] = {}
 
-        def parse_responses():
+        def parse_responses() -> None:
             for m in re.finditer(b'\033_Gi=([1|2]);(.+?)\033\\\\', received):
                 iid = m.group(1)
                 if iid in (b'1', b'2'):
-                    iid = int(iid.decode('ascii'))
-                    if iid not in responses:
-                        responses[iid] = m.group(2) == b'OK'
+                    iid_ = int(iid.decode('ascii'))
+                    if iid_ not in responses:
+                        responses[iid_] = m.group(2) == b'OK'
 
-        def more_needed(data):
+        def more_needed(data: bytes) -> bool:
             nonlocal received
             received += data
             parse_responses()
@@ -257,23 +296,36 @@ def detect_support(wait_for=10, silent=False):
 
         with NamedTemporaryFile() as f:
             f.write(b'abcd'), f.flush()
-            write_gr_cmd(dict(a='q', s=1, v=1, i=1), standard_b64encode(b'abcd'))
-            write_gr_cmd(dict(a='q', s=1, v=1, i=2, t='f'), standard_b64encode(f.name.encode(fsenc)))
+            gc = GraphicsCommand()
+            gc.a = 'q'
+            gc.s = gc.v = gc.i = 1
+            write_gr_cmd(gc, standard_b64encode(b'abcd'))
+            gc.t = 'f'
+            gc.i = 2
+            write_gr_cmd(gc, standard_b64encode(f.name.encode(fsenc)))
             with TTYIO() as io:
-                io.recv(more_needed, timeout=float(wait_for))
+                io.recv(more_needed, timeout=wait_for)
     finally:
         if not silent:
             sys.stdout.buffer.write(b'\033[J'), sys.stdout.flush()
-    detect_support.has_files = bool(responses.get(2))
+    can_transfer_with_files = bool(responses.get(2))
     return responses.get(1, False)
 
 
-def parse_place(raw):
+class Place(NamedTuple):
+    width: int
+    height: int
+    left: int
+    top: int
+
+
+def parse_place(raw: str) -> Optional[Place]:
     if raw:
         area, pos = raw.split('@', 1)
         w, h = map(int, area.split('x'))
         l, t = map(int, pos.split('x'))
-        return namedtuple('Place', 'width height left top')(w, h, l, t)
+        return Place(w, h, l, t)
+    return None
 
 
 help_text = (
@@ -287,7 +339,13 @@ help_text = (
 usage = 'image-file-or-url-or-directory ...'
 
 
-def process_single_item(item, args, url_pat=None, maybe_dir=True):
+def process_single_item(
+    item: Union[bytes, str],
+    args: IcatCLIOptions,
+    parsed_opts: ParsedOpts,
+    url_pat: Optional[Pattern] = None,
+    maybe_dir: bool = True
+) -> None:
     is_tempfile = False
     file_removed = False
     try:
@@ -305,33 +363,35 @@ def process_single_item(item, args, url_pat=None, maybe_dir=True):
                     raise SystemExit('Failed to download image at URL: {} with error: {}'.format(item, e))
                 item = tf.name
             is_tempfile = True
-            file_removed = process(item, args, is_tempfile)
+            file_removed = process(item, args, parsed_opts, is_tempfile)
         elif item.lower().startswith('file://'):
             from urllib.parse import urlparse
             from urllib.request import url2pathname
-            item = urlparse(item)
+            pitem = urlparse(item)
             if os.sep == '\\':
-                item = item.netloc + item.path
+                item = pitem.netloc + pitem.path
             else:
-                item = item.path
+                item = pitem.path
             item = url2pathname(item)
-            file_removed = process(item, args, is_tempfile)
+            file_removed = process(item, args, parsed_opts, is_tempfile)
         else:
             if maybe_dir and os.path.isdir(item):
                 for (x, mt) in scan(item):
-                    process_single_item(x, args, url_pat=None, maybe_dir=False)
+                    process_single_item(x, args, parsed_opts, url_pat=None, maybe_dir=False)
             else:
-                file_removed = process(item, args, is_tempfile)
+                file_removed = process(item, args, parsed_opts, is_tempfile)
     finally:
         if is_tempfile and not file_removed:
             os.remove(item)
 
 
-def main(args=sys.argv):
-    args, items = parse_args(args[1:], options_spec, usage, help_text, '{} +kitten icat'.format(appname))
+def main(args: List[str] = sys.argv) -> None:
+    global can_transfer_with_files
+    cli_opts, items_ = parse_args(args[1:], options_spec, usage, help_text, '{} +kitten icat'.format(appname), result_class=IcatCLIOptions)
+    items: List[Union[str, bytes]] = list(items_)
 
-    if args.print_window_size:
-        screen_size_function.ans = None
+    if cli_opts.print_window_size:
+        screen_size_function.cache_clear()
         with open(os.ctermid()) as tty:
             ss = screen_size_function(tty)()
         print('{}x{}'.format(ss.width, ss.height), end='')
@@ -340,7 +400,7 @@ def main(args=sys.argv):
     if not sys.stdout.isatty():
         sys.stdout = open(os.ctermid(), 'w')
     stdin_data = None
-    if args.stdin == 'yes' or (not sys.stdin.isatty() and args.stdin == 'detect'):
+    if cli_opts.stdin == 'yes' or (not sys.stdin.isatty() and cli_opts.stdin == 'detect'):
         stdin_data = sys.stdin.buffer.read()
         if stdin_data:
             items.insert(0, stdin_data)
@@ -350,48 +410,55 @@ def main(args=sys.argv):
     screen_size = get_screen_size_function()
     signal.signal(signal.SIGWINCH, lambda signum, frame: setattr(screen_size, 'changed', True))
     if screen_size().width == 0:
-        if args.detect_support:
+        if cli_opts.detect_support:
             raise SystemExit(1)
         raise SystemExit(
             'Terminal does not support reporting screen sizes via the TIOCGWINSZ ioctl'
         )
-    try:
-        args.place = parse_place(args.place)
-    except Exception:
-        raise SystemExit('Not a valid place specification: {}'.format(args.place))
+    parsed_opts = ParsedOpts()
+    if cli_opts.place:
+        try:
+            parsed_opts.place = parse_place(cli_opts.place)
+        except Exception:
+            raise SystemExit('Not a valid place specification: {}'.format(cli_opts.place))
 
-    if args.detect_support:
-        if not detect_support(wait_for=args.detection_timeout, silent=True):
+    try:
+        parsed_opts.z_index = parse_z_index(cli_opts.z_index)
+    except Exception:
+        raise SystemExit('Not a valid z-index specification: {}'.format(cli_opts.z_index))
+
+    if cli_opts.detect_support:
+        if not detect_support(wait_for=cli_opts.detection_timeout, silent=True):
             raise SystemExit(1)
-        print('file' if detect_support.has_files else 'stream', end='', file=sys.stderr)
+        print('file' if can_transfer_with_files else 'stream', end='', file=sys.stderr)
         return
-    if args.transfer_mode == 'detect':
-        if not detect_support(wait_for=args.detection_timeout, silent=args.silent):
+    if cli_opts.transfer_mode == 'detect':
+        if not detect_support(wait_for=cli_opts.detection_timeout, silent=cli_opts.silent):
             raise SystemExit('This terminal emulator does not support the graphics protocol, use a terminal emulator such as kitty that does support it')
     else:
-        detect_support.has_files = args.transfer_mode == 'file'
+        can_transfer_with_files = cli_opts.transfer_mode == 'file'
     errors = []
-    if args.clear:
-        sys.stdout.buffer.write(clear_images_on_screen(delete_data=True))
+    if cli_opts.clear:
+        sys.stdout.write(clear_images_on_screen(delete_data=True))
         if not items:
             return
     if not items:
         raise SystemExit('You must specify at least one file to cat')
-    if args.place:
+    if parsed_opts.place:
         if len(items) > 1 or (isinstance(items[0], str) and os.path.isdir(items[0])):
             raise SystemExit(f'The --place option can only be used with a single image, not {items}')
         sys.stdout.buffer.write(b'\0337')  # save cursor
     url_pat = re.compile(r'(?:https?|ftp)://', flags=re.I)
     for item in items:
         try:
-            process_single_item(item, args, url_pat)
+            process_single_item(item, cli_opts, parsed_opts, url_pat)
         except NoImageMagick as e:
             raise SystemExit(str(e))
         except ConvertFailed as e:
             raise SystemExit(str(e))
         except OpenFailed as e:
             errors.append(e)
-    if args.place:
+    if parsed_opts.place:
         sys.stdout.buffer.write(b'\0338')  # restore cursor
     if not errors:
         return
@@ -403,6 +470,7 @@ def main(args=sys.argv):
 if __name__ == '__main__':
     main()
 elif __name__ == '__doc__':
-    sys.cli_docs['usage'] = usage
-    sys.cli_docs['options'] = options_spec
-    sys.cli_docs['help_text'] = help_text
+    cd = sys.cli_docs  # type: ignore
+    cd['usage'] = usage
+    cd['options'] = options_spec
+    cd['help_text'] = help_text

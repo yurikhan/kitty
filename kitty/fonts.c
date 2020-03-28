@@ -62,6 +62,7 @@ static hb_feature_t hb_features[3] = {{0}};
 static char_type shape_buffer[4096] = {0};
 static size_t max_texture_size = 1024, max_array_len = 1024;
 typedef enum { LIGA_FEATURE, DLIG_FEATURE, CALT_FEATURE } HBFeature;
+static PyObject* font_feature_settings = NULL;
 
 typedef struct {
     char_type left, right;
@@ -71,14 +72,12 @@ typedef struct {
 static SymbolMap *symbol_maps = NULL;
 static size_t num_symbol_maps = 0;
 
-
-
 typedef struct {
     PyObject *face;
     // Map glyphs to sprite map co-ords
     SpritePosition sprite_map[1024];
-    hb_feature_t hb_features[8];
-    size_t num_hb_features;
+    hb_feature_t* ffs_hb_features;
+    size_t num_ffs_hb_features;
     SpecialGlyphCache special_glyph_cache[SPECIAL_GLYPH_CACHE_SIZE];
     bool bold, italic, emoji_presentation;
 } Font;
@@ -348,27 +347,47 @@ desc_to_face(PyObject *desc, FONTS_DATA_HANDLE fg) {
     return ans;
 }
 
-static inline void
-copy_hb_feature(Font *f, HBFeature which) {
-    memcpy(f->hb_features + f->num_hb_features++, hb_features + which, sizeof(hb_features[0]));
-}
-
 static inline bool
 init_font(Font *f, PyObject *face, bool bold, bool italic, bool emoji_presentation) {
     f->face = face; Py_INCREF(f->face);
     f->bold = bold; f->italic = italic; f->emoji_presentation = emoji_presentation;
-    f->num_hb_features = 0;
+    f->num_ffs_hb_features = 0;
     const char *psname = postscript_name_for_face(face);
-    if (strstr(psname, "NimbusMonoPS-") == psname) {
-        copy_hb_feature(f, LIGA_FEATURE); copy_hb_feature(f, DLIG_FEATURE);
+    if (font_feature_settings != NULL){
+        PyObject* o = PyDict_GetItemString(font_feature_settings, psname);
+        if (o != NULL && PyTuple_Check(o)) {
+            Py_ssize_t len = PyTuple_GET_SIZE(o);
+            if (len > 0) {
+                f->num_ffs_hb_features = len + 1;
+                f->ffs_hb_features = calloc(f->num_ffs_hb_features, sizeof(hb_feature_t));
+                if (!f->ffs_hb_features) return false;
+                for (Py_ssize_t i = 0; i < len; i++) {
+                    PyObject* parsed = PyObject_GetAttrString(PyTuple_GET_ITEM(o, i), "parsed");
+                    if (parsed) {
+                        memcpy(f->ffs_hb_features + i, PyBytes_AS_STRING(parsed), sizeof(hb_feature_t));
+                        Py_DECREF(parsed);
+                    }
+                }
+                memcpy(f->ffs_hb_features + len, &hb_features[CALT_FEATURE], sizeof(hb_feature_t));
+            }
+        }
     }
-    copy_hb_feature(f, CALT_FEATURE);
+    if (!f->num_ffs_hb_features) {
+        f->ffs_hb_features = calloc(4, sizeof(hb_feature_t));
+        if (!f->ffs_hb_features) return false;
+        if (strstr(psname, "NimbusMonoPS-") == psname) {
+            memcpy(f->ffs_hb_features + f->num_ffs_hb_features++, &hb_features[LIGA_FEATURE], sizeof(hb_feature_t));
+            memcpy(f->ffs_hb_features + f->num_ffs_hb_features++, &hb_features[DLIG_FEATURE], sizeof(hb_feature_t));
+        }
+        memcpy(f->ffs_hb_features + f->num_ffs_hb_features++, &hb_features[CALT_FEATURE], sizeof(hb_feature_t));
+    }
     return true;
 }
 
 static inline void
 del_font(Font *f) {
     Py_CLEAR(f->face);
+    free(f->ffs_hb_features); f->ffs_hb_features = NULL;
     free_maps(f);
     f->bold = false; f->italic = false;
 }
@@ -455,10 +474,21 @@ has_emoji_presentation(CPUCell *cpu_cell, GPUCell *gpu_cell) {
 static inline bool
 has_cell_text(Font *self, CPUCell *cell) {
     if (!face_has_codepoint(self->face, cell->ch)) return false;
+    char_type combining_chars[arraysz(cell->cc_idx)];
+    unsigned num_cc = 0;
     for (unsigned i = 0; i < arraysz(cell->cc_idx) && cell->cc_idx[i]; i++) {
-        combining_type cc_idx = cell->cc_idx[i];
-        if (cc_idx == VS15 || cc_idx == VS16) continue;
-        if (!face_has_codepoint(self->face, codepoint_for_mark(cc_idx))) return false;
+        if (cell->cc_idx[i] == VS15 || cell->cc_idx[i] == VS16) continue;
+        combining_chars[num_cc++] = codepoint_for_mark(cell->cc_idx[i]);
+    }
+    if (num_cc == 0) return true;
+    if (num_cc == 1) {
+        if (face_has_codepoint(self->face, combining_chars[0])) return true;
+        char_type ch = 0;
+        if (hb_unicode_compose(hb_unicode_funcs_get_default(), cell->ch, combining_chars[0], &ch) && face_has_codepoint(self->face, ch)) return true;
+        return false;
+    }
+    for (unsigned i = 0; i < num_cc; i++) {
+        if (!face_has_codepoint(self->face, combining_chars[i])) return false;
     }
     return true;
 }
@@ -670,6 +700,7 @@ load_hb_buffer(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_
         hb_buffer_add_utf32(harfbuzz_buffer, shape_buffer, num, 0, num);
     }
     hb_buffer_guess_segment_properties(harfbuzz_buffer);
+    if (OPT(force_ltr)) hb_buffer_set_direction(harfbuzz_buffer, HB_DIRECTION_LTR);
 }
 
 
@@ -776,7 +807,9 @@ shape(CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, index_type num_cells, hb
     group_state.last_gpu_cell = first_gpu_cell + (num_cells ? num_cells - 1 : 0);
     load_hb_buffer(first_cpu_cell, first_gpu_cell, num_cells);
 
-    hb_shape(font, harfbuzz_buffer, fobj->hb_features, fobj->num_hb_features - (disable_ligature ? 0 : 1));
+    size_t num_features = fobj->num_ffs_hb_features;
+    if (num_features && !disable_ligature) num_features--;  // the last feature is always -calt
+    hb_shape(font, harfbuzz_buffer, fobj->ffs_hb_features, num_features);
 
     unsigned int info_length, positions_length;
     group_state.info = hb_buffer_get_glyph_infos(harfbuzz_buffer, &info_length);
@@ -1027,8 +1060,6 @@ test_shape(PyObject UNUSED *self, PyObject *args) {
         if (face == NULL) return NULL;
         font = calloc(1, sizeof(Font));
         font->face = face;
-        font->hb_features[0] = hb_features[CALT_FEATURE];
-        font->num_hb_features = 1;
     } else {
         FontGroup *fg = font_groups;
         font = fg->fonts + fg->medium_font_idx;
@@ -1059,7 +1090,7 @@ render_run(FontGroup *fg, CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, inde
         default:
             shape_run(first_cpu_cell, first_gpu_cell, num_cells, &fg->fonts[font_idx], disable_ligature_strategy == DISABLE_LIGATURES_ALWAYS);
             if (pua_space_ligature) merge_groups_for_pua_space_ligature();
-            else if (cursor_offset > -1) {
+            else if (cursor_offset > -1) { // false if DISABLE_LIGATURES_NEVER
                 index_type left, right;
                 split_run_at_offset(cursor_offset, &left, &right);
                 if (right > left) {
@@ -1183,12 +1214,12 @@ DescriptorIndices descriptor_indices = {0};
 static PyObject*
 set_font_data(PyObject UNUSED *m, PyObject *args) {
     PyObject *sm;
-    Py_CLEAR(box_drawing_function); Py_CLEAR(prerender_function); Py_CLEAR(descriptor_for_idx);
-    if (!PyArg_ParseTuple(args, "OOOIIIIO!d",
+    Py_CLEAR(box_drawing_function); Py_CLEAR(prerender_function); Py_CLEAR(descriptor_for_idx); Py_CLEAR(font_feature_settings);
+    if (!PyArg_ParseTuple(args, "OOOIIIIO!dO",
                 &box_drawing_function, &prerender_function, &descriptor_for_idx,
                 &descriptor_indices.bold, &descriptor_indices.italic, &descriptor_indices.bi, &descriptor_indices.num_symbol_fonts,
-                &PyTuple_Type, &sm, &global_state.font_sz_in_pts)) return NULL;
-    Py_INCREF(box_drawing_function); Py_INCREF(prerender_function); Py_INCREF(descriptor_for_idx);
+                &PyTuple_Type, &sm, &global_state.font_sz_in_pts, &font_feature_settings)) return NULL;
+    Py_INCREF(box_drawing_function); Py_INCREF(prerender_function); Py_INCREF(descriptor_for_idx); Py_INCREF(font_feature_settings);
     free_font_groups();
     clear_symbol_maps();
     num_symbol_maps = PyTuple_GET_SIZE(sm);
@@ -1212,7 +1243,7 @@ send_prerendered_sprites(FontGroup *fg) {
     current_send_sprite_to_gpu((FONTS_DATA_HANDLE)fg, x, y, z, fg->canvas);
     do_increment(fg, &error);
     if (error != 0) { sprite_map_set_error(error); PyErr_Print(); fatal("Failed"); }
-    PyObject *args = PyObject_CallFunction(prerender_function, "IIIIIdd", fg->cell_width, fg->cell_height, fg->baseline, fg->underline_position, fg->underline_thickness, fg->logical_dpi_x, fg->logical_dpi_y);
+    PyObject *args = PyObject_CallFunction(prerender_function, "IIIIIffdd", fg->cell_width, fg->cell_height, fg->baseline, fg->underline_position, fg->underline_thickness, OPT(cursor_beam_thickness), OPT(cursor_underline_thickness), fg->logical_dpi_x, fg->logical_dpi_y);
     if (args == NULL) { PyErr_Print(); fatal("Failed to pre-render cells"); }
     for (ssize_t i = 0; i < PyTuple_GET_SIZE(args) - 1; i++) {
         x = fg->sprite_tracker.x; y = fg->sprite_tracker.y; z = fg->sprite_tracker.z;
@@ -1290,6 +1321,7 @@ finalize(void) {
     Py_CLEAR(box_drawing_function);
     Py_CLEAR(prerender_function);
     Py_CLEAR(descriptor_for_idx);
+    Py_CLEAR(font_feature_settings);
     free_font_groups();
     if (harfbuzz_buffer) { hb_buffer_destroy(harfbuzz_buffer); harfbuzz_buffer = NULL; }
     free(group_state.groups); group_state.groups = NULL; group_state.groups_capacity = 0;
@@ -1435,9 +1467,26 @@ free_font_data(PyObject *self UNUSED, PyObject *args UNUSED) {
     Py_RETURN_NONE;
 }
 
+static PyObject*
+parse_font_feature(PyObject *self UNUSED, PyObject *feature) {
+    if (!PyUnicode_Check(feature)) {
+        PyErr_SetString(PyExc_TypeError, "feature must be a unicode object");
+        return NULL;
+    }
+    PyObject *ans = PyBytes_FromStringAndSize(NULL, sizeof(hb_feature_t));
+    if (!ans) return NULL;
+    if (!hb_feature_from_string(PyUnicode_AsUTF8(feature), -1, (hb_feature_t*)PyBytes_AS_STRING(ans))) {
+        Py_CLEAR(ans);
+        PyErr_Format(PyExc_ValueError, "%U is not a valid font feature", feature);
+        return NULL;
+    }
+    return ans;
+}
+
 static PyMethodDef module_methods[] = {
     METHODB(set_font_data, METH_VARARGS),
     METHODB(free_font_data, METH_NOARGS),
+    METHODB(parse_font_feature, METH_O),
     METHODB(create_test_font_group, METH_VARARGS),
     METHODB(sprite_map_set_layout, METH_VARARGS),
     METHODB(test_sprite_position_for, METH_VARARGS),

@@ -4,21 +4,22 @@
 
 import re
 from binascii import hexlify, unhexlify
+from typing import cast, Dict
 
 
-def modify_key_bytes(keybytes, amt):
+def modify_key_bytes(keybytes: bytes, amt: int) -> bytes:
     if amt == 0:
         return keybytes
     ans = bytearray(keybytes)
-    amt = str(amt).encode('ascii')
+    samt = str(amt).encode('ascii')
     if ans[-1] == ord('~'):
-        return bytes(ans[:-1] + bytearray(b';' + amt + b'~'))
+        return bytes(ans[:-1] + bytearray(b';' + samt + b'~'))
     if ans[1] == ord('O'):
-        return bytes(ans[:1] + bytearray(b'[1;' + amt) + ans[-1:])
+        return bytes(ans[:1] + bytearray(b'[1;' + samt) + ans[-1:])
     raise ValueError('Unknown key type in key: {!r}'.format(keybytes))
 
 
-def encode_keystring(keybytes):
+def encode_keystring(keybytes: bytes) -> str:
     return keybytes.decode('ascii').replace('\033', r'\E')
 
 
@@ -215,7 +216,7 @@ string_capabilities = {
     'smam': r'\E[?7h',
     # Start alternate screen
     'smcup': r'\E[?1049h',
-    # Enster insert mode
+    # Enter insert mode
     'smir': r'\E[4h',
     # Enter application keymap mode
     'smkx': r'\E[?1h',
@@ -406,7 +407,7 @@ termcap_aliases.update({
         'FV FW FX FY FZ Fa Fb Fc Fd Fe Ff Fg Fh Fi Fj Fk Fl Fm Fn Fo '
         'Fp Fq Fr'.split(), 1)})
 
-queryable_capabilities = numeric_capabilities.copy()
+queryable_capabilities = cast(Dict[str, str], numeric_capabilities.copy())
 queryable_capabilities.update(string_capabilities)
 extra = (bool_capabilities | numeric_capabilities.keys() | string_capabilities.keys()) - set(termcap_aliases.values())
 no_termcap_for = frozenset(
@@ -419,7 +420,7 @@ if extra - no_termcap_for:
 del extra
 
 
-def generate_terminfo():
+def generate_terminfo() -> str:
     # Use ./build-terminfo to update definition files
     ans = ['|'.join(names)]
     ans.extend(sorted(bool_capabilities))
@@ -432,14 +433,14 @@ octal_escape = re.compile(r'\\([0-7]{3})')
 escape_escape = re.compile(r'\\[eE]')
 
 
-def key_as_bytes(name):
+def key_as_bytes(name: str) -> bytes:
     ans = string_capabilities[name]
     ans = octal_escape.sub(lambda m: chr(int(m.group(1), 8)), ans)
     ans = escape_escape.sub('\033', ans)
     return ans.encode('ascii')
 
 
-def get_capabilities(query_string):
+def get_capabilities(query_string: str) -> str:
     from .fast_data_types import ERROR_PREFIX
     ans = []
     try:

@@ -3,14 +3,27 @@
 # License: GPLv3 Copyright: 2019, Kovid Goyal <kovid at kovidgoyal.net>
 
 
-from kitty.cli import parse_args
-from kitty.fast_data_types import set_clipboard_string
-from kitty.utils import set_primary_selection
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from .child import Child
+from .cli import parse_args
+from .cli_stub import LaunchCLIOptions
+from .fast_data_types import set_clipboard_string
+from .utils import set_primary_selection
+from .window import Window
+from .boss import Boss
+from .tabs import Tab
+
+try:
+    from typing import TypedDict
+except ImportError:
+    TypedDict = Dict[str, Any]
 
 
-def options_spec():
-    if not hasattr(options_spec, 'ans'):
-        OPTIONS = '''
+@lru_cache(maxsize=2)
+def options_spec() -> str:
+    return '''
 --window-title --title
 The title to set for the new window. By default, title is controlled by the
 child process.
@@ -18,7 +31,7 @@ child process.
 
 --tab-title
 The title for the new tab if launching in a new tab. By default, the title
-of the actie window in the tab is used as the tab title.
+of the active window in the tab is used as the tab title.
 
 
 --type
@@ -73,11 +86,15 @@ newly launched child process.
 --location
 type=choices
 default=last
-choices=first,neighbor,last
+choices=first,after,before,neighbor,last,vsplit,hsplit
 Where to place the newly created window when it is added to a tab which
-already has existing windows in it. Also applies to creating a new tab,
-where the value of neighbor will cause the new tab to be placed next to
-the current tab instead of at the end.
+already has existing windows in it. :code:`after` and :code:`before` place the new
+window before or after the active window. :code:`neighbor` is a synonym for :code:`after`.
+Also applies to creating a new tab, where the value of :code:`after`
+will cause the new tab to be placed next to the current tab instead of at the end.
+The values of :code:`vsplit` and :code:`hsplit` are only used by the :code:`splits`
+layout and control if the new window is placed in a vertical or horizontal split
+with the currently active window.
 
 
 --allow-remote-control
@@ -116,22 +133,35 @@ want to pipe to program that wants to duplicate the screen layout of the
 screen.
 
 
+--marker
+Create a marker that highlights text in the newly created window. The syntax is
+the same as for the :code:`toggle_marker` map action (see :doc:`/marks`).
+
+
+--os-window-class
+Set the WM_CLASS property on X11 and the application id property on Wayland for
+the newly created OS Window when using :option:`launch --type`=os-window.
+Defaults to whatever is used by the parent kitty process, which in turn
+defaults to :code:`kitty`.
+
+
+--os-window-name
+Set the WM_NAME property on X11 for the newly created OS Window when using
+:option:`launch --type`=os-window. Defaults to :option:`launch --os-window-class`.
 '''
-        options_spec.ans = OPTIONS
-    return options_spec.ans
 
 
-def parse_launch_args(args=None):
+def parse_launch_args(args: Optional[Sequence[str]] = None) -> Tuple[LaunchCLIOptions, List[str]]:
     args = list(args or ())
     try:
-        opts, args = parse_args(args=args, ospec=options_spec)
+        opts, args = parse_args(result_class=LaunchCLIOptions, args=args, ospec=options_spec)
     except SystemExit as e:
         raise ValueError from e
     return opts, args
 
 
-def get_env(opts, active_child):
-    env = {}
+def get_env(opts: LaunchCLIOptions, active_child: Child) -> Dict[str, str]:
+    env: Dict[str, str] = {}
     if opts.copy_env and active_child:
         env.update(active_child.foreground_environ)
     for x in opts.env:
@@ -141,14 +171,17 @@ def get_env(opts, active_child):
     return env
 
 
-def tab_for_window(boss, opts, target_tab=None):
+def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Optional[Tab] = None) -> Optional[Tab]:
     if opts.type == 'tab':
         tm = boss.active_tab_manager
-        tab = tm.new_tab(empty_tab=True, as_neighbor=opts.location == 'neighbor')
-        if opts.tab_title:
-            tab.set_title(opts.tab_title)
+        if tm:
+            tab: Optional[Tab] = tm.new_tab(empty_tab=True, location=opts.location)
+            if opts.tab_title and tab:
+                tab.set_title(opts.tab_title)
+        else:
+            tab = None
     elif opts.type == 'os-window':
-        oswid = boss.add_os_window()
+        oswid = boss.add_os_window(wclass=opts.os_window_class, wname=opts.os_window_name)
         tm = boss.os_window_map[oswid]
         tab = tm.new_tab(empty_tab=True)
         if opts.tab_title:
@@ -159,12 +192,35 @@ def tab_for_window(boss, opts, target_tab=None):
     return tab
 
 
-def launch(boss, opts, args, target_tab=None):
+class LaunchKwds(TypedDict):
+
+    allow_remote_control: bool
+    cwd_from: Optional[int]
+    cwd: Optional[str]
+    location: Optional[str]
+    override_title: Optional[str]
+    copy_colors_from: Optional[Window]
+    marker: Optional[str]
+    cmd: Optional[List[str]]
+    overlay_for: Optional[int]
+    stdin: Optional[bytes]
+
+
+def launch(boss: Boss, opts: LaunchCLIOptions, args: List[str], target_tab: Optional[Tab] = None) -> Optional[Window]:
     active = boss.active_window_for_cwd
     active_child = getattr(active, 'child', None)
     env = get_env(opts, active_child)
-    kw = {
-        'allow_remote_control': opts.allow_remote_control
+    kw: LaunchKwds = {
+        'allow_remote_control': opts.allow_remote_control,
+        'cwd_from': None,
+        'cwd': None,
+        'location': None,
+        'override_title': opts.window_title or None,
+        'copy_colors_from': None,
+        'marker': opts.marker or None,
+        'cmd': None,
+        'overlay_for': None,
+        'stdin': None
     }
     if opts.cwd:
         if opts.cwd == 'current':
@@ -174,20 +230,21 @@ def launch(boss, opts, args, target_tab=None):
             kw['cwd'] = opts.cwd
     if opts.location != 'last':
         kw['location'] = opts.location
-    if opts.window_title:
-        kw['override_title'] = opts.window_title
     if opts.copy_colors and active:
         kw['copy_colors_from'] = active
     cmd = args or None
     if opts.copy_cmdline and active_child:
         cmd = active_child.foreground_cmdline
     if cmd:
-        final_cmd = []
+        final_cmd: List[str] = []
         for x in cmd:
-            if x == '@selection' and active and not opts.copy_cmdline:
-                s = boss.data_for_at(active, x)
-                if s:
-                    x = s
+            if active and not opts.copy_cmdline:
+                if x == '@selection':
+                    s = boss.data_for_at(which=x, window=active)
+                    if s:
+                        x = s
+                elif x == '@active-kitty-window-id':
+                    x = str(active.id)
             final_cmd.append(x)
         kw['cmd'] = final_cmd
     if opts.type == 'overlay' and active and not active.overlay_window_id:
@@ -203,14 +260,22 @@ def launch(boss, opts, args, target_tab=None):
                 env.update(penv)
 
     if opts.type == 'background':
-        boss.run_background_process(kw['cmd'], cwd=kw.get('cwd'), cwd_from=kw.get('cwd_from'), env=env or None, stdin=kw.get('stdin'))
+        cmd = kw['cmd']
+        if not cmd:
+            raise ValueError('The cmd to run must be specified when running a background process')
+        boss.run_background_process(cmd, cwd=kw['cwd'], cwd_from=kw['cwd_from'], env=env or None, stdin=kw['stdin'])
     elif opts.type in ('clipboard', 'primary'):
-        if 'stdin' in kw:
-            func = set_clipboard_string if opts.type == 'clipboard' else set_primary_selection
-            func(kw['stdin'])
+        stdin = kw.get('stdin')
+        if stdin is not None:
+            if opts.type == 'clipboard':
+                set_clipboard_string(stdin)
+            else:
+                set_primary_selection(stdin)
     else:
         tab = tab_for_window(boss, opts, target_tab)
-        new_window = tab.new_window(env=env or None, **kw)
-        if opts.keep_focus and active:
-            boss.set_active_window(active, switch_os_window_if_needed=True)
-        return new_window
+        if tab is not None:
+            new_window: Window = tab.new_window(env=env or None, **kw)
+            if opts.keep_focus and active:
+                boss.set_active_window(active, switch_os_window_if_needed=True)
+            return new_window
+    return None

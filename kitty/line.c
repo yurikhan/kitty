@@ -5,7 +5,7 @@
  * Distributed under terms of the GPL3 license.
  */
 
-#include "data-types.h"
+#include "state.h"
 #include "unicode-data.h"
 #include "lineops.h"
 #include "charsets.h"
@@ -49,9 +49,6 @@ cell_text(CPUCell *cell) {
 
 // URL detection {{{
 
-static const char* url_prefixes[4] = {"https", "http", "file", "ftp"};
-static size_t url_prefix_lengths[sizeof(url_prefixes)/sizeof(url_prefixes[0])] = {0};
-
 static inline index_type
 find_colon_slash(Line *self, index_type x, index_type limit) {
     // Find :// at or before x
@@ -79,7 +76,7 @@ find_colon_slash(Line *self, index_type x, index_type limit) {
                 break;
             case SECOND_SLASH:
                 if (ch == ':') return pos;
-                state = ANY;
+                state = ch == '/' ? SECOND_SLASH : ANY;
                 break;
         }
         pos--;
@@ -88,29 +85,25 @@ find_colon_slash(Line *self, index_type x, index_type limit) {
 }
 
 static inline bool
-prefix_matches(Line *self, index_type at, const char* prefix, index_type prefix_len) {
+prefix_matches(Line *self, index_type at, const char_type* prefix, index_type prefix_len) {
     if (prefix_len > at) return false;
     index_type p, i;
     for (p = at - prefix_len, i = 0; i < prefix_len && p < self->xnum; i++, p++) {
-        if ((self->cpu_cells[p].ch) != (unsigned char)prefix[i]) return false;
+        if ((self->cpu_cells[p].ch) != prefix[i]) return false;
     }
     return i == prefix_len;
 }
 
 static inline bool
 has_url_prefix_at(Line *self, index_type at, index_type min_prefix_len, index_type *ans) {
-    if (UNLIKELY(!url_prefix_lengths[0])) {
-        for (index_type i = 0; i < sizeof(url_prefixes)/sizeof(url_prefixes[0]); i++) url_prefix_lengths[i] = strlen(url_prefixes[i]);
-    }
-    for (index_type i = 0; i < sizeof(url_prefixes)/sizeof(url_prefixes[0]); i++) {
-        index_type prefix_len = url_prefix_lengths[i];
+    for (size_t i = 0; i < OPT(url_prefixes.num); i++) {
+        index_type prefix_len = OPT(url_prefixes.values[i].len);
         if (at < prefix_len || prefix_len < min_prefix_len) continue;
-        if (prefix_matches(self, at, url_prefixes[i], prefix_len)) { *ans = at - prefix_len; return true; }
+        if (prefix_matches(self, at, OPT(url_prefixes.values[i].string), prefix_len)) { *ans = at - prefix_len; return true; }
     }
     return false;
 }
 
-#define MAX_URL_SCHEME_LEN 5
 #define MIN_URL_LEN 5
 
 static inline bool
@@ -129,7 +122,7 @@ line_url_start_at(Line *self, index_type x) {
     if (x >= self->xnum || self->xnum <= MIN_URL_LEN + 3) return self->xnum;
     index_type ds_pos = 0, t;
     // First look for :// ahead of x
-    if (self->xnum - x > MAX_URL_SCHEME_LEN + 3) ds_pos = find_colon_slash(self, x + MAX_URL_SCHEME_LEN + 3, x < 2 ? 0 : x - 2);
+    if (self->xnum - x > OPT(url_prefixes).max_prefix_len + 3) ds_pos = find_colon_slash(self, x + OPT(url_prefixes).max_prefix_len + 3, x < 2 ? 0 : x - 2);
     if (ds_pos != 0 && has_url_beyond(self, ds_pos)) {
         if (has_url_prefix_at(self, ds_pos, ds_pos > x ? ds_pos - x: 0, &t)) return t;
     }
@@ -140,15 +133,23 @@ line_url_start_at(Line *self, index_type x) {
 }
 
 index_type
-line_url_end_at(Line *self, index_type x, bool check_short, char_type sentinel) {
+line_url_end_at(Line *self, index_type x, bool check_short, char_type sentinel, bool next_line_starts_with_url_chars) {
     index_type ans = x;
     if (x >= self->xnum || (check_short && self->xnum <= MIN_URL_LEN + 3)) return 0;
     if (sentinel) { while (ans < self->xnum && self->cpu_cells[ans].ch != sentinel && is_url_char(self->cpu_cells[ans].ch)) ans++; }
     else { while (ans < self->xnum && is_url_char(self->cpu_cells[ans].ch)) ans++; }
     if (ans) ans--;
-    while (ans > x && can_strip_from_end_of_url(self->cpu_cells[ans].ch)) ans--;
+    if (ans < self->xnum - 1 || !next_line_starts_with_url_chars) {
+        while (ans > x && can_strip_from_end_of_url(self->cpu_cells[ans].ch)) ans--;
+    }
     return ans;
 }
+
+bool
+line_startswith_url_chars(Line *self) {
+    return is_url_char(self->cpu_cells[0].ch);
+}
+
 
 static PyObject*
 url_start_at(Line *self, PyObject *x) {
@@ -160,8 +161,9 @@ static PyObject*
 url_end_at(Line *self, PyObject *args) {
 #define url_end_at_doc "url_end_at(x) -> Return the end cell number for a URL containing x or 0 if not found"
     unsigned int x, sentinel = 0;
-    if (!PyArg_ParseTuple(args, "I|I", &x, &sentinel)) return NULL;
-    return PyLong_FromUnsignedLong((unsigned long)line_url_end_at(self, x, true, sentinel));
+    int next_line_starts_with_url_chars = 0;
+    if (!PyArg_ParseTuple(args, "I|Ip", &x, &sentinel, &next_line_starts_with_url_chars)) return NULL;
+    return PyLong_FromUnsignedLong((unsigned long)line_url_end_at(self, x, true, sentinel, next_line_starts_with_url_chars));
 }
 
 // }}}
@@ -298,7 +300,7 @@ line_as_ansi(Line *self, Py_UCS4 *buf, index_type buflen, bool *truncated, const
 
         cell = &self->gpu_cells[pos];
 
-#define CMP_ATTRS (cell->attrs & ATTRS_MASK_WITHOUT_WIDTH) != ((*prev_cell)->attrs & ATTRS_MASK_WITHOUT_WIDTH)
+#define CMP_ATTRS (cell->attrs & ATTRS_MASK_FOR_SGR) != ((*prev_cell)->attrs & ATTRS_MASK_FOR_SGR)
 #define CMP(x) cell->x != (*prev_cell)->x
         if (CMP_ATTRS || CMP(fg) || CMP(bg) || CMP(decoration_fg)) {
             const char *sgr = cell_as_sgr(cell, *prev_cell);
@@ -664,6 +666,135 @@ static int
 __eq__(Line *a, Line *b) {
     return a->xnum == b->xnum && memcmp(a->cpu_cells, b->cpu_cells, sizeof(CPUCell) * a->xnum) == 0 && memcmp(a->gpu_cells, b->gpu_cells, sizeof(GPUCell) * a->xnum) == 0;
 }
+
+bool
+line_has_mark(Line *line, attrs_type mark) {
+    for (index_type x = 0; x < line->xnum; x++) {
+        attrs_type m = (line->gpu_cells[x].attrs >> MARK_SHIFT) & MARK_MASK;
+        if (m && (!mark || mark == m)) return true;
+    }
+    return false;
+}
+
+static inline void
+report_marker_error(PyObject *marker) {
+    if (!PyObject_HasAttrString(marker, "error_reported")) {
+        PyErr_Print();
+        if (PyObject_SetAttrString(marker, "error_reported", Py_True) != 0) PyErr_Clear();
+    } else PyErr_Clear();
+}
+
+static inline void
+apply_marker(PyObject *marker, Line *line, const PyObject *text) {
+    unsigned int l=0, r=0, col=0, match_pos=0;
+    PyObject *pl = PyLong_FromVoidPtr(&l), *pr = PyLong_FromVoidPtr(&r), *pcol = PyLong_FromVoidPtr(&col);
+    if (!pl || !pr || !pcol) { PyErr_Clear(); return; }
+    PyObject *iter = PyObject_CallFunctionObjArgs(marker, text, pl, pr, pcol, NULL);
+    Py_DECREF(pl); Py_DECREF(pr); Py_DECREF(pcol);
+
+    if (iter == NULL) { report_marker_error(marker); return; }
+    PyObject *match;
+    index_type x = 0;
+#define INCREMENT_MATCH_POS { \
+    if (line->cpu_cells[x].ch) { \
+        match_pos++; \
+        for (index_type i = 0; i < arraysz(line->cpu_cells[x].cc_idx); i++) { \
+            if (line->cpu_cells[x].cc_idx[i]) match_pos++; \
+}}}
+
+    while ((match = PyIter_Next(iter)) && x < line->xnum) {
+        Py_DECREF(match);
+        while (match_pos < l && x < line->xnum) {
+            line->gpu_cells[x].attrs &= ATTRS_MASK_WITHOUT_MARK;
+            INCREMENT_MATCH_POS;
+            x++;
+        }
+        attrs_type am = (col & MARK_MASK) << MARK_SHIFT;
+        while(x < line->xnum && match_pos <= r) {
+            line->gpu_cells[x].attrs &= ATTRS_MASK_WITHOUT_MARK;
+            line->gpu_cells[x].attrs |= am;
+            INCREMENT_MATCH_POS;
+            x++;
+        }
+
+    }
+    while(x < line->xnum) line->gpu_cells[x++].attrs &= ATTRS_MASK_WITHOUT_MARK;
+    Py_DECREF(iter);
+    if (PyErr_Occurred()) report_marker_error(marker);
+#undef INCREMENT_MATCH_POS
+}
+
+void
+mark_text_in_line(PyObject *marker, Line *line) {
+    if (!marker) {
+        for (index_type i = 0; i < line->xnum; i++)  line->gpu_cells[i].attrs &= ATTRS_MASK_WITHOUT_MARK;
+        return;
+    }
+    PyObject *text = line_as_unicode(line);
+    if (PyUnicode_GET_LENGTH(text) > 0) {
+        apply_marker(marker, line, text);
+    } else {
+        for (index_type i = 0; i < line->xnum; i++)  line->gpu_cells[i].attrs &= ATTRS_MASK_WITHOUT_MARK;
+    }
+    Py_DECREF(text);
+}
+
+PyObject*
+as_text_generic(PyObject *args, void *container, get_line_func get_line, index_type lines, index_type columns) {
+    PyObject *callback;
+    int as_ansi = 0, insert_wrap_markers = 0;
+    if (!PyArg_ParseTuple(args, "O|pp", &callback, &as_ansi, &insert_wrap_markers)) return NULL;
+    PyObject *ret = NULL, *t = NULL;
+    Py_UCS4 *buf = NULL;
+    PyObject *nl = PyUnicode_FromString("\n");
+    PyObject *cr = PyUnicode_FromString("\r");
+    PyObject *sgr_reset = PyUnicode_FromString("\x1b[m");
+    const GPUCell *prev_cell = NULL;
+    if (nl == NULL || cr == NULL) goto end;
+    if (as_ansi) {
+        buf = malloc(sizeof(Py_UCS4) * columns * 100);
+        if (buf == NULL) { PyErr_NoMemory(); goto end; }
+    }
+    for (index_type y = 0; y < lines; y++) {
+        Line *line = get_line(container, y);
+        if (!line->continued && y > 0) {
+            ret = PyObject_CallFunctionObjArgs(callback, nl, NULL);
+            if (ret == NULL) goto end;
+            Py_CLEAR(ret);
+        }
+        if (as_ansi) {
+            bool truncated;
+            // less has a bug where it resets colors when it sees a \r, so work
+            // around it by resetting SGR at the start of every line. This is
+            // pretty sad performance wise, but I guess it will remain till I
+            // get around to writing a nice pager kitten.
+            // see https://github.com/kovidgoyal/kitty/issues/2381
+            prev_cell = NULL;
+            index_type num = line_as_ansi(line, buf, columns * 100 - 2, &truncated, &prev_cell);
+            t = PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, buf, num);
+            if (t && num > 0) {
+                ret = PyObject_CallFunctionObjArgs(callback, sgr_reset, NULL);
+                if (ret == NULL) goto end;
+                Py_CLEAR(ret);
+            }
+        } else {
+            t = line_as_unicode(line);
+        }
+        if (t == NULL) goto end;
+        ret = PyObject_CallFunctionObjArgs(callback, t, NULL);
+        Py_DECREF(t); if (ret == NULL) goto end; Py_DECREF(ret);
+        if (insert_wrap_markers) {
+            ret = PyObject_CallFunctionObjArgs(callback, cr, NULL);
+            if (ret == NULL) goto end;
+            Py_CLEAR(ret);
+        }
+    }
+end:
+    Py_CLEAR(nl); Py_CLEAR(cr); Py_CLEAR(sgr_reset); free(buf);
+    if (PyErr_Occurred()) return NULL;
+    Py_RETURN_NONE;
+}
+
 
 // Boilerplate {{{
 static PyObject*

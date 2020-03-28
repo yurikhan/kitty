@@ -92,10 +92,10 @@ font_descriptor_to_python(CTFontDescriptorRef descriptor) {
     NSString *style = (NSString *) CTFontDescriptorCopyAttribute(descriptor, kCTFontStyleNameAttribute);
     NSDictionary *traits = (NSDictionary *) CTFontDescriptorCopyAttribute(descriptor, kCTFontTraitsAttribute);
     unsigned int straits = [traits[(id)kCTFontSymbolicTrait] unsignedIntValue];
-    NSNumber *weightVal = traits[(id)kCTFontWeightTrait];
-    NSNumber *widthVal = traits[(id)kCTFontWidthTrait];
+    float weightVal = [traits[(id)kCTFontWeightTrait] floatValue];
+    float widthVal = [traits[(id)kCTFontWidthTrait] floatValue];
 
-    PyObject *ans = Py_BuildValue("{ssssssss sOsOsO sfsfsI}",
+    PyObject *ans = Py_BuildValue("{ssssssss sOsOsOsOsOsO sfsfsI}",
             "path", [[url path] UTF8String],
             "postscript_name", [psName UTF8String],
             "family", [family UTF8String],
@@ -104,9 +104,12 @@ font_descriptor_to_python(CTFontDescriptorRef descriptor) {
             "bold", (straits & kCTFontBoldTrait) != 0 ? Py_True : Py_False,
             "italic", (straits & kCTFontItalicTrait) != 0 ? Py_True : Py_False,
             "monospace", (straits & kCTFontMonoSpaceTrait) != 0 ? Py_True : Py_False,
+            "expanded", (straits & kCTFontExpandedTrait) != 0 ? Py_True : Py_False,
+            "condensed", (straits & kCTFontCondensedTrait) != 0 ? Py_True : Py_False,
+            "color_glyphs", (straits & kCTFontColorGlyphsTrait) != 0 ? Py_True : Py_False,
 
-            "weight", [weightVal floatValue],
-            "width", [widthVal floatValue],
+            "weight", weightVal,
+            "width", widthVal,
             "traits", straits
     );
     [url release];
@@ -457,11 +460,12 @@ render_simple_text_impl(PyObject *s, const char *text, unsigned int baseline) {
     CTFontGetGlyphsForCharacters(font, chars, glyphs, num_chars);
     CTFontGetAdvancesForGlyphs(font, kCTFontOrientationDefault, glyphs, advances, num_chars);
     CGRect bounding_box = CTFontGetBoundingRectsForGlyphs(font, kCTFontOrientationDefault, glyphs, boxes, num_chars);
-    StringCanvas ans = { .width = 0, .height = (size_t)(2 * bounding_box.size.height) };
-    for (size_t i = 0, y = 0; i < num_chars; i++) {
-        positions[i] = CGPointMake(ans.width, y);
-        ans.width += advances[i].width; y += advances[i].height;
+    CGFloat x = 0, y = 0;
+    for (size_t i = 0; i < num_chars; i++) {
+        positions[i] = CGPointMake(x, y);
+        x += advances[i].width; y += advances[i].height;
     }
+    StringCanvas ans = { .width = (size_t)ceil(x), .height = (size_t)(2 * bounding_box.size.height) };
     ensure_render_space(ans.width, ans.height);
     render_glyphs(font, ans.width, ans.height, baseline, num_chars);
     ans.canvas = malloc(ans.width * ans.height);

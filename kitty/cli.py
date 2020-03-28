@@ -6,9 +6,28 @@ import os
 import re
 import sys
 from collections import deque
+from typing import (
+    Any, Callable, Dict, FrozenSet, Iterable, Iterator, List, Match, Optional,
+    Sequence, Set, Tuple, Type, TypeVar, Union, cast
+)
 
+from .cli_stub import CLIOptions
 from .conf.utils import resolve_config
+from .config import KeyAction
 from .constants import appname, defconf, is_macos, is_wayland, str_version
+from .options_stub import Options as OptionsStub
+from .typing import BadLineType, KeySpec, SequenceMap, TypedDict
+
+
+class OptionDict(TypedDict):
+    dest: str
+    aliases: FrozenSet[str]
+    help: str
+    choices: FrozenSet[str]
+    type: str
+    default: Optional[str]
+    condition: bool
+
 
 CONFIG_HELP = '''\
 Specify a path to the configuration file(s) to use. All configuration files are
@@ -34,49 +53,49 @@ defaults for all users.
 )
 
 
-def surround(x, start, end):
+def surround(x: str, start: int, end: int) -> str:
     if sys.stdout.isatty():
         x = '\033[{}m{}\033[{}m'.format(start, x, end)
     return x
 
 
-def emph(x):
+def emph(x: str) -> str:
     return surround(x, 91, 39)
 
 
-def cyan(x):
+def cyan(x: str) -> str:
     return surround(x, 96, 39)
 
 
-def green(x):
+def green(x: str) -> str:
     return surround(x, 32, 39)
 
 
-def blue(x):
+def blue(x: str) -> str:
     return surround(x, 34, 39)
 
 
-def yellow(x):
+def yellow(x: str) -> str:
     return surround(x, 93, 39)
 
 
-def italic(x):
+def italic(x: str) -> str:
     return surround(x, 3, 23)
 
 
-def bold(x):
+def bold(x: str) -> str:
     return surround(x, 1, 22)
 
 
-def title(x):
+def title(x: str) -> str:
     return blue(bold(x))
 
 
-def opt(text):
+def opt(text: str) -> str:
     return text
 
 
-def option(x):
+def option(x: str) -> str:
     idx = x.find('-')
     if idx > -1:
         x = x[idx:]
@@ -84,33 +103,40 @@ def option(x):
     return ' '.join(parts)
 
 
-def code(x):
+def code(x: str) -> str:
     return x
 
 
-def kbd(x):
+def kbd(x: str) -> str:
     return x
 
 
-def env(x):
+def env(x: str) -> str:
     return italic(x)
 
 
-def file(x):
+def file(x: str) -> str:
     return italic(x)
 
 
-def parse_option_spec(spec=None):
+OptionSpecSeq = List[Union[str, OptionDict]]
+
+
+def parse_option_spec(spec: Optional[str] = None) -> Tuple[OptionSpecSeq, OptionSpecSeq]:
     if spec is None:
         spec = options_spec()
     NORMAL, METADATA, HELP = 'NORMAL', 'METADATA', 'HELP'
     state = NORMAL
     lines = spec.splitlines()
     prev_line = ''
-    seq = []
-    disabled = []
+    seq: OptionSpecSeq = []
+    disabled: OptionSpecSeq = []
     mpat = re.compile('([a-z]+)=(.+)')
-    current_cmd = None
+    current_cmd: OptionDict = {
+        'dest': '', 'aliases': frozenset(), 'help': '', 'choices': frozenset(),
+        'type': '', 'condition': False, 'default': None
+    }
+    empty_cmd = current_cmd
 
     for line in lines:
         line = line.rstrip()
@@ -122,7 +148,11 @@ def parse_option_spec(spec=None):
                 continue
             if line.startswith('--'):
                 parts = line.split(' ')
-                current_cmd = {'dest': parts[0][2:].replace('-', '_'), 'aliases': frozenset(parts), 'help': ''}
+                current_cmd = {
+                    'dest': parts[0][2:].replace('-', '_'), 'aliases': frozenset(parts), 'help': '',
+                    'choices': frozenset(), 'type': '',
+                    'default': None, 'condition': True
+                }
                 state = METADATA
                 continue
             raise ValueError('Invalid option spec, unexpected line: {}'.format(line))
@@ -133,11 +163,17 @@ def parse_option_spec(spec=None):
                 current_cmd['help'] += line
             else:
                 k, v = m.group(1), m.group(2)
-                if k == 'condition':
-                    v = eval(v)
-                current_cmd[k] = v
                 if k == 'choices':
-                    current_cmd['choices'] = {x.strip() for x in current_cmd['choices'].split(',')}
+                    current_cmd['choices'] = frozenset(x.strip() for x in v.split(','))
+                else:
+                    if k == 'default':
+                        current_cmd['default'] = v
+                    elif k == 'type':
+                        current_cmd['type'] = v
+                    elif k == 'dest':
+                        current_cmd['dest'] = v
+                    elif k == 'condition':
+                        current_cmd['condition'] = bool(eval(v))
         elif state is HELP:
             if line:
                 spc = '' if current_cmd['help'].endswith('\n') else ' '
@@ -148,30 +184,30 @@ def parse_option_spec(spec=None):
                 else:
                     state = NORMAL
                     (seq if current_cmd.get('condition', True) else disabled).append(current_cmd)
-                    current_cmd = None
+                    current_cmd = empty_cmd
         prev_line = line
-    if current_cmd is not None:
+    if current_cmd is not empty_cmd:
         (seq if current_cmd.get('condition', True) else disabled).append(current_cmd)
 
     return seq, disabled
 
 
-def prettify(text):
+def prettify(text: str) -> str:
     role_map = globals()
 
-    def sub(m):
+    def sub(m: Match) -> str:
         role, text = m.group(1, 2)
-        return role_map[role](text)
+        return str(role_map[role](text))
 
     text = re.sub(r':([a-z]+):`([^`]+)`', sub, text)
     return text
 
 
-def prettify_rst(text):
+def prettify_rst(text: str) -> str:
     return re.sub(r':([a-z]+):`([^`]+)`(=[^\s.]+)', r':\1:`\2`:code:`\3`', text)
 
 
-def version(add_rev=False):
+def version(add_rev: bool = False) -> str:
     rev = ''
     from . import fast_data_types
     if add_rev and hasattr(fast_data_types, 'KITTY_VCS_REV'):
@@ -179,7 +215,7 @@ def version(add_rev=False):
     return '{} {}{} created by {}'.format(italic(appname), green(str_version), rev, title('Kovid Goyal'))
 
 
-def wrap(text, limit=80):
+def wrap(text: str, limit: int = 80) -> Iterator[str]:
     NORMAL, IN_FORMAT = 'NORMAL', 'IN_FORMAT'
     state = NORMAL
     last_space_at = None
@@ -203,7 +239,7 @@ def wrap(text, limit=80):
             last_space_at = None
             chars_in_line = i - breaks[-1]
 
-    lines = []
+    lines: List[str] = []
     for b in reversed(breaks):
         lines.append(text[b:].lstrip())
         text = text[:b]
@@ -212,8 +248,8 @@ def wrap(text, limit=80):
     return reversed(lines)
 
 
-def get_defaults_from_seq(seq):
-    ans = {}
+def get_defaults_from_seq(seq: OptionSpecSeq) -> Dict[str, Any]:
+    ans: Dict[str, Any] = {}
     for opt in seq:
         if not isinstance(opt, str):
             ans[opt['dest']] = defval_for_opt(opt)
@@ -223,81 +259,91 @@ def get_defaults_from_seq(seq):
 default_msg = ('''\
 Run the :italic:`{appname}` terminal emulator. You can also specify the :italic:`program`
 to run inside :italic:`{appname}` as normal arguments following the :italic:`options`.
-For example: {appname} /bin/sh
+For example: {appname} sh -c "echo hello, world. Press ENTER to quit; read"
 
 For comprehensive documentation for kitty, please see: https://sw.kovidgoyal.net/kitty/''').format(appname=appname)
 
 
-def print_help_for_seq(seq, usage, message, appname):
-    from kitty.utils import screen_size_function
-    screen_size = screen_size_function()
-    try:
-        linesz = min(screen_size().cols, 76)
-    except EnvironmentError:
-        linesz = 76
-    blocks = []
-    a = blocks.append
+class PrintHelpForSeq:
 
-    def wa(text, indent=0, leading_indent=None):
-        if leading_indent is None:
-            leading_indent = indent
-        j = '\n' + (' ' * indent)
-        lines = []
-        for l in text.splitlines():
-            if l:
-                lines.extend(wrap(l, limit=linesz - indent))
-            else:
-                lines.append('')
-        a((' ' * leading_indent) + j.join(lines))
+    allow_pager = True
 
-    usage = '[program-to-run ...]' if usage is None else usage
-    optstring = '[options] ' if seq else ''
-    a('{}: {} {}{}'.format(title('Usage'), bold(yellow(appname)), optstring, usage))
-    a('')
-    message = message or default_msg
-    wa(prettify(message))
-    a('')
-    if seq:
-        a('{}:'.format(title('Options')))
-    for opt in seq:
-        if isinstance(opt, str):
-            a('{}:'.format(title(opt)))
-            continue
-        help_text = opt['help']
-        if help_text == '!':
-            continue  # hidden option
-        a('  ' + ', '.join(map(green, sorted(opt['aliases']))))
-        if not opt.get('type', '').startswith('bool-'):
-            blocks[-1] += '={}'.format(italic(opt['dest'].upper()))
-        if opt.get('help'):
-            defval = opt.get('default')
-            t = help_text.replace('%default', str(defval))
-            wa(prettify(t.strip()), indent=4)
-            if defval is not None:
-                wa('Default: {}'.format(defval), indent=4)
-            if 'choices' in opt:
-                wa('Choices: {}'.format(', '.join(opt['choices'])), indent=4)
-            a('')
-
-    text = '\n'.join(blocks) + '\n\n' + version()
-    if print_help_for_seq.allow_pager and sys.stdout.isatty():
-        import subprocess
-        p = subprocess.Popen(['less', '-isRXF'], stdin=subprocess.PIPE)
+    def __call__(self, seq: OptionSpecSeq, usage: Optional[str], message: Optional[str], appname: str) -> None:
+        from kitty.utils import screen_size_function
+        screen_size = screen_size_function()
         try:
-            p.communicate(text.encode('utf-8'))
-        except KeyboardInterrupt:
-            raise SystemExit(1)
-        raise SystemExit(p.wait())
-    else:
-        print(text)
+            linesz = min(screen_size().cols, 76)
+        except OSError:
+            linesz = 76
+        blocks: List[str] = []
+        a = blocks.append
+
+        def wa(text: str, indent: int = 0, leading_indent: Optional[int] = None) -> None:
+            if leading_indent is None:
+                leading_indent = indent
+            j = '\n' + (' ' * indent)
+            lines: List[str] = []
+            for l in text.splitlines():
+                if l:
+                    lines.extend(wrap(l, limit=linesz - indent))
+                else:
+                    lines.append('')
+            a((' ' * leading_indent) + j.join(lines))
+
+        usage = '[program-to-run ...]' if usage is None else usage
+        optstring = '[options] ' if seq else ''
+        a('{}: {} {}{}'.format(title('Usage'), bold(yellow(appname)), optstring, usage))
+        a('')
+        message = message or default_msg
+        wa(prettify(message))
+        a('')
+        if seq:
+            a('{}:'.format(title('Options')))
+        for opt in seq:
+            if isinstance(opt, str):
+                a('{}:'.format(title(opt)))
+                continue
+            help_text = opt['help']
+            if help_text == '!':
+                continue  # hidden option
+            a('  ' + ', '.join(map(green, sorted(opt['aliases']))))
+            if not opt.get('type', '').startswith('bool-'):
+                blocks[-1] += '={}'.format(italic(opt['dest'].upper()))
+            if opt.get('help'):
+                defval = opt.get('default')
+                t = help_text.replace('%default', str(defval))
+                wa(prettify(t.strip()), indent=4)
+                if defval is not None:
+                    wa('Default: {}'.format(defval), indent=4)
+                if opt.get('choices'):
+                    wa('Choices: {}'.format(', '.join(opt['choices'])), indent=4)
+                a('')
+
+        text = '\n'.join(blocks) + '\n\n' + version()
+        if print_help_for_seq.allow_pager and sys.stdout.isatty():
+            import subprocess
+            p = subprocess.Popen(['less', '-isRXF'], stdin=subprocess.PIPE)
+            try:
+                p.communicate(text.encode('utf-8'))
+            except KeyboardInterrupt:
+                raise SystemExit(1)
+            raise SystemExit(p.wait())
+        else:
+            print(text)
 
 
-print_help_for_seq.allow_pager = True
+print_help_for_seq = PrintHelpForSeq()
 
 
-def seq_as_rst(seq, usage, message, appname, heading_char='-'):
+def seq_as_rst(
+    seq: OptionSpecSeq,
+    usage: Optional[str],
+    message: Optional[str],
+    appname: Optional[str],
+    heading_char: str = '-'
+) -> str:
     import textwrap
-    blocks = []
+    blocks: List[str] = []
     a = blocks.append
 
     usage = '[program-to-run ...]' if usage is None else usage
@@ -334,7 +380,7 @@ def seq_as_rst(seq, usage, message, appname, heading_char='-'):
             a(textwrap.indent(prettify_rst(t), ' ' * 4))
             if defval is not None:
                 a(textwrap.indent('Default: :code:`{}`'.format(defval), ' ' * 4))
-            if 'choices' in opt:
+            if opt.get('choices'):
                 a(textwrap.indent('Choices: :code:`{}`'.format(', '.join(sorted(opt['choices']))), ' ' * 4))
             a('')
 
@@ -342,8 +388,34 @@ def seq_as_rst(seq, usage, message, appname, heading_char='-'):
     return text
 
 
-def defval_for_opt(opt):
-    dv = opt.get('default')
+def as_type_stub(seq: OptionSpecSeq, disabled: OptionSpecSeq, class_name: str, extra_fields: Sequence[str] = ()) -> str:
+    from itertools import chain
+    ans: List[str] = ['class {}:'.format(class_name)]
+    for opt in chain(seq, disabled):
+        if isinstance(opt, str):
+            continue
+        name = opt['dest']
+        otype = opt['type'] or 'str'
+        if otype in ('str', 'int', 'float'):
+            t = otype
+            if t == 'str' and defval_for_opt(opt) is None:
+                t = 'typing.Optional[str]'
+        elif otype == 'list':
+            t = 'typing.Sequence[str]'
+        elif otype in ('choice', 'choices'):
+            t = 'str'
+        elif otype.startswith('bool-'):
+            t = 'bool'
+        else:
+            raise ValueError('Unknown CLI option type: {}'.format(otype))
+        ans.append('    {}: {}'.format(name, t))
+    for x in extra_fields:
+        ans.append('    {}'.format(x))
+    return '\n'.join(ans) + '\n\n\n'
+
+
+def defval_for_opt(opt: OptionDict) -> Any:
+    dv: Any = opt.get('default')
     typ = opt.get('type', '')
     if typ.startswith('bool-'):
         if dv is None:
@@ -359,11 +431,11 @@ def defval_for_opt(opt):
 
 class Options:
 
-    def __init__(self, seq, usage, message, appname):
+    def __init__(self, seq: OptionSpecSeq, usage: Optional[str], message: Optional[str], appname: Optional[str]):
         self.alias_map = {}
         self.seq = seq
-        self.names_map = {}
-        self.values_map = {}
+        self.names_map: Dict[str, OptionDict] = {}
+        self.values_map: Dict[str, Any] = {}
         self.usage, self.message, self.appname = usage, message, appname
         for opt in seq:
             if isinstance(opt, str):
@@ -374,13 +446,13 @@ class Options:
             self.names_map[name] = opt
             self.values_map[name] = defval_for_opt(opt)
 
-    def opt_for_alias(self, alias):
+    def opt_for_alias(self, alias: str) -> OptionDict:
         opt = self.alias_map.get(alias)
         if opt is None:
             raise SystemExit('Unknown option: {}'.format(emph(alias)))
         return opt
 
-    def needs_arg(self, alias):
+    def needs_arg(self, alias: str) -> bool:
         if alias in ('-h', '--help'):
             print_help_for_seq(self.seq, self.usage, self.message, self.appname or appname)
             raise SystemExit(0)
@@ -391,7 +463,7 @@ class Options:
         typ = opt.get('type', '')
         return not typ.startswith('bool-')
 
-    def process_arg(self, alias, val=None):
+    def process_arg(self, alias: str, val: Any = None) -> None:
         opt = self.opt_for_alias(alias)
         typ = opt.get('type', '')
         name = opt['dest']
@@ -420,26 +492,19 @@ class Options:
             self.values_map[name] = val
 
 
-class Namespace:
-
-    def __init__(self, kwargs):
-        for name, val in kwargs.items():
-            setattr(self, name, val)
-
-
-def parse_cmdline(oc, disabled, args=None):
+def parse_cmdline(oc: Options, disabled: OptionSpecSeq, ans: Any, args: Optional[List[str]] = None) -> List[str]:
     NORMAL, EXPECTING_ARG = 'NORMAL', 'EXPECTING_ARG'
     state = NORMAL
-    if args is None:
-        args = sys.argv[1:]
-    args = deque(args)
+    dargs = deque(sys.argv[1:] if args is None else args)
+    leftover_args: List[str] = []
     current_option = None
 
-    while args:
-        arg = args.popleft()
+    while dargs:
+        arg = dargs.popleft()
         if state is NORMAL:
             if arg.startswith('-'):
                 if arg == '--':
+                    leftover_args = list(dargs)
                     break
                 parts = arg.split('=', 1)
                 needs_arg = oc.needs_arg(parts[0])
@@ -454,21 +519,23 @@ def parse_cmdline(oc, disabled, args=None):
                     continue
                 oc.process_arg(parts[0], parts[1])
             else:
-                args = [arg] + list(args)
+                leftover_args = [arg] + list(dargs)
                 break
-        else:
+        elif current_option is not None:
             oc.process_arg(current_option, arg)
             current_option, state = None, NORMAL
     if state is EXPECTING_ARG:
         raise SystemExit('An argument is required for the option: {}'.format(emph(arg)))
 
-    ans = Namespace(oc.values_map)
+    for key, val in oc.values_map.items():
+        setattr(ans, key, val)
     for opt in disabled:
-        setattr(ans, opt['dest'], defval_for_opt(opt))
-    return ans, list(args)
+        if not isinstance(opt, str):
+            setattr(ans, opt['dest'], defval_for_opt(opt))
+    return leftover_args
 
 
-def options_spec():
+def options_spec() -> str:
     if not hasattr(options_spec, 'ans'):
         OPTIONS = '''
 --class
@@ -614,56 +681,77 @@ Print out information about the system and kitty configuration.
 type=bool-set
 !
 '''
-        options_spec.ans = OPTIONS.format(
+        setattr(options_spec, 'ans', OPTIONS.format(
             appname=appname, config_help=CONFIG_HELP.format(appname=appname, conf_name=appname)
 
-        )
-    return options_spec.ans
+        ))
+    ans: str = getattr(options_spec, 'ans')
+    return ans
 
 
-def options_for_completion():
+def options_for_completion() -> OptionSpecSeq:
     raw = '--help -h\ntype=bool-set\nShow help for {appname} command line options\n\n{raw}'.format(
             appname=appname, raw=options_spec())
     return parse_option_spec(raw)[0]
 
 
-def option_spec_as_rst(ospec=options_spec, usage=None, message=None, appname=None, heading_char='-'):
+def option_spec_as_rst(
+    ospec: Callable[[], str] = options_spec,
+    usage: Optional[str] = None, message: Optional[str] = None, appname: Optional[str] = None,
+    heading_char: str = '-'
+) -> str:
     options = parse_option_spec(ospec())
     seq, disabled = options
     oc = Options(seq, usage, message, appname)
     return seq_as_rst(oc.seq, oc.usage, oc.message, oc.appname, heading_char=heading_char)
 
 
-def parse_args(args=None, ospec=options_spec, usage=None, message=None, appname=None):
+T = TypeVar('T')
+
+
+def parse_args(
+    args: Optional[List[str]] = None,
+    ospec: Callable[[], str] = options_spec,
+    usage: Optional[str] = None,
+    message: Optional[str] = None,
+    appname: Optional[str] = None,
+    result_class: Optional[Type[T]] = None,
+) -> Tuple[T, List[str]]:
     options = parse_option_spec(ospec())
     seq, disabled = options
     oc = Options(seq, usage, message, appname)
-    return parse_cmdline(oc, disabled, args=args)
+    if result_class is not None:
+        ans = result_class()
+    else:
+        ans = cast(T, CLIOptions())
+    return ans, parse_cmdline(oc, disabled, ans, args=args)
 
 
 SYSTEM_CONF = '/etc/xdg/kitty/kitty.conf'
+ShortcutMap = Dict[Tuple[KeySpec, ...], KeyAction]
 
 
-def print_shortcut(key_sequence, action):
+def print_shortcut(key_sequence: Iterable[KeySpec], action: KeyAction) -> None:
     if not getattr(print_shortcut, 'maps', None):
         from kitty.keys import defines
         v = vars(defines)
         mmap = {m[len('GLFW_MOD_'):].lower(): x for m, x in v.items() if m.startswith('GLFW_MOD_')}
         kmap = {k[len('GLFW_KEY_'):].lower(): x for k, x in v.items() if k.startswith('GLFW_KEY_')}
         krmap = {v: k for k, v in kmap.items()}
-        print_shortcut.maps = mmap, krmap
-    mmap, krmap = print_shortcut.maps
+        setattr(print_shortcut, 'maps', (mmap, krmap))
+    mmap, krmap = getattr(print_shortcut, 'maps')
     keys = []
-    for key in key_sequence:
+    for key_spec in key_sequence:
         names = []
-        mods, is_native, key = key
+        mods, is_native, key = key_spec
         for name, val in mmap.items():
             if mods & val:
                 names.append(name)
         if key:
             if is_native:
                 from .fast_data_types import GLFW_KEY_UNKNOWN, glfw_get_key_name
-                names.append(glfw_get_key_name(GLFW_KEY_UNKNOWN, key))
+                kn = glfw_get_key_name(GLFW_KEY_UNKNOWN, key) or 'Unknown key'
+                names.append(kn)
             else:
                 names.append(krmap[key])
         keys.append('+'.join(names))
@@ -671,7 +759,7 @@ def print_shortcut(key_sequence, action):
     print('\t', ' > '.join(keys), action)
 
 
-def print_shortcut_changes(defns, text, changes):
+def print_shortcut_changes(defns: ShortcutMap, text: str, changes: Set[Tuple[KeySpec, ...]]) -> None:
     if changes:
         print(title(text))
 
@@ -679,7 +767,7 @@ def print_shortcut_changes(defns, text, changes):
             print_shortcut(k, defns[k])
 
 
-def compare_keymaps(final, initial):
+def compare_keymaps(final: ShortcutMap, initial: ShortcutMap) -> None:
     added = set(final) - set(initial)
     removed = set(initial) - set(final)
     changed = {k for k in set(final) & set(initial) if final[k] != initial[k]}
@@ -688,20 +776,20 @@ def compare_keymaps(final, initial):
     print_shortcut_changes(final, 'Changed shortcuts:', changed)
 
 
-def flatten_sequence_map(m):
-    ans = {}
-    for k, rest_map in m.items():
+def flatten_sequence_map(m: SequenceMap) -> ShortcutMap:
+    ans: Dict[Tuple[KeySpec, ...], KeyAction] = {}
+    for key_spec, rest_map in m.items():
         for r, action in rest_map.items():
-            ans[(k,) + (r)] = action
+            ans[(key_spec,) + (r)] = action
     return ans
 
 
-def compare_opts(opts):
+def compare_opts(opts: OptionsStub) -> None:
     from .config import defaults, load_config
     print('\nConfig options different from defaults:')
     default_opts = load_config()
     changed_opts = [
-        f for f in sorted(defaults._fields)
+        f for f in sorted(defaults._fields)  # type: ignore
         if f not in ('key_definitions', 'keymap', 'sequence_map') and getattr(opts, f) != getattr(defaults, f)
     ]
     field_len = max(map(len, changed_opts)) if changed_opts else 20
@@ -709,16 +797,16 @@ def compare_opts(opts):
     for f in changed_opts:
         print(title(fmt.format(f)), getattr(opts, f))
 
-    final, initial = opts.keymap, default_opts.keymap
-    final = {(k,): v for k, v in final.items()}
-    initial = {(k,): v for k, v in initial.items()}
+    final_, initial_ = opts.keymap, default_opts.keymap
+    final: ShortcutMap = {(k,): v for k, v in final_.items()}
+    initial: ShortcutMap = {(k,): v for k, v in initial_.items()}
     final_s, initial_s = map(flatten_sequence_map, (opts.sequence_map, default_opts.sequence_map))
     final.update(final_s)
     initial.update(initial_s)
     compare_keymaps(final, initial)
 
 
-def create_opts(args, debug_config=False, accumulate_bad_lines=None):
+def create_opts(args: CLIOptions, debug_config: bool = False, accumulate_bad_lines: Optional[List[BadLineType]] = None) -> OptionsStub:
     from .config import load_config
     config = tuple(resolve_config(SYSTEM_CONF, defconf, args.config))
     if debug_config:

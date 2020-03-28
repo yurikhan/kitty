@@ -4,17 +4,16 @@
 
 
 # Utils  {{{
-from gettext import gettext as _
 from functools import partial
+from gettext import gettext as _
+from typing import Any, Dict, Sequence, Union
 
-from kitty.conf.definition import option_func
-from kitty.conf.utils import (
-    positive_int, python_string, to_color
-)
+from kitty.conf.definition import Option, Shortcut, option_func
+from kitty.conf.utils import positive_int, python_string, to_color
 
 # }}}
 
-all_options = {}
+all_options: Dict[str, Union[Option, Sequence[Shortcut]]] = {}
 o, k, g, all_groups = option_func(all_options, {
     'colors': [_('Colors')],
     'diff': [_('Diffing'), ],
@@ -25,7 +24,7 @@ o, k, g, all_groups = option_func(all_options, {
 g('diff')
 
 
-def syntax_aliases(raw):
+def syntax_aliases(raw: str) -> Dict[str, str]:
     ans = {}
     for x in raw.split():
         a, b = x.partition(':')[::2]
@@ -34,7 +33,7 @@ def syntax_aliases(raw):
     return ans
 
 
-o('syntax_aliases', 'pyj:py recipe:py', option_type=syntax_aliases, long_text=_('''
+o('syntax_aliases', 'pyj:py pyi:py recipe:py', option_type=syntax_aliases, long_text=_('''
 File extension aliases for syntax highlight
 For example, to syntax highlight :file:`file.xyz` as
 :file:`file.abc` use a setting of :code:`xyz:abc`
@@ -121,4 +120,9 @@ k('prev_match', '<', 'scroll_to prev-match', _('Scroll to previous search match'
 k('search_forward_simple', 'f', 'start_search substring forward', _('Search forward (no regex)'))
 k('search_backward_simple', 'b', 'start_search substring backward', _('Search backward (no regex)'))
 
-type_map = {o.name: o.option_type for o in all_options.values() if hasattr(o, 'option_type')}
+
+def type_convert(name: str, val: Any) -> Any:
+    o = all_options.get(name)
+    if isinstance(o, Option):
+        val = o.option_type(val)
+    return val

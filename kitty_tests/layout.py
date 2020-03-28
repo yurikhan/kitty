@@ -2,10 +2,12 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
-from . import BaseTest
 from kitty.config import defaults
-from kitty.layout import Stack, Horizontal, idx_for_id
 from kitty.fast_data_types import pt_to_px
+from kitty.layout import Horizontal, Stack, Tall, Grid, idx_for_id, Splits
+from kitty.constants import WindowGeometry
+
+from . import BaseTest
 
 
 class Window:
@@ -15,6 +17,7 @@ class Window:
         self.overlay_for = overlay_for
         self.overlay_window_id = overlay_window_id
         self.is_visible_in_layout = True
+        self.geometry = WindowGeometry(0, 0, 0, 0, 0, 0)
 
     def set_visible_in_layout(self, idx, val):
         self.is_visible_in_layout = bool(val)
@@ -70,7 +73,7 @@ class TestLayout(BaseTest):
         check_visible()
         # Test nth_window
         for i in range(len(windows)):
-            active_window_idx = q.nth_window(windows, i)
+            active_window_idx = q.activate_nth_window(windows, i)
             self.ae(active_window_idx, i)
             expect_ids(*range(1, len(windows)+1))
             check_visible()
@@ -142,7 +145,7 @@ class TestLayout(BaseTest):
         visible_windows = [w for w in windows if w.overlay_window_id is None]
         # Test nth_window
         for i in range(len(visible_windows)):
-            active_window_idx = q.nth_window(windows, i)
+            active_window_idx = q.activate_nth_window(windows, i)
             self.ae(active_window_idx, aidx(i))
             expect_ids(1, 6, 3, 4, 5, 2, 7)
             check_visible()
@@ -172,11 +175,25 @@ class TestLayout(BaseTest):
         check_visible()
 
     def test_layout_operations(self):
-        for layout_class in Stack, Horizontal:
+        for layout_class in (Stack, Horizontal, Tall, Grid):
             q = create_layout(layout_class)
             self.do_ops_test(q)
 
     def test_overlay_layout_operations(self):
-        for layout_class in Stack, Horizontal:
+        for layout_class in (Stack, Horizontal, Tall, Grid):
             q = create_layout(layout_class)
             self.do_overlay_test(q)
+
+    def test_splits(self):
+        q = create_layout(Splits)
+        all_windows = []
+        self.ae(0, q.add_window(all_windows, Window(1), -1))
+        self.ae(1, q.add_window(all_windows, Window(2), 0, location='vsplit'))
+        self.ae(q.pairs_root.pair_for_window(2).horizontal, True)
+        self.ae(2, q.add_window(all_windows, Window(3), 1, location='hsplit'))
+        self.ae(q.pairs_root.pair_for_window(2).horizontal, False)
+        self.ae(3, q.add_window(all_windows, Window(4), 2, location='vsplit'))
+        self.ae(q.neighbors_for_window(all_windows[0], all_windows), {'left': [], 'right': [2, 3], 'top': [], 'bottom': []})
+        self.ae(q.neighbors_for_window(all_windows[1], all_windows), {'left': [1], 'right': [], 'top': [], 'bottom': [3, 4]})
+        self.ae(q.neighbors_for_window(all_windows[2], all_windows), {'left': [1], 'right': [4], 'top': [2], 'bottom': []})
+        self.ae(q.neighbors_for_window(all_windows[3], all_windows), {'left': [3], 'right': [], 'top': [2], 'bottom': []})

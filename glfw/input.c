@@ -350,10 +350,11 @@ void _glfwInputCursorEnter(_GLFWwindow* window, bool entered)
 
 // Notifies shared code of files or directories dropped on a window
 //
-void _glfwInputDrop(_GLFWwindow* window, int count, const char** paths)
+int _glfwInputDrop(_GLFWwindow* window, const char *mime, const char *text, size_t sz)
 {
     if (window->callbacks.drop)
-        window->callbacks.drop((GLFWwindow*) window, count, paths);
+        return window->callbacks.drop((GLFWwindow*) window, mime, text, sz);
+    return 0;
 }
 
 // Notifies shared code of a joystick connection or disconnection
@@ -510,6 +511,7 @@ const char* _glfwGetKeyName(int key)
         case GLFW_KEY_LEFT_BRACKET:       return "LEFT_BRACKET";
         case GLFW_KEY_BACKSLASH:          return "BACKSLASH";
         case GLFW_KEY_RIGHT_BRACKET:      return "RIGHT_BRACKET";
+        case GLFW_KEY_CIRCUMFLEX:         return "CIRCUMFLEX";
         case GLFW_KEY_UNDERSCORE:         return "UNDERSCORE";
         case GLFW_KEY_GRAVE_ACCENT:       return "GRAVE_ACCENT";
         case GLFW_KEY_WORLD_1:            return "WORLD_1";
@@ -1482,29 +1484,4 @@ GLFWAPI monotonic_t glfwGetTime(void)
 {
     _GLFW_REQUIRE_INIT_OR_RETURN(0);
     return monotonic();
-}
-
-GLFWAPI void glfwSetTime(monotonic_t time)
-{
-    _GLFW_REQUIRE_INIT();
-
-    if (time < 0)
-    {
-        _glfwInputError(GLFW_INVALID_VALUE, "Invalid time %f", monotonic_t_to_s_double(time));
-        return;
-    }
-
-    // Do nothing
-}
-
-GLFWAPI uint64_t glfwGetTimerValue(void)
-{
-    _GLFW_REQUIRE_INIT_OR_RETURN(0);
-    return _glfwPlatformGetTimerValue();
-}
-
-GLFWAPI uint64_t glfwGetTimerFrequency(void)
-{
-    _GLFW_REQUIRE_INIT_OR_RETURN(0);
-    return _glfwPlatformGetTimerFrequency();
 }

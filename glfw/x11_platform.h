@@ -152,7 +152,6 @@ typedef VkResult (APIENTRY *PFN_vkCreateXcbSurfaceKHR)(VkInstance,const VkXcbSur
 typedef VkBool32 (APIENTRY *PFN_vkGetPhysicalDeviceXcbPresentationSupportKHR)(VkPhysicalDevice,uint32_t,xcb_connection_t*,xcb_visualid_t);
 
 #include "posix_thread.h"
-#include "posix_time.h"
 #include "glx_context.h"
 #include "egl_context.h"
 #include "osmesa_context.h"
@@ -181,6 +180,7 @@ typedef struct _GLFWwindowX11
 {
     Colormap        colormap;
     Window          handle;
+    Window          parent;
 
     bool            iconified;
     bool            maximized;
@@ -266,7 +266,6 @@ typedef struct _GLFWlibraryX11
     Atom            XdndFinished;
     Atom            XdndSelection;
     Atom            XdndTypeList;
-    Atom            text_uri_list;
 
     // Selection (clipboard) atoms
     Atom            TARGETS;
@@ -327,7 +326,8 @@ typedef struct _GLFWlibraryX11
     struct {
         int         version;
         Window      source;
-        Atom        format;
+        char        format[128];
+        int         format_priority;
     } xdnd;
 
     struct {
