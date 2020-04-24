@@ -1,9 +1,13 @@
 kitty (0.17.3-1) UNRELEASED; urgency=medium
 
+  [ James McCoy ]
   * New upstream release
     + Fix crash when using drag and drop.  (Closes: #956576)
     + Update to Unicode 13.0
     + Add strikethrough capability to terminfo entry
+
+  [ Debian Janitor ]
+  * Set upstream metadata fields: Repository.
 
  -- James McCoy <jamessan@debian.org>  Fri, 24 Apr 2020 08:12:06 -0400
 
