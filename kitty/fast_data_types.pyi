@@ -323,9 +323,14 @@ FC_MONO: int = 100
 FC_DUAL: int
 FC_WEIGHT_REGULAR: int
 FC_WEIGHT_BOLD: int
+FC_WIDTH_NORMAL: int
 FC_SLANT_ROMAN: int
 FC_SLANT_ITALIC: int
 BORDERS_PROGRAM: int
+PRESS: int
+RELEASE: int
+DRAG: int
+MOVE: int
 # }}}
 
 
@@ -402,6 +407,7 @@ class FontConfigPattern(TypedDict):
     style: str
     spacing: str
     weight: int
+    width: int
     slant: int
     hint_style: int
     subpixel: int
@@ -547,7 +553,7 @@ def update_window_visibility(
 def set_options(
     opts: Options,
     is_wayland: bool = False,
-    debug_gl: bool = False,
+    debug_rendering: bool = False,
     debug_font_fallback: bool = False
 ) -> None:
     pass
@@ -900,7 +906,7 @@ def set_font_data(
     box_drawing_func: Callable[[int, int, int, float],
                                Tuple[int, Union[bytearray, bytes, Array]]],
     prerender_func: Callable[
-        [int, int, int, int, int, float, float, float, float],
+        [int, int, int, int, int, int, int, float, float, float, float],
         Tuple[Union[Array, int], ...]],
     descriptor_for_idx: Callable[[int], Tuple[FontObject, bool, bool]],
     bold: int, italic: int, bold_italic: int, num_symbol_fonts: int,
@@ -1125,4 +1131,8 @@ def spawn(
 
 
 def key_to_bytes(glfw_key: int, smkx: bool, extended: bool, mods: int, action: int) -> bytes:
+    pass
+
+
+def set_window_padding(os_window_id: int, tab_id: int, window_id: int, left: int, top: int, right: int, bottom: int) -> None:
     pass

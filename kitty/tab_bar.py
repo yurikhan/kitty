@@ -81,8 +81,11 @@ def draw_tab_with_separator(draw_data: DrawData, screen: Screen, tab: TabBarData
         screen.draw(' ' * trailing_spaces)
     end = screen.cursor.x
     screen.cursor.bold = screen.cursor.italic = False
-    screen.cursor.fg = screen.cursor.bg = 0
+    screen.cursor.fg = 0
+    if not is_last:
+        screen.cursor.bg = as_rgb(color_as_int(draw_data.inactive_bg))
     screen.draw(draw_data.sep)
+    screen.cursor.bg = 0
     return end
 
 
@@ -137,6 +140,7 @@ def draw_tab_with_powerline(draw_data: DrawData, screen: Screen, tab: TabBarData
         screen.draw(' ')
         screen.cursor.fg = tab_fg
     elif screen.cursor.x == 0:
+        screen.cursor.bg = tab_bg
         screen.draw(' ')
         start_draw = 1
 
@@ -182,7 +186,7 @@ class TabBar:
         s.color_profile.update_ansi_color_table(build_ansi_color_table(opts))
         s.color_profile.set_configured_colors(
             color_as_int(opts.inactive_tab_foreground),
-            color_as_int(opts.background)
+            color_as_int(opts.tab_bar_background or opts.background)
         )
         self.blank_rects: Tuple[Rect, ...] = ()
         sep = opts.tab_separator
@@ -226,10 +230,13 @@ class TabBar:
             self.draw_data = self.draw_data._replace(default_bg=color_from_int(spec['tab_bar_background']))
         elif 'background' in spec and not self.opts.tab_bar_background:
             self.draw_data = self.draw_data._replace(default_bg=color_from_int(spec['background']))
-        self.screen.color_profile.set_configured_colors(
-                spec.get('inactive_tab_foreground', color_as_int(self.opts.inactive_tab_foreground)),
-                spec.get('inactive_tab_background', color_as_int(self.opts.inactive_tab_background))
-        )
+        fg = spec.get('inactive_tab_foreground', color_as_int(self.opts.inactive_tab_foreground))
+        bg = spec.get('tab_bar_background', False)
+        if bg is None:
+            bg = color_as_int(self.opts.background)
+        elif bg is False:
+            bg = color_as_int(self.opts.tab_bar_background or self.opts.background)
+        self.screen.color_profile.set_configured_colors(fg, bg)
 
     def layout(self) -> None:
         central, tab_bar, vw, vh, cell_width, cell_height = viewport_for_window(self.os_window_id)

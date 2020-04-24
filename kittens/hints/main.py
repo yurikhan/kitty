@@ -21,7 +21,7 @@ from kitty.key_encoding import (
     KeyEvent, backspace_key, enter_key, key_defs as K
 )
 from kitty.typing import BossType, KittyCommonOpts
-from kitty.utils import ScreenSize, screen_size_function
+from kitty.utils import ScreenSize, screen_size_function, set_primary_selection
 
 from ..tui.handler import Handler, result_handler
 from ..tui.loop import Loop
@@ -315,7 +315,7 @@ def functions_for(args: HintsCLIOptions) -> Tuple[str, List[PostprocessorFunc]]:
         pattern = '[0-9a-f]{7,128}'
     elif args.type == 'word':
         chars = args.word_characters
-        if not chars:
+        if chars is None:
             chars = kitty_common_opts()['select_by_word_characters']
         pattern = r'(?u)[{}\w]{{{},}}'.format(escape(chars), args.minimum_match_length)
         post_processors.extend((brackets, quotes))
@@ -349,7 +349,7 @@ def parse_input(text: str) -> str:
 def linenum_marks(text: str, args: HintsCLIOptions, Mark: Type[Mark], extra_cli_args: Sequence[str], *a: Any) -> Generator[Mark, None, None]:
     regex = args.regex
     if regex == DEFAULT_REGEX:
-        regex = r'(?P<path>(?:\S*/\S+)|(?:\S+[.][a-zA-Z0-9]{2,7})):(?P<line>\d+)'
+        regex = r'(?P<path>(?:\S*/\S+?)|(?:\S+[.][a-zA-Z0-9]{2,7})):(?P<line>\d+)'
     yield from mark(regex, [brackets, quotes], text, args)
 
 
@@ -360,12 +360,8 @@ def load_custom_processor(customize_processing: str) -> Any:
         return {k: getattr(m, k) for k in dir(m)}
     if customize_processing == '::linenum::':
         return {'mark': linenum_marks, 'handle_result': linenum_handle_result}
-    from kitty.constants import config_dir
-    customize_processing = os.path.expandvars(os.path.expanduser(customize_processing))
-    if os.path.isabs(customize_processing):
-        custom_path = customize_processing
-    else:
-        custom_path = os.path.join(config_dir, customize_processing)
+    from kitty.constants import resolve_custom_file
+    custom_path = resolve_custom_file(customize_processing)
     import runpy
     return runpy.run_path(custom_path, run_name='__main__')
 
@@ -413,9 +409,11 @@ OPTIONS = r'''
 type=list
 What program to use to open matched text. Defaults to the default open program
 for the operating system. Use a value of :file:`-` to paste the match into the
-terminal window instead. A value of :file:`@` will copy the match to the clipboard.
-A value of :file:`default` will run the default open program. Can be specified
-multiple times to run multiple programs.
+terminal window instead. A value of :file:`@` will copy the match to the
+clipboard. A value of :file:`*` will copy the match to the primary selection
+(on systems that support primary selections). A value of :file:`default` will
+run the default open program. Can be specified multiple times to run multiple
+programs.
 
 
 --type
@@ -629,6 +627,8 @@ def handle_result(args: List[str], data: Dict[str, Any], target_window_id: int, 
                 w.paste(joined_text())
         elif program == '@':
             set_clipboard_string(joined_text())
+        elif program == '*':
+            set_primary_selection(joined_text())
         else:
             cwd = None
             w = boss.window_id_map.get(target_window_id)

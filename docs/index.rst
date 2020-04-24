@@ -65,7 +65,7 @@ You can also use your favorite package manager to install the |kitty| package.
 `openSUSE <https://build.opensuse.org/package/show/X11:terminals/kitty>`_,
 `Arch Linux <https://www.archlinux.org/packages/community/x86_64/kitty/>`_,
 `Gentoo <https://packages.gentoo.org/packages/x11-terms/kitty>`_,
-`Fedora <https://copr.fedorainfracloud.org/coprs/gagbo/kitty-latest/>`_,
+`Fedora <https://src.fedoraproject.org/rpms/kitty>`_,
 `Void Linux <https://github.com/void-linux/void-packages/blob/master/srcpkgs/kitty/template>`_,
 and `Solus <https://dev.getsol.us/source/kitty/>`_.
 
@@ -191,6 +191,12 @@ Similarly, you can detach the current tab, with::
     map ctrl+f2 detach_tab
     # asks which OS Window to move the tab into
     map ctrl+f4 detach_tab ask
+
+Finally, you can define a shortcut to close all windows in a tab other than
+the currently active window::
+
+    map f9 close_other_windows_in_tab
+
 
 Other keyboard shortcuts
 ----------------------------------
