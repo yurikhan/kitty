@@ -1,10 +1,10 @@
-kitty (0.17.4-1) UNRELEASED; urgency=medium
+kitty (0.17.4-1) unstable; urgency=medium
 
   * New upstream version
     + Fix test failures on 64-bit big-endian builds.
     + Use -fpic to fix build failure on sparc64.
 
- -- James McCoy <jamessan@debian.org>  Sat, 09 May 2020 09:36:31 -0400
+ -- James McCoy <jamessan@debian.org>  Sat, 09 May 2020 09:52:08 -0400
 
 kitty (0.17.3-1) unstable; urgency=medium
 
