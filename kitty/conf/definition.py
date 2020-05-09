@@ -6,10 +6,10 @@ import re
 from functools import partial
 from typing import (
     Any, Callable, Dict, Generator, Iterable, List, Match, Optional, Sequence,
-    Set, Tuple, Union, cast, get_type_hints
+    Set, Tuple, Union, get_type_hints
 )
 
-from .utils import to_bool
+from .utils import Choice, to_bool
 
 
 def to_string(x: str) -> str:
@@ -56,6 +56,8 @@ class Option:
 
         if type(self.option_type) is type:
             return type_name(self.option_type)
+        if isinstance(self.option_type, Choice):
+            return 'typing.Literal[{}]'.format(','.join(f'{x!r}' for x in self.option_type.all_choices))
         th = get_type_hints(self.option_type)
         try:
             rettype = th['return']
@@ -156,7 +158,7 @@ def remove_markup(text: str) -> str:
                 'layouts': 'https://sw.kovidgoyal.net/kitty/index.html#layouts',
                 'sessions': 'https://sw.kovidgoyal.net/kitty/index.html#sessions',
             }[m.group(2)]
-        return cast(str, m.group(2))
+        return str(m.group(2))
 
     return re.sub(r':([a-zA-Z0-9]+):`(.+?)`', sub, text, flags=re.DOTALL)
 

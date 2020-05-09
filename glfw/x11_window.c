@@ -1075,6 +1075,21 @@ static void onConfigChange(void)
     }
 }
 
+static void
+get_atom_names(Atom *atoms, int count, char **atom_names) {
+    _glfwGrabErrorHandlerX11();
+    XGetAtomNames(_glfw.x11.display, atoms, count, atom_names);
+    _glfwReleaseErrorHandlerX11();
+    if (_glfw.x11.errorCode != Success) {
+        for (int i = 0; i < count; i++) {
+            _glfwGrabErrorHandlerX11();
+            atom_names[i] = XGetAtomName(_glfw.x11.display, atoms[i]);
+            _glfwReleaseErrorHandlerX11();
+            if (_glfw.x11.errorCode != Success) atom_names[i] = NULL;
+        }
+    }
+}
+
 // Process the specified X event
 //
 static void processEvent(XEvent *event)
@@ -1250,13 +1265,13 @@ static void processEvent(XEvent *event)
 
             // Modern X provides scroll events as mouse button presses
             else if (event->xbutton.button == Button4)
-                _glfwInputScroll(window, 0.0, 1.0, 0);
+                _glfwInputScroll(window, 0.0, 1.0, 0, mods);
             else if (event->xbutton.button == Button5)
-                _glfwInputScroll(window, 0.0, -1.0, 0);
+                _glfwInputScroll(window, 0.0, -1.0, 0, mods);
             else if (event->xbutton.button == Button6)
-                _glfwInputScroll(window, 1.0, 0.0, 0);
+                _glfwInputScroll(window, 1.0, 0.0, 0, mods);
             else if (event->xbutton.button == Button7)
-                _glfwInputScroll(window, -1.0, 0.0, 0);
+                _glfwInputScroll(window, -1.0, 0.0, 0, mods);
 
             else
             {
@@ -1393,12 +1408,18 @@ static void processEvent(XEvent *event)
             if (!event->xany.send_event && window->x11.parent != _glfw.x11.root)
             {
                 Window dummy;
+                _glfwGrabErrorHandlerX11();
                 XTranslateCoordinates(_glfw.x11.display,
                                       window->x11.parent,
                                       _glfw.x11.root,
                                       xpos, ypos,
                                       &xpos, &ypos,
                                       &dummy);
+                _glfwReleaseErrorHandlerX11();
+                if (_glfw.x11.errorCode != Success) {
+                    _glfwInputError(GLFW_PLATFORM_ERROR, "X11: Failed to translate ConfigureNotiy co-ords for reparented window");
+                    return;
+                }
             }
 
             if (xpos != window->x11.xpos || ypos != window->x11.ypos)
@@ -1474,7 +1495,7 @@ static void processEvent(XEvent *event)
                 }
                 char **atom_names = calloc(count, sizeof(char**));
                 if (atom_names) {
-                    XGetAtomNames(_glfw.x11.display, formats, count, atom_names);
+                    get_atom_names(formats, count, atom_names);
 
                     for (i = 0;  i < count;  i++)
                     {
@@ -1535,17 +1556,21 @@ static void processEvent(XEvent *event)
                 const int xabs = (event->xclient.data.l[2] >> 16) & 0xffff;
                 const int yabs = (event->xclient.data.l[2]) & 0xffff;
                 Window dummy;
-                int xpos, ypos;
+                int xpos = 0, ypos = 0;
 
                 if (_glfw.x11.xdnd.version > _GLFW_XDND_VERSION)
                     return;
 
+                _glfwGrabErrorHandlerX11();
                 XTranslateCoordinates(_glfw.x11.display,
                                       _glfw.x11.root,
                                       window->x11.handle,
                                       xabs, yabs,
                                       &xpos, &ypos,
                                       &dummy);
+                _glfwReleaseErrorHandlerX11();
+                if (_glfw.x11.errorCode != Success)
+                    _glfwInputError(GLFW_PLATFORM_ERROR, "X11: Failed to get DND event position");
 
                 _glfwInputCursorPos(window, xpos, ypos);
 
@@ -1973,10 +1998,14 @@ void _glfwPlatformSetWindowIcon(_GLFWwindow* window,
 void _glfwPlatformGetWindowPos(_GLFWwindow* window, int* xpos, int* ypos)
 {
     Window dummy;
-    int x, y;
+    int x = 0, y = 0;
 
+    _glfwGrabErrorHandlerX11();
     XTranslateCoordinates(_glfw.x11.display, window->x11.handle, _glfw.x11.root,
                           0, 0, &x, &y, &dummy);
+    _glfwReleaseErrorHandlerX11();
+    if (_glfw.x11.errorCode != Success)
+        _glfwInputError(GLFW_PLATFORM_ERROR, "X11: Failed to get window position");
 
     if (xpos)
         *xpos = x;

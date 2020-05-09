@@ -27,13 +27,26 @@ GlobalState global_state = {{0}};
 #define END_WITH_OS_WINDOW break; }}
 
 #define WITH_TAB(os_window_id, tab_id) \
-    for (size_t o = 0; o < global_state.num_os_windows; o++) { \
+    for (size_t o = 0, tab_found = 0; o < global_state.num_os_windows && !tab_found; o++) { \
         OSWindow *osw = global_state.os_windows + o; \
         if (osw->id == os_window_id) { \
             for (size_t t = 0; t < osw->num_tabs; t++) { \
                 if (osw->tabs[t].id == tab_id) { \
                     Tab *tab = osw->tabs + t;
-#define END_WITH_TAB break; }}}}
+#define END_WITH_TAB tab_found = 1; break; }}}}
+
+#define WITH_WINDOW(os_window_id, tab_id, window_id) \
+    for (size_t o = 0, window_found = 0; o < global_state.num_os_windows && !window_found; o++) { \
+        OSWindow *osw = global_state.os_windows + o; \
+        if (osw->id == os_window_id) { \
+            for (size_t t = 0; t < osw->num_tabs && !window_found; t++) { \
+                if (osw->tabs[t].id == tab_id) { \
+                    Tab *tab = osw->tabs + t; \
+                    for (size_t w = 0; w < tab->num_windows; w++) { \
+                        if (tab->windows[w].id == window_id) { \
+                            Window *window = tab->windows + w;
+#define END_WITH_WINDOW window_found = 1; break; }}}}}}
+
 
 #define WITH_OS_WINDOW_REFS \
     id_type cb_window_id = 0, focused_window_id = 0; \
@@ -199,6 +212,27 @@ update_window_title(id_type os_window_id, id_type tab_id, id_type window_id, PyO
         }
     }
     END_WITH_TAB;
+}
+
+void
+set_os_window_title_from_window(Window *w, OSWindow *os_window) {
+    if (w->title && w->title != os_window->window_title) {
+        Py_XDECREF(os_window->window_title);
+        os_window->window_title = w->title;
+        Py_INCREF(os_window->window_title);
+        set_os_window_title(os_window, PyUnicode_AsUTF8(w->title));
+    }
+}
+
+void
+update_os_window_title(OSWindow *os_window) {
+    if (os_window->num_tabs) {
+        Tab *tab = os_window->tabs + os_window->active_tab;
+        if (tab->num_windows) {
+            Window *w = tab->windows + tab->active_window;
+            set_os_window_title_from_window(w, os_window);
+        }
+    }
 }
 
 static inline void
@@ -410,6 +444,14 @@ os_window_regions(OSWindow *os_window, Region *central, Region *tab_bar) {
     }
 }
 
+void
+mark_os_window_for_close(OSWindow* w, CloseRequest cr) {
+    global_state.has_pending_closes = true;
+    w->close_request = cr;
+}
+
+
+
 
 // Python API {{{
 #define PYWRAP0(name) static PyObject* py##name(PYNOARG)
@@ -577,14 +619,14 @@ PYWRAP1(handle_for_window_id) {
 
 PYWRAP1(set_options) {
     PyObject *ret, *opts;
-    int is_wayland = 0, debug_gl = 0, debug_font_fallback = 0;
-    PA("O|ppp", &opts, &is_wayland, &debug_gl, &debug_font_fallback);
+    int is_wayland = 0, debug_rendering = 0, debug_font_fallback = 0;
+    PA("O|ppp", &opts, &is_wayland, &debug_rendering, &debug_font_fallback);
     global_state.is_wayland = is_wayland ? true : false;
 #ifdef __APPLE__
     global_state.has_render_frames = true;
 #endif
     if (global_state.is_wayland) global_state.has_render_frames = true;
-    global_state.debug_gl = debug_gl ? true : false;
+    global_state.debug_rendering = debug_rendering ? true : false;
     global_state.debug_font_fallback = debug_font_fallback ? true : false;
 #define GA(name) ret = PyObject_GetAttrString(opts, #name); if (ret == NULL) return NULL;
 #define SS(name, dest, convert) { GA(name); dest = convert(ret); Py_DECREF(ret); if (PyErr_Occurred()) return NULL; }
@@ -603,7 +645,6 @@ PYWRAP1(set_options) {
     S(dim_opacity, PyFloat_AsFloat);
     S(dynamic_background_opacity, PyObject_IsTrue);
     S(inactive_text_alpha, PyFloat_AsFloat);
-    S(window_padding_width, PyFloat_AsFloat);
     S(scrollback_pager_history_size, PyLong_AsUnsignedLong);
     S(cursor_shape, PyLong_AsLong);
     S(cursor_beam_thickness, PyFloat_AsFloat);
@@ -772,10 +813,10 @@ PYWRAP1(os_window_has_background_image) {
 
 PYWRAP1(mark_os_window_for_close) {
     id_type os_window_id;
-    int yes = 1;
-    PA("K|p", &os_window_id, &yes);
+    CloseRequest cr = IMPERATIVE_CLOSE_REQUESTED;
+    PA("K|i", &os_window_id, &cr);
     WITH_OS_WINDOW(os_window_id)
-        mark_os_window_for_close(os_window, yes ? true : false);
+        mark_os_window_for_close(os_window, cr);
         Py_RETURN_TRUE;
     END_WITH_OS_WINDOW
     Py_RETURN_FALSE;
@@ -839,6 +880,16 @@ fix_window_idx(Tab *tab, id_type window_id, unsigned int *window_idx) {
     return false;
 }
 
+PYWRAP1(set_window_padding) {
+    id_type os_window_id, tab_id, window_id;
+    unsigned int left, top, right, bottom;
+    PA("KKKIIII", &os_window_id, &tab_id, &window_id, &left, &top, &right, &bottom);
+    WITH_WINDOW(os_window_id, tab_id, window_id);
+        window->padding.left = left; window->padding.top = top; window->padding.right = right; window->padding.bottom = bottom;
+    END_WITH_WINDOW;
+    Py_RETURN_NONE;
+}
+
 PYWRAP1(set_window_render_data) {
 #define A(name) &(d.name)
 #define B(name) &(g.name)
@@ -877,6 +928,17 @@ PYWRAP1(update_window_visibility) {
     END_WITH_TAB;
     Py_RETURN_NONE;
 }
+
+
+PYWRAP1(sync_os_window_title) {
+    id_type os_window_id;
+    PA("K", &os_window_id);
+    WITH_OS_WINDOW(os_window_id)
+        update_os_window_title(os_window);
+    END_WITH_OS_WINDOW
+    Py_RETURN_NONE;
+}
+
 
 static inline double
 dpi_for_os_window_id(id_type os_window_id) {
@@ -1080,6 +1142,7 @@ static PyMethodDef module_methods[] = {
     MW(add_borders_rect, METH_VARARGS),
     MW(set_tab_bar_render_data, METH_VARARGS),
     MW(set_window_render_data, METH_VARARGS),
+    MW(set_window_padding, METH_VARARGS),
     MW(viewport_for_window, METH_VARARGS),
     MW(cell_size_for_window, METH_VARARGS),
     MW(os_window_has_background_image, METH_VARARGS),
@@ -1090,6 +1153,7 @@ static PyMethodDef module_methods[] = {
     MW(change_background_opacity, METH_VARARGS),
     MW(background_opacity_of, METH_O),
     MW(update_window_visibility, METH_VARARGS),
+    MW(sync_os_window_title, METH_VARARGS),
     MW(global_font_size, METH_VARARGS),
     MW(set_background_image, METH_VARARGS),
     MW(os_window_font_size, METH_VARARGS),

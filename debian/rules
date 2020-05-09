@@ -4,8 +4,6 @@ export DEB_BUILD_MAINT_OPTIONS=hardening=+all
 
 include /usr/share/dpkg/default.mk
 
-LDFLAGS += -Wl,--as-needed
-
 OVERRIDE_CFLAGS = $(CFLAGS)
 OVERRIDE_CPPFLAGS = $(CPPFLAGS)
 OVERRIDE_LDFLAGS = $(LDFLAGS)

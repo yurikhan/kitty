@@ -6,8 +6,8 @@
 import os
 from gettext import gettext as _
 from typing import (
-    Any, Dict, FrozenSet, Iterable, List, Optional, Sequence, Set, Tuple,
-    TypeVar, Union
+    Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Sequence, Set,
+    Tuple, TypeVar, Union
 )
 
 from . import fast_data_types as defines
@@ -16,7 +16,7 @@ from .conf.utils import (
     choices, positive_float, positive_int, to_bool, to_cmdline, to_color,
     to_color_or_none, unit_float
 )
-from .constants import config_dir, is_macos
+from .constants import FloatEdges, config_dir, is_macos
 from .fast_data_types import CURSOR_BEAM, CURSOR_BLOCK, CURSOR_UNDERLINE
 from .layout import all_layouts
 from .rgb import Color, color_as_int, color_as_sharp, color_from_int
@@ -548,7 +548,7 @@ rectangular block with the mouse)'''))
 o('terminal_select_modifiers', 'shift', option_type=to_modifiers, long_text=_('''
 The modifiers to override mouse selection even when a terminal application has grabbed the mouse'''))
 
-o('select_by_word_characters', ':@-./_~?&=%+#', long_text=_('''
+o('select_by_word_characters', '@-./_~?&=%+#', long_text=_('''
 Characters considered part of a word when double clicking. In addition to these characters
 any character that is marked as an alphanumeric character in the unicode
 database will be matched.'''))
@@ -675,15 +675,42 @@ that separate the inactive window from a neighbor. Note that setting
 a non-zero window margin overrides this and causes all borders to be drawn.
 '''))
 
-o('window_margin_width', 0.0, option_type=positive_float, long_text=_('''
-The window margin (in pts) (blank area outside the border)'''))
 
-o('single_window_margin_width', -1000.0, option_type=float, long_text=_('''
+def edge_width(x: str, converter: Callable[[str], float] = positive_float) -> FloatEdges:
+    parts = str(x).split()
+    num = len(parts)
+    if num == 1:
+        val = converter(parts[0])
+        return FloatEdges(val, val, val, val)
+    if num == 2:
+        v = converter(parts[0])
+        h = converter(parts[1])
+        return FloatEdges(h, v, h, v)
+    if num == 3:
+        top, h, bottom = map(converter, parts)
+        return FloatEdges(h, top, h, bottom)
+    top, right, bottom, left = map(converter, parts)
+    return FloatEdges(left, top, right, bottom)
+
+
+def optional_edge_width(x: str) -> FloatEdges:
+    return edge_width(x, float)
+
+
+edge_desc = _(
+    'A single value sets all four sides. Two values set the vertical and horizontal sides.'
+    ' Three values set top, horizontal and bottom. Four values set top, right, bottom and left.')
+
+
+o('window_margin_width', '0', option_type=edge_width, long_text=_('''
+The window margin (in pts) (blank area outside the border). ''' + edge_desc))
+
+o('single_window_margin_width', '-1', option_type=optional_edge_width, long_text=_('''
 The window margin (in pts) to use when only a single window is visible.
-Negative values will cause the value of :opt:`window_margin_width` to be used instead.'''))
+Negative values will cause the value of :opt:`window_margin_width` to be used instead. ''' + edge_desc))
 
-o('window_padding_width', 0.0, option_type=positive_float, long_text=_('''
-The window padding (in pts) (blank area between the text and the window border)'''))
+o('window_padding_width', '0', option_type=edge_width, long_text=_('''
+The window padding (in pts) (blank area between the text and the window border). ''' + edge_desc))
 
 o('placement_strategy', 'center', option_type=choices('center', 'top-left'), long_text=_('''
 When the window size is not an exact multiple of the cell size, the cell area of the terminal
@@ -843,6 +870,11 @@ A template to render the tab title. The default just renders
 the title. If you wish to include the tab-index as well,
 use something like: :code:`{index}: {title}`. Useful
 if you have shortcuts mapped for :code:`goto_tab N`.
+In addition you can use :code:`{layout_name}` for the current
+layout name and :code:`{num_windows}` for the number of windows
+in the tab. Note that formatting is done by Python's string formatting
+machinery, so you can use, for instance, :code:`{layout_name[:2].upper()}` to
+show only the first two letters of the layout name, upper-cased.
 '''))
 o('active_tab_title_template', 'none', option_type=active_tab_title_template, long_text=_('''
 Template to use for active tabs, if not specified falls back
@@ -1010,6 +1042,19 @@ connect to the socket specified with the :option:`kitty --listen-on` command
 line option, if you use the value :code:`socket-only`. The latter is useful if
 you want to prevent programs running on a remote computer over ssh from
 controlling kitty.
+'''))
+
+
+o('listen_on', 'none', long_text=_('''
+Tell kitty to listen to the specified unix/tcp socket for remote control
+connections. Note that this will apply to all kitty instances. It can be
+overridden by the :option:`kitty --listen-on` command line flag. This
+option accepts only UNIX sockets, such as unix:${TEMP}/mykitty or (on Linux)
+unix:@mykitty. Environment variables are expanded. If {kitty_pid} is present
+then it is replaced by the PID of the kitty process, otherwise the PID of the kitty
+process is appended to the value, with a hyphen. This option is ignored unless
+you also set :opt:`allow_remote_control` to enable remote control. See the
+help for :option:`kitty --listen-on` for more details.
 '''))
 
 o(

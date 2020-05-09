@@ -1,8 +1,38 @@
-kitty (0.17.1-1yk1eoan) eoan; urgency=medium
+kitty (0.17.4-1yk1focal) focal; urgency=medium
+
+  * Patch terminfo so Emacs detects 24-bit color support
+
+ -- Yuri Khan <yurivkhan@gmail.com>  Sat, 09 May 2020 23:23:00 +0700
+
+kitty (0.17.4-1) unstable; urgency=medium
+
+  * New upstream version
+    + Fix test failures on 64-bit big-endian builds.
+    + Use -fpic to fix build failure on sparc64.
+
+ -- James McCoy <jamessan@debian.org>  Sat, 09 May 2020 09:52:08 -0400
+
+kitty (0.17.3-1) unstable; urgency=medium
+
+  [ James McCoy ]
+  * New upstream release
+    + Fix crash when using drag and drop.  (Closes: #956576)
+    + Update to Unicode 13.0
+    + Add strikethrough capability to terminfo entry
+  * upstream/metadata: Add upstream URLs
+
+  [ Debian Janitor ]
+  * Set upstream metadata fields: Repository.
+
+ -- James McCoy <jamessan@debian.org>  Fri, 24 Apr 2020 08:58:35 -0400
+
+kitty (0.17.1-1) unstable; urgency=medium
 
   * New upstream release
+  * Bump python3-dev Build-Depends to 3.6
+  * Declare compliance with Policy 4.5.0, no changes needed
 
- -- Yuri Khan <yurivkhan@gmail.com>  Sat, 28 Mar 2020 19:50:18 +0700
+ -- James McCoy <jamessan@debian.org>  Sat, 28 Mar 2020 10:02:27 -0400
 
 kitty (0.15.0-1) unstable; urgency=medium
 

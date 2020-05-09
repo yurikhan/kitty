@@ -198,7 +198,7 @@ class Boss:
                 os_window_id = create_os_window(
                         initial_window_size_func(opts_for_size, self.cached_values),
                         pre_show_callback,
-                        appname, wname or self.args.name or wclass, wclass)
+                        self.args.title or appname, wname or self.args.name or wclass, wclass)
         tm = TabManager(os_window_id, self.opts, self.args, startup_session)
         self.os_window_map[os_window_id] = tm
         return os_window_id
@@ -336,19 +336,41 @@ class Boss:
                 if not getattr(err, 'hide_traceback', False):
                     response['tb'] = traceback.format_exc()
         else:
-            response = {'ok': False, 'error': 'Remote control is disabled. Add allow_remote_control to your kitty.conf'}
+            no_response = False
+            try:
+                no_response = json.loads(cmd).get('no_response')
+            except Exception:
+                pass
+            if not no_response:
+                response = {'ok': False, 'error': 'Remote control is disabled. Add allow_remote_control to your kitty.conf'}
         return response
 
+    def remote_control(self, *args: str) -> None:
+        from .remote_control import parse_rc_args
+        from .rc.base import command_for_name, parse_subcommand_cli, PayloadGetter
+        try:
+            global_opts, items = parse_rc_args(['@'] + list(args))
+            if not items:
+                return
+            cmd = items[0]
+            c = command_for_name(cmd)
+            opts, items = parse_subcommand_cli(c, items)
+            payload = c.message_to_kitty(global_opts, opts, items)
+            c.response_from_kitty(self, self.active_window, PayloadGetter(c, payload if isinstance(payload, dict) else {}))
+        except (Exception, SystemExit) as e:
+            self.show_error(_('remote_control mapping failed'), str(e))
+
     def peer_message_received(self, msg_bytes: bytes) -> Optional[bytes]:
-        msg = msg_bytes.decode('utf-8')
-        cmd_prefix = '\x1bP@kitty-cmd'
-        if msg.startswith(cmd_prefix):
-            cmd = msg[len(cmd_prefix):-2]
+        cmd_prefix = b'\x1bP@kitty-cmd'
+        terminator = b'\x1b\\'
+        if msg_bytes.startswith(cmd_prefix) and msg_bytes.endswith(terminator):
+            cmd = msg_bytes[len(cmd_prefix):-len(terminator)].decode('utf-8')
             response = self._handle_remote_command(cmd, from_peer=True)
             if response is None:
                 return None
-            return (cmd_prefix + json.dumps(response) + '\x1b\\').encode('utf-8')
-        data = json.loads(msg)
+            return cmd_prefix + json.dumps(response).encode('utf-8') + terminator
+
+        data = json.loads(msg_bytes.decode('utf-8'))
         if isinstance(data, dict) and data.get('cmd') == 'new_instance':
             from .cli_stub import CLIOptions
             startup_id = data.get('startup_id')
@@ -534,7 +556,9 @@ class Boss:
             sz = os_window_font_size(os_window_id)
             if sz:
                 os_window_font_size(os_window_id, sz, True)
-                tm.update_dpi_based_sizes()
+                for tab in tm:
+                    for window in tab:
+                        window.on_dpi_change(sz)
                 tm.resize()
 
     def _set_os_window_background_opacity(self, os_window_id: int, opacity: float) -> None:
@@ -700,6 +724,9 @@ class Boss:
                     text = '\n'.join(parse_uri_list(text))
                 w.paste(text)
 
+    def confirm_os_window_close(self, os_window_id: int) -> None:
+        mark_os_window_for_close(os_window_id)
+
     def on_os_window_closed(self, os_window_id: int, viewport_width: int, viewport_height: int) -> None:
         self.cached_values['window-size'] = viewport_width, viewport_height
         tm = self.os_window_map.pop(os_window_id, None)
@@ -755,7 +782,7 @@ class Boss:
         window: Optional[Window] = None,
         custom_callback: Optional[Callable] = None,
         action_on_removal: Optional[Callable] = None
-    ) -> Optional[Window]:
+    ) -> Any:
         orig_args, args = list(args), list(args)
         from kittens.runner import create_kitten_handler
         end_kitten = create_kitten_handler(kitten, orig_args)
@@ -766,8 +793,7 @@ class Boss:
             w = window
             tab = w.tabref() if w else None
         if end_kitten.no_ui:
-            end_kitten(None, getattr(w, 'id', None), self)
-            return None
+            return end_kitten(None, getattr(w, 'id', None), self)
 
         if w is not None and tab is not None and w.overlay_for is None:
             args[0:0] = [config_dir, kitten]
