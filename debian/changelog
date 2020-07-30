@@ -1,3 +1,12 @@
+kitty (0.18.2-1) UNRELEASED; urgency=medium
+
+  * New upstream release (Closes: #966107)
+    + Backwards incompatibility: The numbers used to encode mouse buttons for
+      "send_mouse_event" function that can be used in kittens have been
+      changed
+
+ -- James McCoy <jamessan@debian.org>  Thu, 30 Jul 2020 07:43:24 -0400
+
 kitty (0.17.4-1) unstable; urgency=medium
 
   * New upstream version
