@@ -253,17 +253,6 @@ typedef struct {FONTS_DATA_HEAD} *FONTS_DATA_HANDLE;
 
 #define clear_sprite_position(cell) (cell).sprite_x = 0; (cell).sprite_y = 0; (cell).sprite_z = 0;
 
-#define left_shift_line(line, at, num) { \
-    for(index_type __i__ = (at); __i__ < (line)->xnum - (num); __i__++) { \
-        COPY_CELL(line, __i__ + (num), line, __i__) \
-    } \
-    if ((((line)->gpu_cells[(at)].attrs) & WIDTH_MASK) != 1) { \
-        (line)->cpu_cells[(at)].ch = BLANK_CHAR; \
-        (line)->gpu_cells[(at)].attrs = BLANK_CHAR ? 1 : 0; \
-        clear_sprite_position((line)->gpu_cells[(at)]); \
-    }\
-}
-
 #define ensure_space_for(base, array, type, num, capacity, initial_cap, zero_mem) \
     if ((base)->capacity < num) { \
         size_t _newcap = MAX((size_t)initial_cap, MAX(2 * (base)->capacity, (size_t)num)); \
@@ -314,7 +303,6 @@ void enter_event(void);
 void mouse_event(int, int, int);
 void focus_in_event(void);
 void scroll_event(double, double, int, int);
-void fake_scroll(int, bool);
 void set_special_key_combo(int glfw_key, int mods, bool is_native);
 void on_key_input(GLFWkeyevent *ev);
 void request_window_attention(id_type, bool);
@@ -324,5 +312,10 @@ void play_canberra_sound(const char *which_sound, const char *event_id);
 SPRITE_MAP_HANDLE alloc_sprite_map(unsigned int, unsigned int);
 SPRITE_MAP_HANDLE free_sprite_map(SPRITE_MAP_HANDLE);
 
-static inline void safe_close(int fd) { while(close(fd) != 0 && errno == EINTR); }
+static inline void safe_close(int fd, const char* file UNUSED, const int line UNUSED) {
+#if 0
+    printf("Closing fd: %d from file: %s line: %d\n", fd, file, line);
+#endif
+    while(close(fd) != 0 && errno == EINTR);
+}
 void log_event(const char *format, ...) __attribute__((format(printf, 1, 2)));

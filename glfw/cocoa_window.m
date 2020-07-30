@@ -1460,6 +1460,11 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window,
         }
         else if (ctxconfig->source == GLFW_EGL_CONTEXT_API)
         {
+            // EGL implementation on macOS use CALayer* EGLNativeWindowType so we
+            // need to get the layer for EGL window surface creation.
+            [window->ns.view setWantsLayer:YES];
+            window->ns.layer = [window->ns.view layer];
+
             if (!_glfwInitEGL())
                 return false;
             if (!_glfwCreateContextEGL(window, ctxconfig, fbconfig))
@@ -1522,7 +1527,8 @@ void _glfwPlatformSetWindowTitle(_GLFWwindow* window UNUSED, const char* title)
 void _glfwPlatformSetWindowIcon(_GLFWwindow* window UNUSED,
                                 int count UNUSED, const GLFWimage* images UNUSED)
 {
-    // Regular windows do not have icons
+    _glfwInputError(GLFW_FEATURE_UNAVAILABLE,
+                    "Cocoa: Regular windows do not have icons on macOS");
 }
 
 void _glfwPlatformGetWindowPos(_GLFWwindow* window, int* xpos, int* ypos)
@@ -1848,6 +1854,11 @@ void _glfwPlatformSetWindowFloating(_GLFWwindow* window, bool enabled)
         [window->ns.object setLevel:NSNormalWindowLevel];
 }
 
+void _glfwPlatformSetWindowMousePassthrough(_GLFWwindow* window, bool enabled)
+{
+    [window->ns.object setIgnoresMouseEvents:enabled];
+}
+
 float _glfwPlatformGetWindowOpacity(_GLFWwindow* window)
 {
     return (float) [window->ns.object alphaValue];
@@ -1856,6 +1867,17 @@ float _glfwPlatformGetWindowOpacity(_GLFWwindow* window)
 void _glfwPlatformSetWindowOpacity(_GLFWwindow* window, float opacity)
 {
     [window->ns.object setAlphaValue:opacity];
+}
+
+void _glfwPlatformSetRawMouseMotion(_GLFWwindow *window UNUSED, bool enabled UNUSED)
+{
+    _glfwInputError(GLFW_FEATURE_UNIMPLEMENTED,
+                    "Cocoa: Raw mouse motion not yet implemented");
+}
+
+bool _glfwPlatformRawMouseMotionSupported(void)
+{
+    return false;
 }
 
 void
@@ -2086,6 +2108,47 @@ const char* _glfwPlatformGetClipboardString(void)
     _glfw.ns.clipboardString = _glfw_strdup([object UTF8String]);
 
     return _glfw.ns.clipboardString;
+}
+
+EGLenum _glfwPlatformGetEGLPlatform(EGLint** attribs)
+{
+    if (_glfw.egl.ANGLE_platform_angle)
+    {
+        int type = 0;
+
+        if (_glfw.egl.ANGLE_platform_angle_opengl)
+        {
+            if (_glfw.hints.init.angleType == GLFW_ANGLE_PLATFORM_TYPE_OPENGL)
+                type = EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE;
+        }
+
+        if (_glfw.egl.ANGLE_platform_angle_metal)
+        {
+            if (_glfw.hints.init.angleType == GLFW_ANGLE_PLATFORM_TYPE_METAL)
+                type = EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE;
+        }
+
+        if (type)
+        {
+            *attribs = calloc(3, sizeof(EGLint));
+            (*attribs)[0] = EGL_PLATFORM_ANGLE_TYPE_ANGLE;
+            (*attribs)[1] = type;
+            (*attribs)[2] = EGL_NONE;
+            return EGL_PLATFORM_ANGLE_ANGLE;
+        }
+    }
+
+    return 0;
+}
+
+EGLNativeDisplayType _glfwPlatformGetEGLNativeDisplay(void)
+{
+    return EGL_DEFAULT_DISPLAY;
+}
+
+EGLNativeWindowType _glfwPlatformGetEGLNativeWindow(_GLFWwindow* window)
+{
+    return window->ns.layer;
 }
 
 void _glfwPlatformGetRequiredInstanceExtensions(char** extensions)

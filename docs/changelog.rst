@@ -4,6 +4,127 @@ Changelog
 |kitty| is a feature full, cross-platform, *fast*, GPU based terminal emulator.
 To update |kitty|, :doc:`follow the instructions <binary>`.
 
+0.18.2 [2020-07-28]
+--------------------
+
+- X11: Improve handling of multiple keyboards. Now pressing a modifier key in
+  one keyboard and a normal key in another works (:iss:`2362`). Don't rebuild
+  keymaps on new keyboard events that only change geometry (:iss:`2787`).
+  Better handling of multiple keyboards with incompatible layouts (:iss:`2726`)
+
+- Improve anti-aliasing of triangular box drawing characters, noticeable on
+  low-resolution screens (:iss:`2844`)
+
+- Fix ``kitty @ send-text`` not working reliably when using a socket for remote
+  control (:iss:`2852`)
+
+- Implement support for box drawing rounded-corners characters (:iss:`2240`)
+
+- Allow setting the class for new OS windows in a session file
+
+- When a character from the Unicode Dingbat block is followed by a space, use
+  the extra space to render a larger version of the character (:iss:`2850`)
+
+- macOS: Fix the LC_TYPE env var being set to UTF-8 on systems in which the
+  language and country code do not form a valid locale (:iss:`1233`)
+
+- macOS: Fix :kbd:`cmd+plus` not changing font size (:iss:`2839`)
+
+- Make neighboring window selection in grid and splits layouts more intelligent
+  (:pull:`2840`)
+
+- Allow passing the current selection to kittens (:iss:`2796`)
+
+- Fix pre-edit text not always being cleared with ibus input (:iss:`2862`)
+
+- Allow setting the :opt:`background_opacity` of new OS windows created via
+  :option:`kitty --single-instance` using the :option:`kitty --override` command line
+  argument (:iss:`2806`)
+
+- Fix the CSI J (Erase in display ED) escape code not removing line continued
+  markers (:iss:`2809`)
+
+- hints kitten: In linenumber mode expand paths that starts with ~
+  (:iss:`2822`)
+
+- Fix ``launch --location=last`` not working (:iss:`2841`)
+
+- Fix incorrect centering when a PUA or symbol glyph is followed by more than one space
+
+- Have the :opt:`confirm_os_window_close` option also apply when closing tabs
+  with multiple windows (:iss:`2857`)
+
+- Add support for legacy DECSET codes 47, 1047 and 1048 (:pull:`2871`)
+
+- macOS: no longer render emoji 20% below the baseline. This caused some emoji
+  to be cut-off and also look misaligned with very high cells (:iss:`2873`)
+
+- macOS: Make the window id of OS windows available in the ``WINDOWID``
+  environment variable (:pull:`2877`)
+
+- Wayland: Fix a regression in 0.18.0 that could cause crashes related to mouse
+  cursors in some rare circumstances (:iss:`2810`)
+
+- Fix change in window size that does not change number of cells not being
+  reported to the kernel (:iss:`2880`)
+
+
+0.18.1 [2020-06-23]
+--------------------
+
+- macOS: Fix for diff kitten not working with python 3.8 (:iss:`2780`)
+
+
+0.18.0 [2020-06-20]
+--------------------
+
+- Allow multiple overlay windows per normal window
+
+- Add an option :opt:`confirm_os_window_close` to ask for confirmation
+  when closing an OS window with multiple kitty windows.
+
+- Tall and Fat layouts: Add a ``mirrored`` option to put the full size window
+  on the opposite edge of the screen (:iss:`2654`)
+
+- Tall and Fat layouts: Add mappable actions to increase or decrease the number
+  of full size windows (:iss:`2688`)
+
+- Allow sending arbitrary signals to the current foreground process in a window
+  using either a mapping in kitty.conf or via remote control (:iss:`2778`)
+
+- Allow sending the back and forward mouse buttons to terminal applications
+  (:pull:`2742`)
+
+- **Backwards incompatibility**: The numbers used to encode mouse buttons
+  for the ``send_mouse_event`` function that can be used in kittens have
+  been changed (see :ref:`send_mouse_event`).
+
+- Add a new mappable ``quit`` action to quit kitty completely.
+
+- Fix marks using different colors with regexes using only a single color
+  (:pull:`2663`)
+
+- Linux: Workaround for broken Nvidia drivers for old cards (:iss:`456`)
+
+- Wayland: Fix kitty being killed on some Wayland compositors if a hidden window
+  has a lot of output (:iss:`2329`)
+
+- BSD: Fix controlling terminal not being established (:pull:`2686`)
+
+- Add support for the CSI REP escape code (:pull:`2702`)
+
+- Wayland: Fix mouse cursor rendering on HiDPI screens (:pull:`2709`)
+
+- X11: Recompile keymaps on XkbNewKeyboardNotify events (:iss:`2726`)
+
+- X11: Reduce startup time by ~25% by only querying GLX for framebuffer
+  configurations once (:iss:`2754`)
+
+- macOS: Notarize the kitty application bundle (:iss:`2040`)
+
+- Fix the kitty shell launched via a mapping needlessly requiring
+  :opt:`allow_remote_control` to be turned on.
+
 
 0.17.4 [2020-05-09]
 --------------------

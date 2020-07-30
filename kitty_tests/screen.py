@@ -176,21 +176,29 @@ class TestScreen(BaseTest):
         def all_lines(s):
             return tuple(str(s.line(i)) for i in range(s.lines))
 
+        def continuations(s):
+            return tuple(s.line(i).is_continued() for i in range(s.lines))
+
         init()
-        s.erase_in_display()
+        s.erase_in_display(0)
         self.ae(all_lines(s), ('12345', '12', '', '', ''))
+        self.ae(continuations(s), (False, True, False, False, False))
 
         init()
         s.erase_in_display(1)
         self.ae(all_lines(s), ('', '   45', '12345', '12345', '12345'))
+        self.ae(continuations(s), (False, False, True, True, True))
 
         init()
         s.erase_in_display(2)
         self.ae(all_lines(s), ('', '', '', '', ''))
         self.assertTrue(s.line(0).cursor_from(1).bold)
+        self.ae(continuations(s), (False, False, False, False, False))
+
         init()
         s.erase_in_display(2, True)
         self.ae(all_lines(s), ('', '', '', '', ''))
+        self.ae(continuations(s), (False, False, False, False, False))
         self.assertFalse(s.line(0).cursor_from(1).bold)
 
     def test_cursor_movement(self):
@@ -333,10 +341,10 @@ class TestScreen(BaseTest):
                     s.cursor_position(region + 1, 1), nl()
                     s.cursor_position(region, 1), s.draw(ch)
                     s.cursor_position(region, s.columns), s.draw(ch.lower())
-            for l in range(2, region + 2):
-                c = chr(ord('I') + l - 2)
-                before = '\t' if l % 4 == 0 else ' '
-                self.ae(c + ' ' * (s.columns - 3) + before + c.lower(), str(s.line(l)))
+            for ln in range(2, region + 2):
+                c = chr(ord('I') + ln - 2)
+                before = '\t' if ln % 4 == 0 else ' '
+                self.ae(c + ' ' * (s.columns - 3) + before + c.lower(), str(s.line(ln)))
             s.reset_mode(DECOM)
         # Test that moving cursor outside the margins works as expected
         s = self.create_screen(10, 10)

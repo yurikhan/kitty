@@ -86,8 +86,8 @@ newly launched child process.
 
 --location
 type=choices
-default=last
-choices=first,after,before,neighbor,last,vsplit,hsplit
+default=default
+choices=first,after,before,neighbor,last,vsplit,hsplit,default
 Where to place the newly created window when it is added to a tab which
 already has existing windows in it. :code:`after` and :code:`before` place the new
 window before or after the active window. :code:`neighbor` is a synonym for :code:`after`.
@@ -95,7 +95,8 @@ Also applies to creating a new tab, where the value of :code:`after`
 will cause the new tab to be placed next to the current tab instead of at the end.
 The values of :code:`vsplit` and :code:`hsplit` are only used by the :code:`splits`
 layout and control if the new window is placed in a vertical or horizontal split
-with the currently active window.
+with the currently active window. The default is to place the window in a
+layout dependent manner, typically, after the currently active window.
 
 
 --allow-remote-control
@@ -254,7 +255,7 @@ def launch(boss: Boss, opts: LaunchCLIOptions, args: List[str], target_tab: Opti
                 kw['cwd_from'] = active_child.pid_for_cwd
         else:
             kw['cwd'] = opts.cwd
-    if opts.location != 'last':
+    if opts.location != 'default':
         kw['location'] = opts.location
     if opts.copy_colors and active:
         kw['copy_colors_from'] = active
@@ -273,7 +274,7 @@ def launch(boss: Boss, opts: LaunchCLIOptions, args: List[str], target_tab: Opti
                     x = str(active.id)
             final_cmd.append(x)
         kw['cmd'] = final_cmd
-    if opts.type == 'overlay' and active and not active.overlay_window_id:
+    if opts.type == 'overlay' and active:
         kw['overlay_for'] = active.id
     if opts.stdin_source != 'none':
         q = str(opts.stdin_source)

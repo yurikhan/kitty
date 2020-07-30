@@ -275,7 +275,7 @@ if you specify a program-to-run you can use the special placeholder
         p('\n\n' + as_rst(
             global_options_spec, message=cli_msg, usage='command ...', appname='kitty @'))
         from kitty.rc.base import cli_params_for
-        for cmd_name in all_command_names():
+        for cmd_name in sorted(all_command_names()):
             func = command_for_name(cmd_name)
             p(f'.. _at_{func.name}:\n')
             p('kitty @', func.name + '\n' + '-' * 120)
@@ -326,7 +326,7 @@ def write_remote_control_protocol_docs() -> None:  # {{{
                 p(' ', desc), p()
         p(), p()
 
-    with open(f'generated/rc.rst', 'w') as f:
+    with open('generated/rc.rst', 'w') as f:
         p = partial(print, file=f)
         for name in sorted(all_command_names()):
             cmd = command_for_name(name)

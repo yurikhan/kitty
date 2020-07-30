@@ -10,6 +10,9 @@ from kitty.options_stub import Options
 
 # Constants {{{
 KITTY_VCS_REV: str
+NO_CLOSE_REQUESTED: int
+IMPERATIVE_CLOSE_REQUESTED: int
+CLOSE_BEING_CONFIRMED: int
 ERROR_PREFIX: str
 GLSL_VERSION: int
 GLFW_IBEAM_CURSOR: int
@@ -272,7 +275,7 @@ GLFW_CONTEXT_VERSION_MINOR: int
 GLFW_CONTEXT_REVISION: int
 GLFW_CONTEXT_ROBUSTNESS: int
 GLFW_OPENGL_FORWARD_COMPAT: int
-GLFW_OPENGL_DEBUG_CONTEXT: int
+GLFW_CONTEXT_DEBUG: int
 GLFW_OPENGL_PROFILE: int
 GLFW_OPENGL_API: int
 GLFW_OPENGL_ES_API: int
@@ -544,7 +547,7 @@ def update_window_title(
 
 
 def update_window_visibility(
-    os_window_id: int, tab_id: int, window_id: int, window_idx: int,
+    os_window_id: int, tab_id: int, window_id: int,
     visible: bool
 ) -> None:
     pass
@@ -706,7 +709,15 @@ def cocoa_get_lang() -> Optional[str]:
     pass
 
 
-def mark_os_window_for_close(os_window_id: int, yes: bool = True) -> bool:
+def mark_os_window_for_close(os_window_id: int, cr_type: int = 2) -> bool:
+    pass
+
+
+def set_application_quit_request(cr_type: int = 2) -> None:
+    pass
+
+
+def current_application_quit_request() -> int:
     pass
 
 
@@ -770,11 +781,11 @@ def x11_window_id(os_window_id: int) -> int:
     pass
 
 
-def swap_tabs(os_window_id: int, a: int, b: int) -> None:
+def cocoa_window_id(os_window_id: int) -> int:
     pass
 
 
-def swap_windows(os_window_id: int, tab_id: int, a: int, b: int) -> None:
+def swap_tabs(os_window_id: int, a: int, b: int) -> None:
     pass
 
 
@@ -782,7 +793,7 @@ def set_active_tab(os_window_id: int, a: int) -> None:
     pass
 
 
-def set_active_window(os_window_id: int, tab_id: int, window_idx: int) -> None:
+def set_active_window(os_window_id: int, tab_id: int, window_id: int) -> None:
     pass
 
 
@@ -1063,7 +1074,7 @@ def set_tab_bar_render_data(
 
 
 def set_window_render_data(
-    os_window_id: int, tab_id: int, window_id: int, window_idx: int,
+    os_window_id: int, tab_id: int, window_id: int,
     xstart: float, ystart: float, dx: float, dy: float, screen: Screen,
     left: int, top: int, right: int, bottom: int
 ) -> None:

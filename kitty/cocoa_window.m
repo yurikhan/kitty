@@ -14,6 +14,7 @@
 // Needed for _NSGetProgname
 #include <crt_externs.h>
 #include <objc/runtime.h>
+#include <xlocale.h>
 
 #if (MAC_OS_X_VERSION_MAX_ALLOWED < 101200)
 #define NSWindowStyleMaskResizable NSResizableWindowMask
@@ -389,6 +390,12 @@ cocoa_focus_window(void *w) {
     [window makeKeyWindow];
 }
 
+long
+cocoa_window_number(void *w) {
+    NSWindow *window = (NSWindow*)w;
+    return [window windowNumber];
+}
+
 size_t
 cocoa_get_workspace_ids(void *w, size_t *workspace_ids, size_t array_sz) {
     NSWindow *window = (NSWindow*)w;
@@ -419,7 +426,13 @@ cocoa_get_lang(PyObject UNUSED *self) {
         locale = [[NSLocale currentLocale] localeIdentifier];
     }
     if (!locale) { Py_RETURN_NONE; }
-    return Py_BuildValue("s", [locale UTF8String]);
+    // Make sure the locale value is valid, that is it can be used
+    // to construct an actual locale
+    const char* locale_utf8 = [locale UTF8String];
+    locale_t test_locale = newlocale(LC_ALL_MASK, locale_utf8, NULL);
+    if (!test_locale) { Py_RETURN_NONE; }
+    freelocale(test_locale);
+    return Py_BuildValue("s", locale_utf8);
 
     } // autoreleasepool
 }

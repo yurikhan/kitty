@@ -140,6 +140,20 @@ def float_parse(func: str, rest: str) -> FuncArgsType:
     return func, (float(rest),)
 
 
+@func_with_args('signal_child')
+def signal_child_parse(func: str, rest: str) -> FuncArgsType:
+    import signal
+    signals = []
+    for q in rest.split():
+        try:
+            signum = getattr(signal, q.upper())
+        except AttributeError:
+            log_error(f'Unknown signal: {rest} ignoring')
+        else:
+            signals.append(signum)
+    return func, tuple(signals)
+
+
 @func_with_args('change_font_size')
 def parse_change_font_size(func: str, rest: str) -> Tuple[str, Tuple[bool, Optional[str], float]]:
     vals = rest.strip().split(maxsplit=1)
@@ -311,7 +325,7 @@ def parse_marker_spec(ftype: str, parts: Sequence[str]) -> Tuple[str, Union[str,
 def toggle_marker(func: str, rest: str) -> FuncArgsType:
     parts = rest.split(maxsplit=1)
     if len(parts) != 2:
-        raise ValueError('{} if not a valid marker specification'.format(rest))
+        raise ValueError('{} is not a valid marker specification'.format(rest))
     ftype, spec = parts
     parts = spec.split()
     return func, list(parse_marker_spec(ftype, parts))

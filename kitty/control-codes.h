@@ -110,10 +110,10 @@
 #define ESC_DECRC '8'
 
 // Set normal keypad mode
-#define ESC_DECPNM '>'
+#define ESC_DECKPNM '>'
 
 // Set alternate keypad mode
-#define ESC_DECPAM  '='
+#define ESC_DECKPAM  '='
 
 // ECMA-48 CSI sequences.
 // ---------------------
@@ -187,6 +187,9 @@
 
 // *Horizontal position relative*: Same as :data:`CUF`.
 #define HPR 'a'
+
+// Repeat the preceding graphic character Ps times.
+#define REP 'b'
 
 // *Device Attributes*.
 #define DA 'c'

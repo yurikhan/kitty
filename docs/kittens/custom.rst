@@ -58,7 +58,8 @@ You can pass arguments to kittens by defining them in the map directive in
 These will be available as the ``args`` parameter in the ``main()`` and
 ``handle_result()`` functions. Note also that the current working directory
 of the kitten is set to the working directory of whatever program is
-running in the active kitty window.
+running in the active kitty window. The special argument ``@selection``
+is replaced by the currently selected text in the active kitty window.
 
 
 Passing the contents of the screen to the kitten
@@ -87,7 +88,8 @@ This will send the plain text of the active window to the kitten's
 :file:`STDIN`. For text with formatting escape codes, use ``ansi``
 instead. If you want line wrap markers as well, use ``screen-ansi``
 or just ``screen``. For the scrollback buffer as well, use
-``history``, ``ansi-history`` or ``screen-history``.
+``history``, ``ansi-history`` or ``screen-history``. To get
+the currently selected text, use ``selection``.
 
 
 Using kittens to script kitty, without any terminal UI
@@ -132,6 +134,8 @@ layout, by simply adding the line::
 To the ``handle_result()`` function, above.
 
 
+.. _send_mouse_event:
+
 Sending mouse events
 --------------------
 
@@ -142,12 +146,13 @@ those using::
     send_mouse_event(screen, x, y, button, action, mods)
 
 ``screen`` is the ``screen`` attribute of the window you want to send the event
-to. ``x`` and ``y`` are the 0-indexed coordinates. ``button`` is
-``GLFW_MOUSE_BUTTON_{button}`` where ``{button}`` is one of ``LEFT``,
-``RIGHT``, ``MIDDLE`` or a digit from ``1`` to ``8``. ``action`` is one of
-``PRESS``, ``RELEASE``, ``DRAG`` or ``MOVE``. ``mods`` is a bitmask of
-``GLFW_MOD_{mod}`` where ``{mod}`` is one of ``SHIFT``, ``CONTROL`` or ``ALT``.
-All the mentioned constants are imported from ``kitty.fast_data_types``.
+to. ``x`` and ``y`` are the 0-indexed coordinates. ``button`` is a number using
+the same numbering as X11 (left: ``1``, middle: ``2``, right: ``3``, scroll up:
+``4``, scroll down: ``5``, scroll left: ``6``, scroll right: ``7``, back:
+``8``, forward: ``9``). ``action`` is one of ``PRESS``, ``RELEASE``, ``DRAG``
+or ``MOVE``. ``mods`` is a bitmask of ``GLFW_MOD_{mod}`` where ``{mod}`` is one
+of ``SHIFT``, ``CONTROL`` or ``ALT``. All the mentioned constants are imported
+from ``kitty.fast_data_types``.
 
 For example, to send a left click at position x: 2, y: 3 to the active window::
 

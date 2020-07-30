@@ -146,6 +146,7 @@ on_key_input(GLFWkeyevent *ev) {
                 schedule_write_to_child(w->id, 1, text, strlen(text));
                 debug("committed pre-edit text: %s\n", text);
             } else debug("committed pre-edit text: (null)\n");
+            screen_draw_overlay_text(screen, NULL);
             return;
         case 0:
             // for macOS, update ime position on every key input
@@ -203,8 +204,7 @@ on_key_input(GLFWkeyevent *ev) {
 }
 
 void
-fake_scroll(int amount, bool upwards) {
-    Window *w = active_window();
+fake_scroll(Window *w, int amount, bool upwards) {
     if (!w) return;
     int key = upwards ? GLFW_KEY_UP : GLFW_KEY_DOWN;
     while (amount-- > 0) {
