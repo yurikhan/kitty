@@ -1,11 +1,12 @@
-kitty (0.18.3-1) UNRELEASED; urgency=medium
+kitty (0.18.3-1) unstable; urgency=medium
 
   * New upstream release (Closes: #966107)
     + Backwards incompatibility: The numbers used to encode mouse buttons for
       "send_mouse_event" function that can be used in kittens have been
       changed
+  * rules: Build launcher before running tests
 
- -- James McCoy <jamessan@debian.org>  Wed, 12 Aug 2020 21:24:22 -0400
+ -- James McCoy <jamessan@debian.org>  Wed, 12 Aug 2020 22:32:41 -0400
 
 kitty (0.17.4-1) unstable; urgency=medium
 
