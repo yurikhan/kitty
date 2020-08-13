@@ -29,6 +29,7 @@ override_dh_auto_test: export HOME=$(CURDIR)/debian/fakehome
 override_dh_auto_test:
 ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
 	mkdir -p "$(HOME)"
+	env HOME="$(HOME)" python3 setup.py $(V) build-launcher
 	env HOME="$(HOME)" python3 setup.py $(V) test
 endif
 
