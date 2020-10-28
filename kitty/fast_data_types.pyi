@@ -461,7 +461,7 @@ def coretext_all_fonts() -> Tuple[CoreTextFont, ...]:
 
 
 def add_timer(
-    callback: Callable[[Optional[int]], bool],
+    callback: Callable[[Optional[int]], None],
     interval: float,
     repeats: bool = True
 ) -> int:
@@ -519,9 +519,8 @@ def dbus_send_notification(
 def cocoa_send_notification(
     identifier: Optional[str],
     title: str,
-    informative_text: str,
-    path_to_img: Optional[str],
-    subtitle: Optional[str] = None
+    body: Optional[str],
+    subtitle: Optional[str],
 ) -> None:
     pass
 
@@ -945,7 +944,10 @@ class HistoryBuf:
     def as_text(self, callback: Callable[[str], None], as_ansi: bool, insert_wrap_markers: bool) -> None:
         pass
 
-    def pagerhist_as_text(self, callback: Callable[[str], None]) -> None:
+    def pagerhist_as_text(self) -> str:
+        pass
+
+    def pagerhist_as_bytes(self) -> bytes:
         pass
 
 
@@ -1063,6 +1065,15 @@ class Screen:
         pass
 
     def erase_in_display(self, how: int = 0, private: bool = False) -> None:
+        pass
+
+    def focus_changed(self, focused: bool) -> bool:
+        pass
+
+    def has_focus(self) -> bool:
+        pass
+
+    def has_activity_since_last_focus(self) -> bool:
         pass
 
 
