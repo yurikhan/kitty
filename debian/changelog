@@ -1,8 +1,11 @@
-kitty (0.19.1-1) UNRELEASED; urgency=medium
+kitty (0.19.1-1) unstable; urgency=medium
 
   * New upstream release
+  * d/copyright: Add information for uthash.h
+  * d/control: Add new Build-Depends on liblcms2-dev
+  * Use system uthash-dev instead of shipped version
 
- -- James McCoy <jamessan@debian.org>  Wed, 28 Oct 2020 22:14:34 -0400
+ -- James McCoy <jamessan@debian.org>  Wed, 28 Oct 2020 22:43:42 -0400
 
 kitty (0.18.3-1) unstable; urgency=medium
 
