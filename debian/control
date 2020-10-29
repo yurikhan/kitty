@@ -15,6 +15,7 @@ Build-Depends:
  libfreetype6-dev,
  libgl1-mesa-dev,
  libharfbuzz-dev (>= 1.5.0),
+ liblcms2-dev,
  libpng-dev,
  libx11-xcb-dev,
  libxcursor-dev,
