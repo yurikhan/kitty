@@ -28,6 +28,7 @@ Build-Depends:
  python3-dev (>= 3.6),
  python3-pil <!nocheck>,
  python3-sphinx,
+ uthash-dev,
  wayland-protocols [linux-any],
  zlib1g-dev,
 
