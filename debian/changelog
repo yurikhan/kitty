@@ -1,8 +1,11 @@
-kitty (0.19.2-1) UNRELEASED; urgency=medium
+kitty (0.19.2-1) unstable; urgency=medium
 
   * New upstream release
+  * Add override for repeated-path-segment
+  * Declare compliance with Policy 4.5.1, no changes needed
+  * Bump debhelper-compat to 13
 
- -- James McCoy <jamessan@debian.org>  Mon, 30 Nov 2020 14:48:32 -0500
+ -- James McCoy <jamessan@debian.org>  Mon, 30 Nov 2020 15:38:53 -0500
 
 kitty (0.19.1-1) unstable; urgency=medium
 
