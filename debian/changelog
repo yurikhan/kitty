@@ -1,3 +1,9 @@
+kitty (0.19.2-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+
+ -- James McCoy <jamessan@debian.org>  Mon, 30 Nov 2020 14:48:32 -0500
+
 kitty (0.19.1-1) unstable; urgency=medium
 
   * New upstream release
