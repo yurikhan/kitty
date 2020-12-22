@@ -1,9 +1,9 @@
-kitty (0.19.3-1) UNRELEASED; urgency=medium
+kitty (0.19.3-1) unstable; urgency=medium
 
   * New upstream release
     + Fix arbitrary command execution via graphics protocol.  CVE-2020-35605
 
- -- James McCoy <jamessan@debian.org>  Tue, 22 Dec 2020 13:33:31 -0500
+ -- James McCoy <jamessan@debian.org>  Tue, 22 Dec 2020 15:08:30 -0500
 
 kitty (0.19.2-1) unstable; urgency=medium
 
