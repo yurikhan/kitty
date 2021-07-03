@@ -130,12 +130,48 @@ font_group_is_unused(FontGroup *fg) {
     return true;
 }
 
+void
+free_maps(Font *font) {
+#define free_a_map(type, attr) {\
+    type *s, *t; \
+    for (size_t i = 0; i < sizeof(font->attr)/sizeof(font->attr[0]); i++) { \
+        s = font->attr[i].next; \
+        while (s) { \
+            t = s; \
+            s = s->next; \
+            free(t); \
+        } \
+    }\
+    memset(font->attr, 0, sizeof(font->attr)); \
+}
+    free_a_map(SpritePosition, sprite_map);
+    free_a_map(SpecialGlyphCache, special_glyph_cache);
+#undef free_a_map
+}
+
+static inline void
+del_font(Font *f) {
+    Py_CLEAR(f->face);
+    free(f->ffs_hb_features); f->ffs_hb_features = NULL;
+    free_maps(f);
+    f->bold = false; f->italic = false;
+}
+
+static inline void
+del_font_group(FontGroup *fg) {
+    free(fg->canvas); fg->canvas = NULL;
+    fg->sprite_map = free_sprite_map(fg->sprite_map);
+    for (size_t i = 0; i < fg->fonts_count; i++) del_font(fg->fonts + i);
+    free(fg->fonts); fg->fonts = NULL;
+}
+
 static inline void
 trim_unused_font_groups(void) {
     save_window_font_groups();
     size_t i = 0;
     while (i < num_font_groups) {
         if (font_group_is_unused(font_groups + i)) {
+            del_font_group(font_groups + i);
             size_t num_to_right = (--num_font_groups) - i;
             if (!num_to_right) break;
             memmove(font_groups + i, font_groups + 1 + i, num_to_right * sizeof(FontGroup));
@@ -176,7 +212,7 @@ font_group_for(double font_sz_in_pts, double logical_dpi_x, double logical_dpi_y
 
 static inline void
 clear_canvas(FontGroup *fg) {
-    if (fg->canvas) memset(fg->canvas, 0, CELLS_IN_CANVAS * fg->cell_width * fg->cell_height * sizeof(pixel));
+    if (fg->canvas) memset(fg->canvas, 0, sizeof(pixel) * CELLS_IN_CANVAS * fg->cell_width * fg->cell_height);
 }
 
 
@@ -283,25 +319,6 @@ sprite_tracker_current_layout(FONTS_DATA_HANDLE data, unsigned int *x, unsigned 
 }
 
 void
-free_maps(Font *font) {
-#define free_a_map(type, attr) {\
-    type *s, *t; \
-    for (size_t i = 0; i < sizeof(font->attr)/sizeof(font->attr[0]); i++) { \
-        s = font->attr[i].next; \
-        while (s) { \
-            t = s; \
-            s = s->next; \
-            free(t); \
-        } \
-    }\
-    memset(font->attr, 0, sizeof(font->attr)); \
-}
-    free_a_map(SpritePosition, sprite_map);
-    free_a_map(SpecialGlyphCache, special_glyph_cache);
-#undef free_a_map
-}
-
-void
 clear_sprite_map(Font *font) {
 #define CLEAR(s) s->filled = false; s->rendered = false; s->colored = false; s->glyph = 0; zero_at_ptr(&s->extra_glyphs); s->x = 0; s->y = 0; s->z = 0; s->ligature_index = 0;
     SpritePosition *s;
@@ -385,22 +402,6 @@ init_font(Font *f, PyObject *face, bool bold, bool italic, bool emoji_presentati
 }
 
 static inline void
-del_font(Font *f) {
-    Py_CLEAR(f->face);
-    free(f->ffs_hb_features); f->ffs_hb_features = NULL;
-    free_maps(f);
-    f->bold = false; f->italic = false;
-}
-
-static inline void
-del_font_group(FontGroup *fg) {
-    free(fg->canvas); fg->canvas = NULL;
-    fg->sprite_map = free_sprite_map(fg->sprite_map);
-    for (size_t i = 0; i < fg->fonts_count; i++) del_font(fg->fonts + i);
-    free(fg->fonts); fg->fonts = NULL;
-}
-
-static inline void
 free_font_groups(void) {
     if (font_groups) {
         for (size_t i = 0; i < num_font_groups; i++) del_font_group(font_groups + i);
@@ -457,7 +458,7 @@ calc_cell_metrics(FontGroup *fg) {
     fg->cell_width = cell_width; fg->cell_height = cell_height;
     fg->baseline = baseline; fg->underline_position = underline_position; fg->underline_thickness = underline_thickness, fg->strikethrough_position = strikethrough_position, fg->strikethrough_thickness = strikethrough_thickness;
     free(fg->canvas);
-    fg->canvas = calloc(CELLS_IN_CANVAS * fg->cell_width * fg->cell_height, sizeof(pixel));
+    fg->canvas = calloc((size_t)CELLS_IN_CANVAS * fg->cell_width * fg->cell_height, sizeof(pixel));
     if (!fg->canvas) fatal("Out of memory allocating canvas for font group");
 }
 
@@ -595,11 +596,14 @@ START_ALLOW_CASE_RANGE
         case 0x2500 ... 0x2573:
         case 0x2574 ... 0x259f:
         case 0xe0b0 ... 0xe0b4:
+        case 0x2800 ... 0x28ff:
         case 0xe0b6:
         case 0xe0b8: // 
         case 0xe0ba: //   
         case 0xe0bc: // 
         case 0xe0be: //   
+        case 0x1fb00 ... 0x1fb8b:  // symbols for legacy computing
+        case 0x1fba0 ... 0x1fbae:
             return BOX_FONT;
         default:
             ans = in_symbol_maps(fg, cpu_cell->ch);
@@ -637,8 +641,14 @@ START_ALLOW_CASE_RANGE
             return ch - 0x2500; // IDs from 0x00 to 0x9f
         case 0xe0b0 ... 0xe0d4:
             return 0xa0 + ch - 0xe0b0; // IDs from 0xa0 to 0xc4
+        case 0x1fb00 ... 0x1fb8b:
+            return 0xc5 + ch - 0x1fb00; // IDs from 0xc5 to 0x150
+        case 0x1fba0 ... 0x1fbae:  // IDs from 0x151 to 0x15f
+            return 0x151 + ch - 0x1fba0;
+        case 0x2800 ... 0x28ff:
+            return 0x160 + ch - 0x2800;
         default:
-            return 0xff;
+            return 0xffff;
     }
 END_ALLOW_CASE_RANGE
 }
@@ -1132,6 +1142,11 @@ render_run(FontGroup *fg, CPUCell *first_cpu_cell, GPUCell *first_gpu_cell, inde
     }
 }
 
+static inline bool
+is_non_emoji_dingbat(char_type ch) {
+    return 0x2700 <= ch && ch <= 0x27bf && !is_emoji(ch);
+}
+
 void
 render_line(FONTS_DATA_HANDLE fg_, Line *line, index_type lnum, Cursor *cursor, DisableLigature disable_ligature_strategy) {
 #define RENDER if (run_font_idx != NO_FONT && i > first_cell_in_run) { \
@@ -1154,7 +1169,7 @@ render_line(FONTS_DATA_HANDLE fg_, Line *line, index_type lnum, Cursor *cursor, 
 
         if (
                 cell_font_idx != MISSING_FONT &&
-                ((is_fallback_font && !is_emoji_presentation && is_symbol(cpu_cell->ch)) || (cell_font_idx != BOX_FONT && is_private_use(cpu_cell->ch)))
+                ((is_fallback_font && !is_emoji_presentation && is_symbol(cpu_cell->ch)) || (cell_font_idx != BOX_FONT && (is_private_use(cpu_cell->ch))) || is_non_emoji_dingbat(cpu_cell->ch))
         ) {
             unsigned int desired_cells = 1;
             if (cell_font_idx > 0) {
@@ -1168,7 +1183,7 @@ render_line(FONTS_DATA_HANDLE fg_, Line *line, index_type lnum, Cursor *cursor, 
             unsigned int num_spaces = 0;
             while ((line->cpu_cells[i+num_spaces+1].ch == ' ')
                     && num_spaces < MAX_NUM_EXTRA_GLYPHS_PUA
-                    && num_spaces < desired_cells
+                    && num_spaces + 1 < desired_cells
                     && i + num_spaces + 1 < line->xnum) {
                 num_spaces++;
                 // We have a private use char followed by space(s), render it as a multi-cell ligature.
@@ -1388,7 +1403,7 @@ concat_cells(PyObject UNUSED *self, PyObject *args) {
     PyObject *cells;
     if (!PyArg_ParseTuple(args, "IIpO!", &cell_width, &cell_height, &is_32_bit, &PyTuple_Type, &cells)) return NULL;
     size_t num_cells = PyTuple_GET_SIZE(cells), r, c, i;
-    PyObject *ans = PyBytes_FromStringAndSize(NULL, 4 * cell_width * cell_height * num_cells);
+    PyObject *ans = PyBytes_FromStringAndSize(NULL, (size_t)4 * cell_width * cell_height * num_cells);
     if (ans == NULL) return PyErr_NoMemory();
     pixel *dest = (pixel*)PyBytes_AS_STRING(ans);
     for (r = 0; r < cell_height; r++) {

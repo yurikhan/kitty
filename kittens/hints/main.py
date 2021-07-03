@@ -45,12 +45,21 @@ ESCAPE = K['ESCAPE']
 
 class Mark:
 
-    __slots__ = ('index', 'start', 'end', 'text', 'groupdict')
+    __slots__ = ('index', 'start', 'end', 'text', 'is_hyperlink', 'group_id', 'groupdict')
 
-    def __init__(self, index: int, start: int, end: int, text: str, groupdict: Any):
+    def __init__(
+            self,
+            index: int, start: int, end: int,
+            text: str,
+            groupdict: Any,
+            is_hyperlink: bool = False,
+            group_id: Optional[str] = None
+    ):
         self.index, self.start, self.end = index, start, end
         self.text = text
         self.groupdict = groupdict
+        self.is_hyperlink = is_hyperlink
+        self.group_id = group_id
 
 
 @lru_cache(maxsize=2048)
@@ -72,7 +81,7 @@ def decode_hint(x: str, alphabet: str = DEFAULT_HINT_ALPHABET) -> int:
     return i
 
 
-def highlight_mark(m: Mark, text: str, current_input: str, alphabet: str) -> str:
+def highlight_mark(m: Mark, text: str, current_input: str, alphabet: str, colors: Dict[str, str]) -> str:
     hint = encode_hint(m.index, alphabet)
     if current_input and not hint.startswith(current_input):
         return faint(text)
@@ -80,19 +89,19 @@ def highlight_mark(m: Mark, text: str, current_input: str, alphabet: str) -> str
     text = text[len(hint):]
     return styled(
         hint,
-        fg='black',
-        bg='green',
+        fg=colors['foreground'],
+        bg=colors['background'],
         bold=True
     ) + styled(
-        text, fg='gray', fg_intense=True, bold=True
+        text, fg=colors['text'], fg_intense=True, bold=True
     )
 
 
-def render(text: str, current_input: str, all_marks: Sequence[Mark], ignore_mark_indices: Set[int], alphabet: str) -> str:
+def render(text: str, current_input: str, all_marks: Sequence[Mark], ignore_mark_indices: Set[int], alphabet: str, colors: Dict[str, str]) -> str:
     for mark in reversed(all_marks):
         if mark.index in ignore_mark_indices:
             continue
-        mtext = highlight_mark(mark, text[mark.start:mark.end], current_input, alphabet)
+        mtext = highlight_mark(mark, text[mark.start:mark.end], current_input, alphabet, colors)
         text = text[:mark.start] + mtext + text[mark.end:]
 
     text = text.replace('\0', '')
@@ -105,10 +114,13 @@ class Hints(Handler):
     def __init__(self, text: str, all_marks: Sequence[Mark], index_map: Dict[int, Mark], args: HintsCLIOptions):
         self.text, self.index_map = text, index_map
         self.alphabet = args.alphabet or DEFAULT_HINT_ALPHABET
+        self.colors = {'foreground': args.hints_foreground_color,
+                       'background': args.hints_background_color,
+                       'text': args.hints_text_color}
         self.all_marks = all_marks
         self.ignore_mark_indices: Set[int] = set()
         self.args = args
-        self.window_title = _('Choose URL') if args.type == 'url' else _('Choose text')
+        self.window_title = args.window_title or (_('Choose URL') if args.type == 'url' else _('Choose text'))
         self.multiple = args.multiple
         self.match_suffix = self.get_match_suffix(args)
         self.chosen: List[Mark] = []
@@ -198,7 +210,7 @@ class Hints(Handler):
 
     def draw_screen(self) -> None:
         if self.current_text is None:
-            self.current_text = render(self.text, self.current_input, self.all_marks, self.ignore_mark_indices, self.alphabet)
+            self.current_text = render(self.text, self.current_input, self.all_marks, self.ignore_mark_indices, self.alphabet, self.colors)
         self.cmd.clear_screen()
         self.write(self.current_text)
 
@@ -222,6 +234,11 @@ postprocessor_map: Dict[str, PostprocessorFunc] = {}
 def postprocessor(func: PostprocessorFunc) -> PostprocessorFunc:
     postprocessor_map[func.__name__] = func
     return func
+
+
+class InvalidMatch(Exception):
+    """Raised when a match turns out to be invalid."""
+    pass
 
 
 @postprocessor
@@ -268,11 +285,29 @@ def quotes(text: str, s: int, e: int) -> Tuple[int, int]:
     return s, e
 
 
+@postprocessor
+def ip(text: str, s: int, e: int) -> Tuple[int, int]:
+    from ipaddress import ip_address
+    # Check validity of IPs (or raise InvalidMatch)
+    ip = text[s:e]
+
+    try:
+        ip_address(ip)
+    except Exception:
+        raise InvalidMatch("Invalid IP")
+
+    return s, e
+
+
 def mark(pattern: str, post_processors: Iterable[PostprocessorFunc], text: str, args: HintsCLIOptions) -> Generator[Mark, None, None]:
     pat = re.compile(pattern)
     for idx, (s, e, groupdict) in enumerate(regex_finditer(pat, args.minimum_match_length, text)):
-        for func in post_processors:
-            s, e = func(text, s, e)
+        try:
+            for func in post_processors:
+                s, e = func(text, s, e)
+        except InvalidMatch:
+            continue
+
         mark_text = text[s:e].replace('\n', '').replace('\0', '')
         yield Mark(idx, s, e, mark_text, groupdict)
 
@@ -313,6 +348,15 @@ def functions_for(args: HintsCLIOptions) -> Tuple[str, List[PostprocessorFunc]]:
         pattern = '(?m)^\\s*(.+)[\\s\0]*$'
     elif args.type == 'hash':
         pattern = '[0-9a-f]{7,128}'
+    elif args.type == 'ip':
+        pattern = (
+            # # IPv4 with no validation
+            r"((?:\d{1,3}\.){3}\d{1,3}"
+            r"|"
+            # # IPv6 with no validation
+            r"(?:[a-fA-F0-9]{0,4}:){2,7}[a-fA-F0-9]{1,4})"
+        )
+        post_processors.append(ip)
     elif args.type == 'word':
         chars = args.word_characters
         if chars is None:
@@ -366,13 +410,66 @@ def load_custom_processor(customize_processing: str) -> Any:
     return runpy.run_path(custom_path, run_name='__main__')
 
 
+def remove_sgr(text: str) -> str:
+    return re.sub(r'\x1b\[.*?m', '', text)
+
+
+def process_hyperlinks(text: str) -> Tuple[str, Tuple[Mark, ...]]:
+    hyperlinks: List[Mark] = []
+    removed_size = idx = 0
+    active_hyperlink_url: Optional[str] = None
+    active_hyperlink_id: Optional[str] = None
+    active_hyperlink_start_offset = 0
+
+    def add_hyperlink(end: int) -> None:
+        nonlocal idx, active_hyperlink_url, active_hyperlink_id, active_hyperlink_start_offset
+        assert active_hyperlink_url is not None
+        hyperlinks.append(Mark(
+            idx, active_hyperlink_start_offset, end,
+            active_hyperlink_url,
+            groupdict={},
+            is_hyperlink=True, group_id=active_hyperlink_id
+        ))
+        active_hyperlink_url = active_hyperlink_id = None
+        active_hyperlink_start_offset = 0
+        idx += 1
+
+    def process_hyperlink(m: 're.Match') -> str:
+        nonlocal removed_size, active_hyperlink_url, active_hyperlink_id, active_hyperlink_start_offset
+        raw = m.group()
+        start = m.start() - removed_size
+        removed_size += len(raw)
+        if active_hyperlink_url is not None:
+            add_hyperlink(start)
+        raw = raw[4:-2]
+        parts = raw.split(';', 1)
+        if len(parts) == 2 and parts[1]:
+            active_hyperlink_url = parts[1]
+            active_hyperlink_start_offset = start
+            if parts[0]:
+                for entry in parts[0].split(':'):
+                    if entry.startswith('id=') and len(entry) > 3:
+                        active_hyperlink_id = entry[3:]
+                        break
+
+        return ''
+
+    text = re.sub(r'\x1b\]8.+?\x1b\\', process_hyperlink, text)
+    if active_hyperlink_url is not None:
+        add_hyperlink(len(text))
+    return text, tuple(hyperlinks)
+
+
 def run(args: HintsCLIOptions, text: str, extra_cli_args: Sequence[str] = ()) -> Optional[Dict[str, Any]]:
     try:
-        text = parse_input(text)
+        text = parse_input(remove_sgr(text))
+        text, hyperlinks = process_hyperlinks(text)
         pattern, post_processors = functions_for(args)
         if args.type == 'linenum':
             args.customize_processing = '::linenum::'
-        if args.customize_processing:
+        if args.type == 'hyperlink':
+            all_marks = hyperlinks
+        elif args.customize_processing:
             m = load_custom_processor(args.customize_processing)
             if 'mark' in m:
                 all_marks = tuple(m['mark'](text, args, Mark, extra_cli_args))
@@ -381,9 +478,8 @@ def run(args: HintsCLIOptions, text: str, extra_cli_args: Sequence[str] = ()) ->
         else:
             all_marks = tuple(mark(pattern, post_processors, text, args))
         if not all_marks:
-            input(_('No {} found, press Enter to quit.').format(
-                'URLs' if args.type == 'url' else 'matches'
-                ))
+            none_of = {'url': 'URLs', 'hyperlink': 'hyperlinks'}.get(args.type, 'matches')
+            input(_('No {} found, press Enter to quit.').format(none_of))
             return None
 
         largest_index = all_marks[-1].index
@@ -418,11 +514,12 @@ programs.
 
 --type
 default=url
-choices=url,regex,path,line,hash,word,linenum
-The type of text to search for. A value of :code:`linenum` looks for error messages
-using the pattern specified with :option:`--regex`, which must have the named groups,
-path and line. If not specified, will look for :code:`path:line`.
-The :option:`--linenum-action` option controls what to do with the selected error message.
+choices=url,regex,path,line,hash,word,linenum,hyperlink,ip
+The type of text to search for. A value of :code:`linenum` is special, it looks
+for error messages using the pattern specified with :option:`--regex`, which
+must have the named groups, :code:`path` and :code:`line`. If not specified,
+will look for :code:`path:line`. The :option:`--linenum-action` option
+controls where to display the selected error message, other options are ignored.
 
 
 --regex
@@ -442,13 +539,13 @@ the form key=value.
 default=self
 type=choice
 choices=self,window,tab,os_window,background
+Where to perform the action on matched errors. :code:`self` means the current
+window, :code:`window` a new kitty window, :code:`tab` a new tab,
+:code:`os_window` a new OS window and :code:`background` run in the background.
 The action to perform on the matched errors. The actual action is whatever
-arguments are provided to the kitten, for example:
-:code:`kitty + kitten hints --type=linenum vim +{line} {path}`
-will open the matched path at the matched line number in vim. This option
-controls where the action is executed: :code:`self` means the current window,
-:code:`window` a new kitty window, :code:`tab` a new tab, :code:`os_window`
-a new OS window and :code:`background` run in the background.
+arguments are provided to the kitten, for example: :code:`kitty + kitten hints
+--type=linenum --linenum-action=tab vim +{line} {path}` will open the matched
+path at the matched line number in vim in a new kitty tab.
 
 
 --url-prefixes
@@ -512,6 +609,24 @@ type=bool-set
 Have the hints increase from top to bottom instead of decreasing from top to bottom.
 
 
+--hints-foreground-color
+default=black
+type=str
+The foreground color for hints
+
+
+--hints-background-color
+default=green
+type=str
+The background color for hints
+
+
+--hints-text-color
+default=gray
+type=str
+The foreground color for text pointed to by the hints
+
+
 --customize-processing
 Name of a python file in the kitty config directory which will be imported to provide
 custom implementations for pattern finding and performing actions
@@ -519,6 +634,9 @@ on selected matches. See https://sw.kovidgoyal.net/kitty/kittens/hints.html
 for details. You can also specify absolute paths to load the script from elsewhere.
 
 
+--window-title
+The window title for the hints window, default title is selected based on
+the type of text being hinted.
 '''.format(
     default_regex=DEFAULT_REGEX,
     line='{{line}}', path='{{path}}'
@@ -551,14 +669,19 @@ def main(args: List[str]) -> Optional[Dict[str, Any]]:
     if items and not (opts.customize_processing or opts.type == 'linenum'):
         print('Extra command line arguments present: {}'.format(' '.join(items)), file=sys.stderr)
         input(_('Press Enter to quit'))
-    return run(opts, text, items)
+    try:
+        return run(opts, text, items)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        input(_('Press Enter to quit'))
 
 
 def linenum_handle_result(args: List[str], data: Dict[str, Any], target_window_id: int, boss: BossType, extra_cli_args: Sequence[str], *a: Any) -> None:
     for m, g in zip(data['match'], data['groupdicts']):
         if m:
             path, line = g['path'], g['line']
-            path = path.split(':')[-1]
+            path = os.path.expanduser(path.split(':')[-1])
             line = int(line)
             break
     else:
@@ -582,7 +705,7 @@ def linenum_handle_result(args: List[str], data: Dict[str, Any], target_window_i
             }[action])(*cmd)
 
 
-@result_handler(type_of_input='screen')
+@result_handler(type_of_input='screen-ansi')
 def handle_result(args: List[str], data: Dict[str, Any], target_window_id: int, boss: BossType) -> None:
     if data['customize_processing']:
         m = load_custom_processor(data['customize_processing'])
@@ -634,13 +757,20 @@ def handle_result(args: List[str], data: Dict[str, Any], target_window_id: int, 
             w = boss.window_id_map.get(target_window_id)
             if w is not None:
                 cwd = w.cwd_of_child
+            if w is None:
+                w = boss.active_window
             program = None if program == 'default' else program
-            for m, groupdict in zip(matches, groupdicts):
-                if groupdict:
-                    m = []
-                    for k, v in groupdict.items():
-                        m.append('{}={}'.format(k, v or ''))
-                boss.open_url(m, program, cwd=cwd)
+            if text_type == 'hyperlink':
+                for m in matches:
+                    if w is not None:
+                        w.open_url(m, hyperlink_id=1, cwd=cwd)
+            else:
+                for m, groupdict in zip(matches, groupdicts):
+                    if groupdict:
+                        m = []
+                        for k, v in groupdict.items():
+                            m.append('{}={}'.format(k, v or ''))
+                    boss.open_url(m, program, cwd=cwd)
 
 
 if __name__ == '__main__':

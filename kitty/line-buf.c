@@ -51,6 +51,12 @@ linebuf_mark_line_clean(LineBuf *self, index_type y) {
     self->line_attrs[y] &= ~TEXT_DIRTY_MASK;
 }
 
+void
+linebuf_mark_line_as_not_continued(LineBuf *self, index_type y) {
+    self->line_attrs[y] &= ~CONTINUED_MASK;
+}
+
+
 static PyObject*
 clear(LineBuf *self, PyObject *a UNUSED) {
 #define clear_doc "Clear all lines in this LineBuf"
@@ -393,30 +399,36 @@ delete_lines(LineBuf *self, PyObject *args) {
 static PyObject*
 as_ansi(LineBuf *self, PyObject *callback) {
 #define as_ansi_doc "as_ansi(callback) -> The contents of this buffer as ANSI escaped text. callback is called with each successive line."
-    static Py_UCS4 t[5120];
     Line l = {.xnum=self->xnum};
     // remove trailing empty lines
     index_type ylimit = self->ynum - 1;
-    bool truncated;
     const GPUCell *prev_cell = NULL;
+    ANSIBuf output = {0};
     do {
         init_line(self, (&l), self->line_map[ylimit]);
-        if (line_as_ansi(&l, t, 5120, &truncated, &prev_cell) != 0) break;
+        line_as_ansi(&l, &output, &prev_cell);
+        if (output.len) break;
         ylimit--;
     } while(ylimit > 0);
 
     for(index_type i = 0; i <= ylimit; i++) {
         l.continued = ((i < self->ynum - 1) ? self->line_attrs[i+1] : self->line_attrs[i]) & CONTINUED_MASK;
         init_line(self, (&l), self->line_map[i]);
-        index_type num = line_as_ansi(&l, t, 5120, &truncated, &prev_cell);
-        if (!(l.continued) && num < 5119) t[num++] = 10; // 10 = \n
-        PyObject *ans = PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, t, num);
-        if (ans == NULL) return PyErr_NoMemory();
+        line_as_ansi(&l, &output, &prev_cell);
+        if (!l.continued) {
+            ensure_space_for(&output, buf, Py_UCS4, output.len + 1, capacity, 2048, false);
+            output.buf[output.len++] = 10; // 10 = \n
+        }
+        PyObject *ans = PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, output.buf, output.len);
+        if (ans == NULL) { PyErr_NoMemory(); goto end; }
         PyObject *ret = PyObject_CallFunctionObjArgs(callback, ans, NULL);
         Py_CLEAR(ans);
-        if (ret == NULL) return NULL;
+        if (ret == NULL) goto end;
         Py_CLEAR(ret);
     }
+end:
+    free(output.buf);
+    if (PyErr_Occurred()) return NULL;
     Py_RETURN_NONE;
 }
 
@@ -429,7 +441,10 @@ get_line(void *x, int y) {
 
 static PyObject*
 as_text(LineBuf *self, PyObject *args) {
-    return as_text_generic(args, self, get_line, self->ynum, self->xnum);
+    ANSIBuf output = {0};
+    PyObject* ans = as_text_generic(args, self, get_line, self->ynum, &output);
+    free(output.buf);
+    return ans;
 }
 
 
@@ -522,7 +537,7 @@ copy_old(LineBuf *self, PyObject *y) {
 #include "rewrap.h"
 
 void
-linebuf_rewrap(LineBuf *self, LineBuf *other, index_type *num_content_lines_before, index_type *num_content_lines_after, HistoryBuf *historybuf, index_type *track_x, index_type *track_y) {
+linebuf_rewrap(LineBuf *self, LineBuf *other, index_type *num_content_lines_before, index_type *num_content_lines_after, HistoryBuf *historybuf, index_type *track_x, index_type *track_y, ANSIBuf *as_ansi_buf) {
     index_type first, i;
     bool is_empty = true;
 
@@ -530,8 +545,8 @@ linebuf_rewrap(LineBuf *self, LineBuf *other, index_type *num_content_lines_befo
     if (other->xnum == self->xnum && other->ynum == self->ynum) {
         memcpy(other->line_map, self->line_map, sizeof(index_type) * self->ynum);
         memcpy(other->line_attrs, self->line_attrs, sizeof(bool) * self->ynum);
-        memcpy(other->cpu_cell_buf, self->cpu_cell_buf, self->xnum * self->ynum * sizeof(CPUCell));
-        memcpy(other->gpu_cell_buf, self->gpu_cell_buf, self->xnum * self->ynum * sizeof(GPUCell));
+        memcpy(other->cpu_cell_buf, self->cpu_cell_buf, (size_t)self->xnum * self->ynum * sizeof(CPUCell));
+        memcpy(other->gpu_cell_buf, self->gpu_cell_buf, (size_t)self->xnum * self->ynum * sizeof(GPUCell));
         *num_content_lines_before = self->ynum; *num_content_lines_after = self->ynum;
         return;
     }
@@ -552,7 +567,7 @@ linebuf_rewrap(LineBuf *self, LineBuf *other, index_type *num_content_lines_befo
         return;
     }
 
-    rewrap_inner(self, other, first + 1, historybuf, track_x, track_y);
+    rewrap_inner(self, other, first + 1, historybuf, track_x, track_y, as_ansi_buf);
     *num_content_lines_after = other->line->ynum + 1;
     for (i = 0; i < *num_content_lines_after; i++) other->line_attrs[i] |= TEXT_DIRTY_MASK;
     *num_content_lines_before = first + 1;
@@ -566,7 +581,9 @@ rewrap(LineBuf *self, PyObject *args) {
 
     if (!PyArg_ParseTuple(args, "O!O!", &LineBuf_Type, &other, &HistoryBuf_Type, &historybuf)) return NULL;
     index_type x = 0, y = 0;
-    linebuf_rewrap(self, other, &nclb, &ncla, historybuf, &x, &y);
+    ANSIBuf as_ansi_buf = {0};
+    linebuf_rewrap(self, other, &nclb, &ncla, historybuf, &x, &y, &as_ansi_buf);
+    free(as_ansi_buf.buf);
 
     return Py_BuildValue("II", nclb, ncla);
 }

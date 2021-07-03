@@ -23,7 +23,7 @@ from .fast_data_types import (  # noqa
     Screen as ScreenType, StartupCtx as StartupCtx
 )
 from .key_encoding import KeyEvent as KeyEventType  # noqa
-from .layout import Layout as LayoutType  # noqa
+from .layout.base import Layout as LayoutType  # noqa
 from .rc.base import RemoteCommand as RemoteCommandType  # noqa
 from .session import Session as SessionType, Tab as SessionTab  # noqa
 from .tabs import (  # noqa
@@ -43,6 +43,7 @@ from .config import (  # noqa; noqa
 )
 
 EdgeLiteral = Literal['left', 'top', 'right', 'bottom']
+MatchType = Literal['mime', 'ext', 'protocol', 'file', 'path', 'url', 'fragment_matches']
 GRT_a = Literal['t', 'T', 'q', 'p', 'd']
 GRT_f = Literal[24, 32, 100]
 GRT_t = Literal['d', 'f', 't', 's']

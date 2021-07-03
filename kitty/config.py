@@ -21,9 +21,10 @@ from .conf.utils import (
 )
 from .config_data import all_options, parse_mods, type_convert
 from .constants import cache_dir, defconf, is_macos
+from .fonts import FontFeature
 from .key_names import get_key_name_lookup, key_name_aliases
 from .options_stub import Options as OptionsStub
-from .typing import EdgeLiteral, TypedDict
+from .typing import TypedDict
 from .utils import expandvars, log_error
 
 KeySpec = Tuple[int, bool, int]
@@ -138,6 +139,20 @@ def simple_parse(func: str, rest: str) -> FuncArgsType:
 @func_with_args('set_font_size')
 def float_parse(func: str, rest: str) -> FuncArgsType:
     return func, (float(rest),)
+
+
+@func_with_args('signal_child')
+def signal_child_parse(func: str, rest: str) -> FuncArgsType:
+    import signal
+    signals = []
+    for q in rest.split():
+        try:
+            signum = getattr(signal, q.upper())
+        except AttributeError:
+            log_error(f'Unknown signal: {rest} ignoring')
+        else:
+            signals.append(signum)
+    return func, tuple(signals)
 
 
 @func_with_args('change_font_size')
@@ -311,7 +326,7 @@ def parse_marker_spec(ftype: str, parts: Sequence[str]) -> Tuple[str, Union[str,
 def toggle_marker(func: str, rest: str) -> FuncArgsType:
     parts = rest.split(maxsplit=1)
     if len(parts) != 2:
-        raise ValueError('{} if not a valid marker specification'.format(rest))
+        raise ValueError('{} is not a valid marker specification'.format(rest))
     ftype, spec = parts
     parts = spec.split()
     return func, list(parse_marker_spec(ftype, parts))
@@ -379,7 +394,7 @@ class KeyDefinition:
                 if len(expanded) > 1:
                     rest = expanded[1] + ' ' + rest
         if changed:
-            self.action = self.action._replace(args=[kitten + (' ' + rest).rstrip()])
+            self.action = self.action._replace(args=[kitten, rest.rstrip()])
 
 
 def parse_key(val: str, key_definitions: List[KeyDefinition]) -> None:
@@ -508,14 +523,6 @@ def handle_map(key: str, val: str, ans: Dict[str, Any]) -> None:
 @special_handler
 def handle_symbol_map(key: str, val: str, ans: Dict[str, Any]) -> None:
     ans['symbol_map'].update(parse_symbol_map(val))
-
-
-class FontFeature(str):
-
-    def __new__(cls, name: str, parsed: bytes) -> 'FontFeature':
-        ans: FontFeature = str.__new__(cls, name)  # type: ignore
-        ans.parsed = parsed  # type: ignore
-        return ans
 
 
 @special_handler
@@ -702,51 +709,6 @@ def cached_values_for(name: str) -> Generator[Dict, None, None]:
     except Exception as err:
         log_error('Failed to save cached values with error: {}'.format(
             err))
-
-
-def initial_window_size_func(opts: OptionsStub, cached_values: Dict) -> Callable[[int, int, float, float, float, float], Tuple[int, int]]:
-
-    if 'window-size' in cached_values and opts.remember_window_size:
-        ws = cached_values['window-size']
-        try:
-            w, h = map(int, ws)
-
-            def initial_window_size(*a: Any) -> Tuple[int, int]:
-                return w, h
-            return initial_window_size
-        except Exception:
-            log_error('Invalid cached window size, ignoring')
-
-    w, w_unit = opts.initial_window_width
-    h, h_unit = opts.initial_window_height
-
-    def get_window_size(cell_width: int, cell_height: int, dpi_x: float, dpi_y: float, xscale: float, yscale: float) -> Tuple[int, int]:
-        if not is_macos:
-            # scaling is not needed on Wayland, but is needed on macOS. Not
-            # sure about X11.
-            xscale = yscale = 1
-
-        def effective_margin(which: EdgeLiteral) -> float:
-            ans: float = getattr(opts.single_window_margin_width, which)
-            if ans < 0:
-                ans = getattr(opts.window_margin_width, which)
-            return ans
-
-        if w_unit == 'cells':
-            spacing = effective_margin('left') + effective_margin('right')
-            spacing += opts.window_padding_width.left + opts.window_padding_width.right
-            width = cell_width * w / xscale + (dpi_x / 72) * spacing + 1
-        else:
-            width = w
-        if h_unit == 'cells':
-            spacing = effective_margin('top') + effective_margin('bottom')
-            spacing += opts.window_padding_width.top + opts.window_padding_width.bottom
-            height = cell_height * h / yscale + (dpi_y / 72) * spacing + 1
-        else:
-            height = h
-        return int(width), int(height)
-
-    return get_window_size
 
 
 def commented_out_default_config() -> str:

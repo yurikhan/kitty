@@ -25,24 +25,40 @@ typedef enum MouseActions { PRESS, RELEASE, DRAG, MOVE } MouseAction;
 #define ALT_INDICATOR (1 << 3)
 #define CONTROL_INDICATOR (1 << 4)
 #define MOTION_INDICATOR  (1 << 5)
-#define EXTRA_BUTTON_INDICATOR (1 << 6)
+#define SCROLL_BUTTON_INDICATOR (1 << 6)
+#define EXTRA_BUTTON_INDICATOR (1 << 7)
 
 
 static inline unsigned int
 button_map(int button) {
     switch(button) {
         case GLFW_MOUSE_BUTTON_LEFT:
-            return 0;
-        case GLFW_MOUSE_BUTTON_RIGHT:
-            return 2;
-        case GLFW_MOUSE_BUTTON_MIDDLE:
             return 1;
+        case GLFW_MOUSE_BUTTON_RIGHT:
+            return 3;
+        case GLFW_MOUSE_BUTTON_MIDDLE:
+            return 2;
         case GLFW_MOUSE_BUTTON_4:
-            return EXTRA_BUTTON_INDICATOR;
         case GLFW_MOUSE_BUTTON_5:
-            return EXTRA_BUTTON_INDICATOR | 1;
+        case GLFW_MOUSE_BUTTON_6:
+        case GLFW_MOUSE_BUTTON_7:
+        case GLFW_MOUSE_BUTTON_8:
+            return button + 5;
         default:
             return UINT_MAX;
+    }
+}
+
+static inline unsigned int
+encode_button(unsigned int button) {
+    if (button >= 8 && button <= 11) {
+        return (button - 8) | EXTRA_BUTTON_INDICATOR;
+    } else if (button >= 4 && button <= 7) {
+        return (button - 4) | SCROLL_BUTTON_INDICATOR;
+    } else if (button >= 1 && button <= 3) {
+        return button - 1;
+    } else {
+        return UINT_MAX;
     }
 }
 
@@ -54,7 +70,7 @@ encode_mouse_event_impl(unsigned int x, unsigned int y, int mouse_tracking_proto
     if (action == MOVE) {
         cb = 3;
     } else {
-        cb = button_map(button);
+        cb = encode_button(button);
         if (cb == UINT_MAX) return 0;
     }
     if (action == DRAG || action == MOVE) cb |= MOTION_INDICATOR;
@@ -92,7 +108,16 @@ encode_mouse_event(Window *w, int button, MouseAction action, int mods) {
     unsigned int x = w->mouse_pos.cell_x + 1, y = w->mouse_pos.cell_y + 1; // 1 based indexing
     Screen *screen = w->render_data.screen;
     return encode_mouse_event_impl(x, y, screen->modes.mouse_tracking_protocol, button, action, mods);
+}
 
+static int
+encode_mouse_button(Window *w, int button, MouseAction action, int mods) {
+    return encode_mouse_event(w, button_map(button), action, mods);
+}
+
+static int
+encode_mouse_scroll(Window *w, bool upwards, int mods) {
+    return encode_mouse_event(w, upwards ? 4 : 5, PRESS, mods);
 }
 
 // }}}
@@ -171,22 +196,32 @@ cell_for_pos(Window *w, unsigned int *x, unsigned int *y, bool *in_left_half_of_
 #define HANDLER(name) static inline void name(Window UNUSED *w, int UNUSED button, int UNUSED modifiers, unsigned int UNUSED window_idx)
 
 static inline void
+set_mouse_cursor_when_dragging(void) {
+    if (mouse_cursor_shape != OPT(pointer_shape_when_dragging)) {
+        mouse_cursor_shape = OPT(pointer_shape_when_dragging);
+        set_mouse_cursor(mouse_cursor_shape);
+    }
+}
+
+static inline void
 update_drag(bool from_button, Window *w, bool is_release, int modifiers) {
     Screen *screen = w->render_data.screen;
     if (from_button) {
         if (is_release) {
             global_state.active_drag_in_window = 0;
             w->last_drag_scroll_at = 0;
-            if (screen->selection.in_progress)
+            if (screen->selections.in_progress) {
                 screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, w->mouse_pos.in_left_half_of_cell, true, false);
+            }
         }
         else {
             global_state.active_drag_in_window = w->id;
             screen_start_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, w->mouse_pos.in_left_half_of_cell, modifiers == (int)OPT(rectangle_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | (int)OPT(terminal_select_modifiers)), EXTEND_CELL);
         }
-    } else if (screen->selection.in_progress) {
+    } else if (screen->selections.in_progress) {
         screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, w->mouse_pos.in_left_half_of_cell, false, false);
     }
+    set_mouse_cursor_when_dragging();
 }
 
 static inline bool
@@ -224,6 +259,7 @@ extend_selection(Window *w, bool ended) {
     if (screen_has_selection(screen)) {
         screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, w->mouse_pos.in_left_half_of_cell, ended, false);
     }
+    set_mouse_cursor_when_dragging();
 }
 
 static inline void
@@ -239,7 +275,7 @@ extend_url(Screen *screen, Line *line, index_type *x, index_type *y, char_type s
         // we deliberately allow non-continued lines as some programs, like
         // mutt split URLs with newlines at line boundaries
         index_type new_x = line_url_end_at(line, 0, false, sentinel, next_line_starts_with_url_chars);
-        if (!new_x) break;
+        if (!new_x && !line_startswith_url_chars(line)) break;
         *y += 1; *x = new_x;
     }
 }
@@ -269,7 +305,7 @@ get_url_sentinel(Line *line, index_type url_start) {
 
 static inline void
 set_mouse_cursor_for_screen(Screen *screen) {
-    mouse_cursor_shape = screen->modes.mouse_tracking_mode == NO_TRACKING ? BEAM : OPT(pointer_shape_when_grabbed);
+    mouse_cursor_shape = screen->modes.mouse_tracking_mode == NO_TRACKING ? OPT(default_pointer_shape): OPT(pointer_shape_when_grabbed);
 }
 
 static inline void
@@ -277,6 +313,11 @@ detect_url(Screen *screen, unsigned int x, unsigned int y) {
     bool has_url = false;
     index_type url_start, url_end = 0;
     Line *line = screen_visual_line(screen, y);
+    if (line->cpu_cells[x].hyperlink_id) {
+        mouse_cursor_shape = HAND;
+        screen_mark_hyperlink(screen, x, y);
+        return;
+    }
     char_type sentinel;
     if (line) {
         url_start = line_url_start_at(line, x);
@@ -306,7 +347,7 @@ detect_url(Screen *screen, unsigned int x, unsigned int y) {
 static inline void
 handle_mouse_movement_in_kitty(Window *w, int button, bool mouse_cell_changed) {
     Screen *screen = w->render_data.screen;
-    if (screen->selection.in_progress && (button == GLFW_MOUSE_BUTTON_LEFT || button == GLFW_MOUSE_BUTTON_RIGHT)) {
+    if (screen->selections.in_progress && (button == GLFW_MOUSE_BUTTON_LEFT || button == GLFW_MOUSE_BUTTON_RIGHT)) {
         monotonic_t now = monotonic();
         if ((now - w->last_drag_scroll_at) >= ms_to_monotonic_t(20ll) || mouse_cell_changed) {
             update_drag(false, w, false, 0);
@@ -321,13 +362,13 @@ HANDLER(handle_move_event) {
     if (OPT(focus_follows_mouse)) {
         Tab *t = global_state.callback_os_window->tabs + global_state.callback_os_window->active_tab;
         if (window_idx != t->active_window) {
-            call_boss(switch_focus_to, "I", window_idx);
+            call_boss(switch_focus_to, "K", t->windows[window_idx].id);
         }
     }
     bool in_left_half_of_cell = false;
     if (!cell_for_pos(w, &x, &y, &in_left_half_of_cell, global_state.callback_os_window)) return;
     Screen *screen = w->render_data.screen;
-    detect_url(screen, x, y);
+    if(OPT(detect_urls)) detect_url(screen, x, y);
     bool mouse_cell_changed = x != w->mouse_pos.cell_x || y != w->mouse_pos.cell_y;
     bool cell_half_changed = in_left_half_of_cell != w->mouse_pos.in_left_half_of_cell;
     w->mouse_pos.cell_x = x; w->mouse_pos.cell_y = y;
@@ -341,7 +382,7 @@ HANDLER(handle_move_event) {
         handle_mouse_movement_in_kitty(w, button, mouse_cell_changed | cell_half_changed);
     } else {
         if (!mouse_cell_changed) return;
-        int sz = encode_mouse_event(w, MAX(0, button), button >=0 ? DRAG : MOVE, 0);
+        int sz = encode_mouse_button(w, MAX(0, button), button >=0 ? DRAG : MOVE, modifiers);
         if (sz > 0) { mouse_event_buf[sz] = 0; write_escape_code_to_child(screen, CSI, mouse_event_buf); }
     }
 }
@@ -366,6 +407,7 @@ multi_click(Window *w, unsigned int count) {
         screen_start_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, w->mouse_pos.in_left_half_of_cell, false, mode);
         screen_update_selection(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y, w->mouse_pos.in_left_half_of_cell, false, true);
     }
+    set_mouse_cursor_when_dragging();
 }
 
 static inline double
@@ -438,7 +480,7 @@ HANDLER(handle_button_event) {
     Tab *t = global_state.callback_os_window->tabs + global_state.callback_os_window->active_tab;
     bool is_release = !global_state.callback_os_window->mouse_button_pressed[button];
     if (window_idx != t->active_window && !is_release) {
-        call_boss(switch_focus_to, "I", window_idx);
+        call_boss(switch_focus_to, "K", t->windows[window_idx].id);
     }
     Screen *screen = w->render_data.screen;
     if (!screen) return;
@@ -450,34 +492,25 @@ HANDLER(handle_button_event) {
         );
     if (handle_in_kitty) handle_button_event_in_kitty(w, button, modifiers, is_release);
     else {
-        int sz = encode_mouse_event(w, button, is_release ? RELEASE : PRESS, modifiers);
+        int sz = encode_mouse_button(w, button, is_release ? RELEASE : PRESS, modifiers);
         if (sz > 0) { mouse_event_buf[sz] = 0; write_escape_code_to_child(screen, CSI, mouse_event_buf); }
     }
 }
 
 static inline int
 currently_pressed_button(void) {
-    for (int i = 0; i < GLFW_MOUSE_BUTTON_5; i++) {
+    for (int i = 0; i <= GLFW_MOUSE_BUTTON_8; i++) {
         if (global_state.callback_os_window->mouse_button_pressed[i]) return i;
     }
     return -1;
 }
 
 HANDLER(handle_event) {
-    switch(button) {
-        case -1:
-            button = currently_pressed_button();
-            handle_move_event(w, button, modifiers, window_idx);
-            break;
-        case GLFW_MOUSE_BUTTON_LEFT:
-        case GLFW_MOUSE_BUTTON_RIGHT:
-        case GLFW_MOUSE_BUTTON_MIDDLE:
-        case GLFW_MOUSE_BUTTON_4:
-        case GLFW_MOUSE_BUTTON_5:
-            handle_button_event(w, button, modifiers, window_idx);
-            break;
-        default:
-            break;
+    if (button == -1) {
+        button = currently_pressed_button();
+        handle_move_event(w, button, modifiers, window_idx);
+    } else {
+        handle_button_event(w, button, modifiers, window_idx);
     }
 }
 
@@ -669,9 +702,8 @@ scroll_event(double UNUSED xoffset, double yoffset, int flags, int modifiers) {
         s = (int)round(pixels) / (int)global_state.callback_os_window->fonts_data->cell_height;
         screen->pending_scroll_pixels = pixels - s * (int) global_state.callback_os_window->fonts_data->cell_height;
     } else {
-        if (screen->linebuf == screen->main_linebuf || !screen->modes.mouse_tracking_mode) {
-            // Only use wheel_scroll_multiplier if we are scrolling kitty scrollback or in mouse
-            // tracking mode, where the application is responsible for interpreting scroll events
+        if (!screen->modes.mouse_tracking_mode) {
+            // Dont use multiplier if we are sending events to the application
             yoffset *= OPT(wheel_scroll_multiplier);
         } else if (OPT(wheel_scroll_multiplier) < 0) {
             // ensure that changing scroll direction still works, even though
@@ -686,20 +718,17 @@ scroll_event(double UNUSED xoffset, double yoffset, int flags, int modifiers) {
     }
     if (s == 0) return;
     bool upwards = s > 0;
-    if (screen->linebuf == screen->main_linebuf) {
-        screen_history_scroll(screen, abs(s), upwards);
-    } else {
-        if (screen->modes.mouse_tracking_mode) {
-            int sz = encode_mouse_event(w, upwards ? GLFW_MOUSE_BUTTON_4 : GLFW_MOUSE_BUTTON_5, PRESS, modifiers);
-            if (sz > 0) {
-                mouse_event_buf[sz] = 0;
-                for (s = abs(s); s > 0; s--) {
-                    write_escape_code_to_child(screen, CSI, mouse_event_buf);
-                }
+    if (screen->modes.mouse_tracking_mode) {
+        int sz = encode_mouse_scroll(w, upwards, modifiers);
+        if (sz > 0) {
+            mouse_event_buf[sz] = 0;
+            for (s = abs(s); s > 0; s--) {
+                write_escape_code_to_child(screen, CSI, mouse_event_buf);
             }
-        } else {
-            fake_scroll(abs(s), upwards);
         }
+    } else {
+        if (screen->linebuf == screen->main_linebuf) screen_history_scroll(screen, abs(s), upwards);
+        else fake_scroll(w, abs(s), upwards);
     }
 }
 

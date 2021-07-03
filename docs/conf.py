@@ -24,7 +24,7 @@ from pygments.lexer import RegexLexer, bygroups  # type: ignore
 from pygments.token import (  # type: ignore
     Comment, Keyword, Literal, Name, Number, String, Whitespace
 )
-from sphinx import addnodes  # type: ignore
+from sphinx import addnodes, version_info  # type: ignore
 from sphinx.environment.adapters.toctree import TocTree  # type: ignore
 from sphinx.util.logging import getLogger  # type: ignore
 
@@ -275,7 +275,7 @@ if you specify a program-to-run you can use the special placeholder
         p('\n\n' + as_rst(
             global_options_spec, message=cli_msg, usage='command ...', appname='kitty @'))
         from kitty.rc.base import cli_params_for
-        for cmd_name in all_command_names():
+        for cmd_name in sorted(all_command_names()):
             func = command_for_name(cmd_name)
             p(f'.. _at_{func.name}:\n')
             p('kitty @', func.name + '\n' + '-' * 120)
@@ -326,7 +326,7 @@ def write_remote_control_protocol_docs() -> None:  # {{{
                 p(' ', desc), p()
         p(), p()
 
-    with open(f'generated/rc.rst', 'w') as f:
+    with open('generated/rc.rst', 'w') as f:
         p = partial(print, file=f)
         for name in sorted(all_command_names()):
             cmd = command_for_name(name)
@@ -555,7 +555,7 @@ def process_shortcut_link(env: Any, refnode: Any, has_explicit_title: bool, titl
 
 
 def write_conf_docs(app: Any, all_kitten_names: Iterable[str]) -> None:
-    app.add_lexer('conf', ConfLexer())
+    app.add_lexer('conf', ConfLexer() if version_info[0] < 3 else ConfLexer)
     app.add_object_type(
         'opt', 'opt',
         indextemplate="pair: %s; Config Setting",
@@ -604,7 +604,7 @@ def setup(app: Any) -> None:
     write_cli_docs(kn)
     write_remote_control_protocol_docs()
     write_conf_docs(app, kn)
-    app.add_lexer('session', SessionLexer())
+    app.add_lexer('session', SessionLexer() if version_info[0] < 3 else SessionLexer)
     app.add_role('link', link_role)
     app.add_role('iss', partial(num_role, 'issues'))
     app.add_role('pull', partial(num_role, 'pull'))

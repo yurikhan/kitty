@@ -8,6 +8,7 @@
 
 #include "graphics.h"
 #include "monotonic.h"
+#define MAX_PARAMS 256
 
 typedef enum ScrollTypes { SCROLL_LINE = -999999, SCROLL_PAGE, SCROLL_FULL } ScrollType;
 
@@ -27,11 +28,28 @@ typedef struct {
 typedef enum SelectionExtendModes { EXTEND_CELL, EXTEND_WORD, EXTEND_LINE } SelectionExtendMode;
 
 typedef struct {
+    index_type x, x_limit;
+} XRange;
+
+typedef struct {
+    int y, y_limit;
+    XRange first, body, last;
+} IterationData;
+
+typedef struct {
     SelectionBoundary start, end, input_start, input_current;
     unsigned int start_scrolled_by, end_scrolled_by;
-    bool in_progress, rectangle_select;
-    SelectionExtendMode extend_mode;
+    bool rectangle_select;
+    IterationData last_rendered;
+    int sort_y, sort_x;
 } Selection;
+
+typedef struct {
+    Selection *items;
+    size_t count, capacity, last_rendered_count;
+    bool in_progress;
+    SelectionExtendMode extend_mode;
+} Selections;
 
 #define SAVEPOINTS_SZ 256
 
@@ -41,14 +59,8 @@ typedef struct {
     bool use_latin1;
     Cursor cursor;
     bool mDECOM, mDECAWM, mDECSCNM;
-
+    bool is_valid;
 } Savepoint;
-
-
-typedef struct {
-    Savepoint buf[SAVEPOINTS_SZ];
-    index_type start_of_data, count;
-} SavepointBuffer;
 
 
 typedef struct {
@@ -64,15 +76,6 @@ typedef struct {
 } OverlayLine;
 
 typedef struct {
-    index_type x, x_limit;
-} XRange;
-
-typedef struct {
-    int y, y_limit;
-    XRange first, body, last;
-} IterationData;
-
-typedef struct {
     PyObject_HEAD
 
     unsigned int columns, lines, margin_top, margin_bottom, charset, scrolled_by;
@@ -82,14 +85,14 @@ typedef struct {
     id_type window_id;
     uint32_t utf8_state, utf8_codepoint, *g0_charset, *g1_charset, *g_charset;
     unsigned int current_charset;
-    Selection selection, url_range;
+    Selections selections, url_ranges;
     struct {
-        IterationData selection, url;
         unsigned int cursor_x, cursor_y, scrolled_by;
+        index_type lines, columns;
     } last_rendered;
     bool use_latin1, is_dirty, scroll_changed, reload_all_gpu_data;
     Cursor *cursor;
-    SavepointBuffer main_savepoints, alt_savepoints;
+    Savepoint main_savepoint, alt_savepoint;
     SavemodesBuffer modes_savepoints;
     PyObject *callbacks, *test_child;
     LineBuf *linebuf, *main_linebuf, *alt_linebuf;
@@ -120,6 +123,11 @@ typedef struct {
     } pending_mode;
     DisableLigature disable_ligatures;
     PyObject *marker;
+    bool has_focus;
+    bool has_activity_since_last_focus;
+    hyperlink_id_type active_hyperlink_id;
+    HYPERLINK_POOL_HANDLE hyperlink_pool;
+    ANSIBuf as_ansi_buf;
 } Screen;
 
 
@@ -137,7 +145,7 @@ void screen_erase_in_line(Screen *, unsigned int, bool);
 void screen_erase_in_display(Screen *, unsigned int, bool);
 void screen_draw(Screen *screen, uint32_t codepoint);
 void screen_ensure_bounds(Screen *self, bool use_margins, bool cursor_was_within_margins);
-void screen_toggle_screen_buffer(Screen *self);
+void screen_toggle_screen_buffer(Screen *self, bool, bool);
 void screen_normal_keypad_mode(Screen *self);
 void screen_alternate_keypad_mode(Screen *self);
 void screen_change_default_color(Screen *self, unsigned int which, uint32_t col);
@@ -165,6 +173,7 @@ void screen_cursor_up1(Screen *self, unsigned int count/*=1*/);
 void screen_cursor_to_line(Screen *screen, unsigned int line);
 void screen_insert_lines(Screen *self, unsigned int count/*=1*/);
 void screen_delete_lines(Screen *self, unsigned int count/*=1*/);
+void screen_repeat_character(Screen *self, unsigned int count);
 void screen_delete_characters(Screen *self, unsigned int count);
 void screen_erase_characters(Screen *self, unsigned int count);
 void screen_set_margins(Screen *self, unsigned int top, unsigned int bottom);
@@ -176,6 +185,7 @@ void screen_handle_print(Screen *, PyObject *cmd);
 void screen_designate_charset(Screen *, uint32_t which, uint32_t as);
 void screen_use_latin1(Screen *, bool);
 void set_title(Screen *self, PyObject*);
+void desktop_notify(Screen *self, unsigned int, PyObject*);
 void set_icon(Screen *self, PyObject*);
 void set_dynamic_color(Screen *self, unsigned int code, PyObject*);
 void clipboard_control(Screen *self, PyObject*);
@@ -201,6 +211,8 @@ bool screen_history_scroll(Screen *self, int amt, bool upwards);
 Line* screen_visual_line(Screen *self, index_type y);
 unsigned long screen_current_char_width(Screen *self);
 void screen_mark_url(Screen *self, index_type start_x, index_type start_y, index_type end_x, index_type end_y);
+void set_active_hyperlink(Screen*, char*, char*);
+hyperlink_id_type screen_mark_hyperlink(Screen*, index_type, index_type);
 void screen_handle_graphics_command(Screen *self, const GraphicsCommand *cmd, const uint8_t *payload);
 bool screen_open_url(Screen*);
 void screen_dirty_sprite_positions(Screen *self);

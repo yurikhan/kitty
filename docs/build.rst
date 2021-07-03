@@ -18,6 +18,7 @@ Run-time dependencies:
     * harfbuzz >= 1.5.0
     * zlib
     * libpng
+    * liblcms2
     * freetype (not needed on macOS)
     * fontconfig (not needed on macOS)
     * libcanberra (not needed on macOS)
@@ -29,7 +30,7 @@ Build-time dependencies:
     * gcc or clang
     * pkg-config
     * For building on Linux in addition to the above dependencies you might also need to install the ``-dev`` packages for:
-      ``libdbus-1-dev``, ``libxcursor-dev``, ``libxrandr-dev``, ``libxi-dev``, ``libxinerama-dev``, ``libgl1-mesa-dev``, ``libxkbcommon-x11-dev``, ``libfontconfig-dev``, and ``libpython-dev``,
+      ``libdbus-1-dev``, ``libxcursor-dev``, ``libxrandr-dev``, ``libxi-dev``, ``libxinerama-dev``, ``libgl1-mesa-dev``, ``libxkbcommon-x11-dev``, ``libfontconfig-dev``, and ``libpython3-dev``,
       if they are not already installed by your distro.
 
 Install and run from source
@@ -63,10 +64,32 @@ This :file:`kitty.app` unlike the released one does not include its own copy of
 python and the other dependencies. So if you ever un-install/upgrade those dependencies
 you might have to rebuild the app.
 
-Note that the released :file:`kitty.dmg` includes all dependencies, unlike the
-:file:`kitty.app` built above and is built automatically by using the :file:`kitty` branch of
-`build-calibre <https://github.com/kovidgoyal/build-calibre>`_ however, that
-is designed to run on Linux and is not for the faint of heart.
+.. note::
+   The released :file:`kitty.dmg` includes all dependencies, unlike the
+   :file:`kitty.app` built above and is built automatically by using the
+   :file:`kitty` branch of `build-calibre
+   <https://github.com/kovidgoyal/build-calibre>`_ however, that is designed to
+   run on Linux and is not for the faint of heart.
+
+
+.. note::
+   Apple disallows certain functionality, such as notifications for unsigned applications.
+   If you need this functionality, you can try signing the built kitty.app with
+   a self signed certificate, see for example, `here
+   <https://stackoverflow.com/questions/27474751/how-can-i-codesign-an-app-without-being-in-the-mac-developer-program/27474942>`_.
+
+Build and run from source with Nix
+-------------------------------------------
+
+On NixOS or any other Linux or macOS system with the Nix package manager
+installed, execute `nix-shell
+<https://nixos.org/guides/nix-pills/developing-with-nix-shell.html>`_ to create
+the correct environment to build kitty or use ``nix-shell --pure`` instead to
+eliminate most of the influence of the outside system, e.g. globally installed
+packages. ``nix-shell`` will automatically fetch all required dependencies and
+make them available in the newly spawned shell.
+
+Then proceed with ``make`` or ``make app`` according to the platform specific instructions above.
 
 
 Note for Linux/macOS packagers

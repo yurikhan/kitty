@@ -1,4 +1,4 @@
-// unicode data, built from the unicode standard on: 2020-04-06
+// unicode data, built from the unicode standard on: 2020-09-22
 // see gen-wcwidth.py
 #pragma once
 #include "data-types.h"
@@ -7,6 +7,7 @@ START_ALLOW_CASE_RANGE
 
 static int
 wcwidth_std(int32_t code) {
+	if (LIKELY(0x20 <= code && code <= 0x7e)) return 1;
 	switch(code) {
 		// Flags (26 codepoints) {{{
 		case 0x1f1e6 ... 0x1f1ff:
@@ -2847,7 +2848,7 @@ wcwidth_std(int32_t code) {
 	}
 	return 1;
 }
-static bool
+static inline bool
 is_emoji_presentation_base(uint32_t code) {
 	switch(code) {
 		case 0x23:

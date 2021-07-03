@@ -11,6 +11,7 @@
 import sys
 from contextlib import suppress
 from typing import Any
+from functools import partial
 
 
 CSI = '\033['
@@ -34,6 +35,14 @@ def screen_bell() -> None:
     pass
 
 
+def screen_normal_keypad_mode() -> None:
+    write('\x1b>')
+
+
+def screen_alternate_keypad_mode() -> None:
+    write('\x1b=')
+
+
 def screen_cursor_position(y: int, x: int) -> None:
     write(CSI + '%s;%sH' % (y, x))
 
@@ -42,8 +51,24 @@ def screen_cursor_forward(amt: int) -> None:
     write(CSI + '%sC' % amt)
 
 
+def screen_save_cursor() -> None:
+    write('\x1b7')
+
+
+def screen_restore_cursor() -> None:
+    write('\x1b8')
+
+
 def screen_cursor_back1(amt: int) -> None:
     write(CSI + '%sD' % amt)
+
+
+def screen_save_modes() -> None:
+    write(CSI + '?s')
+
+
+def screen_restore_modes() -> None:
+    write(CSI + '?r')
 
 
 def screen_designate_charset(which: int, to: int) -> None:
@@ -60,8 +85,8 @@ def screen_cursor_to_column(c: int) -> None:
     write(CSI + '%dG' % c)
 
 
-def screen_cursor_to_line(l: int) -> None:
-    write(CSI + '%dd' % l)
+def screen_cursor_to_line(ln: int) -> None:
+    write(CSI + '%dd' % ln)
 
 
 def screen_set_mode(x: int, private: bool) -> None:
@@ -78,6 +103,18 @@ def screen_set_margins(t: int, b: int) -> None:
 
 def screen_indexn(n: int) -> None:
     write(CSI + '%dS' % n)
+
+
+def screen_delete_characters(count: int) -> None:
+    write(CSI + '%dP' % count)
+
+
+def screen_insert_characters(count: int) -> None:
+    write(CSI + '%d@' % count)
+
+
+def screen_scroll(count: int) -> None:
+    write(CSI + '%dS' % count)
 
 
 def screen_erase_in_display(how: int, private: bool) -> None:
@@ -106,6 +143,10 @@ def screen_carriage_return() -> None:
 
 def screen_linefeed() -> None:
     write('\n')
+
+
+def screen_tab() -> None:
+    write('\t')
 
 
 def screen_backspace() -> None:
@@ -137,6 +178,14 @@ def report_device_attributes(mode: int, char: int) -> None:
     write(CSI + x + 'c')
 
 
+def screen_decsace(mode: int) -> None:
+    write(CSI + str(mode) + '*x')
+
+
+def screen_set_8bit_controls(mode: int) -> None:
+    write('\x1b ' + ('G' if mode else 'F'))
+
+
 def write_osc(code: int, string: str = '') -> None:
     if string:
         string = ';' + string
@@ -144,6 +193,8 @@ def write_osc(code: int, string: str = '') -> None:
 
 
 set_dynamic_color = set_color_table_color = write_osc
+screen_push_dynamic_colors = partial(write_osc, 30001)
+screen_pop_dynamic_colors = partial(write_osc, 30101)
 
 
 def replay(raw: str) -> None:

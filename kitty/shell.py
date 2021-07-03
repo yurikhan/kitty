@@ -25,7 +25,7 @@ from .rc.base import (
 
 @lru_cache(maxsize=2)
 def match_commands() -> Tuple[str, ...]:
-    all_commands = tuple(sorted(all_command_names()))
+    all_commands = tuple(sorted(x.replace('_', '-') for x in all_command_names()))
     return tuple(sorted(all_commands + ('exit', 'help', 'quit')))
 
 
@@ -78,8 +78,7 @@ class Completer:
     def __init__(self) -> None:
         self.matches: List[str] = []
         ddir = cache_dir()
-        with suppress(FileExistsError):
-            os.makedirs(ddir)
+        os.makedirs(ddir, exist_ok=True)
         self.history_path = os.path.join(ddir, 'shell.history')
 
     def complete(self, text: str, state: int) -> Optional[str]:
@@ -162,6 +161,9 @@ def real_main(global_opts: RCOptions) -> None:
     print_help_for_seq.allow_pager = False
     print('Welcome to the kitty shell!')
     print('Use {} for assistance or {} to quit'.format(green('help'), green('exit')))
+    awid = os.environ.pop('KITTY_SHELL_ACTIVE_WINDOW_ID', None)
+    if awid is not None:
+        print('The ID of the previously active window is: {}'.format(awid))
 
     while True:
         try:

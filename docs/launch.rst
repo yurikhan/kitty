@@ -5,7 +5,7 @@ Launching programs in new windows/tabs
 
 
 |kitty| has a :code:`launch` action that can be used to run arbitrary programs
-in news windows/tabs. It can be mapped to user defined shortcuts in kitty.conf.
+in new windows/tabs. It can be mapped to user defined shortcuts in kitty.conf.
 It is very powerful and allows sending the contents of
 the current window to the launched program, as well as many other options.
 
@@ -73,6 +73,9 @@ functions for the events you are interested in, for example:
 
     def on_resize(boss, window, data):
         # Here data will contain old_geometry and new_geometry
+
+    def on_focus_change(boss, window, data):
+        # Here data kill contain focused
 
     def on_close(boss, window, data):
         # called when window is closed, typically when the program running in

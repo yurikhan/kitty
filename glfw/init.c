@@ -53,8 +53,8 @@ static GLFWerrorfun _glfwErrorCallback;
 static _GLFWinitconfig _glfwInitHints =
 {
     true,      // hat buttons
+    GLFW_ANGLE_PLATFORM_TYPE_NONE, // ANGLE backend
     false,     // debug keyboard
-    true,      // enable joystick
     {
         true,  // macOS menu bar
         true   // macOS bundle chdir
@@ -92,6 +92,7 @@ static void terminate(void)
     _glfw.mappingCount = 0;
 
     _glfwTerminateVulkan();
+    _glfwPlatformTerminateJoysticks();
     _glfwPlatformTerminate();
 
     _glfw.initialized = false;
@@ -168,6 +169,10 @@ void _glfwInputError(int code, const char* format, ...)
             strcpy(description, "The requested format is unavailable");
         else if (code == GLFW_NO_WINDOW_CONTEXT)
             strcpy(description, "The specified window has no context");
+        else if (code == GLFW_FEATURE_UNAVAILABLE)
+            strcpy(description, "The requested feature cannot be implemented for this platform");
+        else if (code == GLFW_FEATURE_UNIMPLEMENTED)
+            strcpy(description, "The requested feature has not yet been implemented for this platform");
         else
             strcpy(description, "ERROR: UNKNOWN GLFW ERROR");
     }
@@ -271,11 +276,11 @@ GLFWAPI void glfwInitHint(int hint, int value)
 {
     switch (hint)
     {
-        case GLFW_ENABLE_JOYSTICKS:
-            _glfwInitHints.enableJoysticks = value;
-            return;
         case GLFW_JOYSTICK_HAT_BUTTONS:
             _glfwInitHints.hatButtons = value;
+            return;
+        case GLFW_ANGLE_PLATFORM_TYPE:
+            _glfwInitHints.angleType = value;
             return;
         case GLFW_DEBUG_KEYBOARD:
             _glfwInitHints.debugKeyboard = value;
@@ -362,4 +367,11 @@ GLFWAPI void glfwUpdateTimer(unsigned long long timer_id, monotonic_t interval, 
 
 GLFWAPI void glfwRemoveTimer(unsigned long long timer_id) {
     _glfwPlatformRemoveTimer(timer_id);
+}
+
+GLFWAPI GLFWapplicationclosefun glfwSetApplicationCloseCallback(GLFWapplicationclosefun cbfun)
+{
+    _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
+    _GLFW_SWAP_POINTERS(_glfw.callbacks.application_close, cbfun);
+    return cbfun;
 }

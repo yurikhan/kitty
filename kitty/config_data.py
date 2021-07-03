@@ -13,12 +13,12 @@ from typing import (
 from . import fast_data_types as defines
 from .conf.definition import Option, Shortcut, option_func
 from .conf.utils import (
-    choices, positive_float, positive_int, to_bool, to_cmdline, to_color,
+    choices, positive_float, positive_int, to_bool, to_cmdline as tc, to_color,
     to_color_or_none, unit_float
 )
 from .constants import FloatEdges, config_dir, is_macos
 from .fast_data_types import CURSOR_BEAM, CURSOR_BLOCK, CURSOR_UNDERLINE
-from .layout import all_layouts
+from .layout.interface import all_layouts
 from .rgb import Color, color_as_int, color_as_sharp, color_from_int
 from .utils import log_error
 
@@ -27,6 +27,10 @@ MINIMUM_FONT_SIZE = 4
 
 mod_map = {'CTRL': 'CONTROL', 'CMD': 'SUPER', '⌘': 'SUPER',
            '⌥': 'ALT', 'OPTION': 'ALT', 'KITTY_MOD': 'KITTY'}
+
+
+def to_cmdline(x: str) -> List[str]:
+    return tc(x)
 
 
 def parse_mods(parts: Iterable[str], sc: str) -> Optional[int]:
@@ -304,6 +308,9 @@ or by defining shortcuts for it in kitty.conf, for example::
     map alt+2 disable_ligatures_in all never
     map alt+3 disable_ligatures_in tab cursor
 
+Note that this refers to programming ligatures, typically implemented using the
+:code:`calt` OpenType feature. For disabling general ligatures, use the
+:opt:`font_features` setting.
 '''))
 
 o('font_features', 'none', long_text=_('''
@@ -318,7 +325,12 @@ Note that this code is indexed by PostScript name, and not the font
 family. This allows you to define very precise feature settings; e.g. you can
 disable a feature in the italic font but not in the regular font.
 
-To get the PostScript name for a font, use :code:`kitty + list-fonts --psnames`::
+On Linux, these are read from the FontConfig database first and then this,
+setting is applied, so they can be configured in a single, central place.
+
+To get the PostScript name for a font, use :code:`kitty + list-fonts --psnames`:
+
+.. code-block:: sh
 
     $ kitty + list-fonts --psnames | grep Fira
     Fira Code
@@ -437,23 +449,24 @@ def scrollback_pager_history_size(x: str) -> int:
 o('scrollback_lines', 2000, option_type=scrollback_lines, long_text=_('''
 Number of lines of history to keep in memory for scrolling back. Memory is allocated
 on demand. Negative numbers are (effectively) infinite scrollback. Note that using
-very large scrollback is not recommended as it can slow down resizing of the terminal
-and also use large amounts of RAM.'''))
+very large scrollback is not recommended as it can slow down performance of the terminal
+and also use large amounts of RAM. Instead, consider using :opt:`scrollback_pager_history_size`.'''))
 
 o('scrollback_pager', 'less --chop-long-lines --RAW-CONTROL-CHARS +INPUT_LINE_NUMBER', option_type=to_cmdline, long_text=_('''
 Program with which to view scrollback in a new window. The scrollback buffer is
 passed as STDIN to this program. If you change it, make sure the program you
 use can handle ANSI escape sequences for colors and text formatting.
 INPUT_LINE_NUMBER in the command line above will be replaced by an integer
-representing which line should be at the top of the screen.'''))
+representing which line should be at the top of the screen. Similarly CURSOR_LINE and CURSOR_COLUMN
+will be replaced by the current cursor position.'''))
 
 o('scrollback_pager_history_size', 0, option_type=scrollback_pager_history_size, long_text=_('''
 Separate scrollback history size, used only for browsing the scrollback buffer (in MB).
 This separate buffer is not available for interactive scrolling but will be
 piped to the pager program when viewing scrollback buffer in a separate window.
-The current implementation stores one character in 4 bytes, so approximatively
-2500 lines per megabyte at 100 chars per line. A value of zero or less disables
-this feature. The maximum allowed size is 4GB.'''))
+The current implementation stores the data in UTF-8, so approximatively
+10000 lines per megabyte at 100 chars per line, for pure ASCII text, unformatted text.
+A value of zero or less disables this feature. The maximum allowed size is 4GB.'''))
 
 o('wheel_scroll_multiplier', 5.0, long_text=_('''
 Modify the amount scrolled by the mouse wheel. Note this is only used for low
@@ -510,6 +523,11 @@ def url_prefixes(x: str) -> Tuple[str, ...]:
 o('url_prefixes', 'http https file ftp', option_type=url_prefixes, long_text=_('''
 The set of URL prefixes to look for when detecting a URL under the mouse cursor.'''))
 
+o('detect_urls', True, long_text=_('''
+Detect URLs under the mouse. Detected URLs are highlighted
+with an underline and the mouse cursor becomes a hand over them.
+Even if this option is disabled, URLs are still clickable.'''))
+
 
 def copy_on_select(raw: str) -> str:
     q = raw.lower()
@@ -563,6 +581,16 @@ moving the mouse around'''))
 
 o('pointer_shape_when_grabbed', 'arrow', option_type=choices('arrow', 'beam', 'hand'), long_text=('''
 The shape of the mouse pointer when the program running in the terminal grabs the mouse.
+Valid values are: :code:`arrow`, :code:`beam` and :code:`hand`
+'''))
+
+o('default_pointer_shape', 'beam', option_type=choices('arrow', 'beam', 'hand'), long_text=('''
+The default shape of the mouse pointer.
+Valid values are: :code:`arrow`, :code:`beam` and :code:`hand`
+'''))
+
+o('pointer_shape_when_dragging', 'beam', option_type=choices('arrow', 'beam', 'hand'), long_text=('''
+The default shape of the mouse pointer when dragging across text.
 Valid values are: :code:`arrow`, :code:`beam` and :code:`hand`
 '''))
 
@@ -664,9 +692,27 @@ for vertical resizing.
 '''))
 o('window_resize_step_lines', 2, option_type=positive_int)
 
-o('window_border_width', 1.0, option_type=positive_float, long_text=_('''
-The width (in pts) of window borders. Will be rounded to the nearest number of pixels based on screen resolution.
-Note that borders are displayed only when more than one window is visible. They are meant to separate multiple windows.'''))
+
+def window_border_width(x: Union[str, int, float]) -> Tuple[float, str]:
+    unit = 'pt'
+    if isinstance(x, str):
+        trailer = x[-2:]
+        if trailer in ('px', 'pt'):
+            unit = trailer
+            val = float(x[:-2])
+        else:
+            val = float(x)
+    else:
+        val = float(x)
+    return max(0, val), unit
+
+
+o('window_border_width', '0.5pt', option_type=window_border_width, long_text=_('''
+The width of window borders. Can be either in pixels (px) or pts (pt). Values
+in pts will be rounded to the nearest number of pixels based on screen
+resolution. If not specified the unit is assumed to be pts.
+Note that borders are displayed only when more than one window
+is visible. They are meant to separate multiple windows.'''))
 
 o('draw_minimal_borders', True, long_text=_('''
 Draw only the minimum borders needed. This means that only the minimum
@@ -778,6 +824,12 @@ this option can be used to keep the margins as small as possible when resizing t
 Note that this does not currently work on Wayland.
 '''))
 
+o('confirm_os_window_close', 0, option_type=positive_int, long_text=_('''
+Ask for confirmation when closing an OS window or a tab that has at least this
+number of kitty windows in it. A value of zero disables confirmation.
+This confirmation also applies to requests to quit the entire application (all
+OS windows, via the quit action).
+'''))
 # }}}
 
 g('tabbar')   # {{{
@@ -788,6 +840,8 @@ def tab_separator(x: str) -> str:
     for q in '\'"':
         if x.startswith(q) and x.endswith(q):
             x = x[1:-1]
+            if not x:
+                return ''
             break
     if not x.strip():
         x = ('\xa0' * len(x)) if x else default_tab_separator
@@ -816,6 +870,8 @@ o('tab_bar_style', 'fade', option_type=choices('fade', 'separator', 'powerline',
 The tab bar style, can be one of: :code:`fade`, :code:`separator`, :code:`powerline`, or :code:`hidden`.
 In the fade style, each tab's edges fade into the background color, in the separator style, tabs are
 separated by a configurable separator, and the powerline shows the tabs as a continuous line.
+If you use the hidden style, you might want to create a mapping for the :code:`select_tab` action which
+presents you with a list of tabs and allows for easy switching to a tab.
 '''))
 
 
@@ -827,11 +883,12 @@ o('tab_bar_min_tabs', 2, option_type=tab_bar_min_tabs, long_text=_('''
 The minimum number of tabs that must exist before the tab bar is shown
 '''))
 
-o('tab_switch_strategy', 'previous', option_type=choices('previous', 'left', 'last'), long_text=_('''
+o('tab_switch_strategy', 'previous', option_type=choices('previous', 'left', 'right', 'last'), long_text=_('''
 The algorithm to use when switching to a tab when the current tab is closed.
 The default of :code:`previous` will switch to the last used tab. A value of
 :code:`left` will switch to the tab to the left of the closed tab. A value
-of :code:`last` will switch to the right-most tab.
+of :code:`right` will switch to the tab to the right of the closed tab.
+A value of :code:`last` will switch to the right-most tab.
 '''))
 
 
@@ -849,6 +906,17 @@ entries to this list.
 
 o('tab_separator', '"{}"'.format(default_tab_separator), option_type=tab_separator, long_text=_('''
 The separator between tabs in the tab bar when using :code:`separator` as the :opt:`tab_bar_style`.'''))
+
+
+def tab_activity_symbol(x: str) -> Optional[str]:
+    if x == 'none':
+        return None
+    return x or None
+
+
+o('tab_activity_symbol', 'none', option_type=tab_activity_symbol, long_text=_('''
+Some text or a unicode symbol to show on the tab if a window in the tab that does
+not have focus has some activity.'''))
 
 
 def tab_title_template(x: str) -> str:
@@ -875,6 +943,10 @@ layout name and :code:`{num_windows}` for the number of windows
 in the tab. Note that formatting is done by Python's string formatting
 machinery, so you can use, for instance, :code:`{layout_name[:2].upper()}` to
 show only the first two letters of the layout name, upper-cased.
+If you want to style the text, you can use styling directives, for example:
+:code:`{fmt.fg.red}red{fmt.fg.default}normal{fmt.bg._00FF00}green bg{fmt.bg.normal}`.
+Similarly, for bold and italic:
+:code:`{fmt.bold}bold{fmt.nobold}normal{fmt.italic}italic{fmt.noitalic}`.
 '''))
 o('active_tab_title_template', 'none', option_type=active_tab_title_template, long_text=_('''
 Template to use for active tabs, if not specified falls back
@@ -1100,6 +1172,20 @@ clipboard and primary selection with concatenation enabled. Note
 that enabling the read functionality is a security risk as it means that any
 program, even one running on a remote server via SSH can read your clipboard.
 '''))
+
+
+def allow_hyperlinks(x: str) -> int:
+    if x == 'ask':
+        return 0b11
+    return 1 if to_bool(x) else 0
+
+
+o('allow_hyperlinks', 'yes', option_type=allow_hyperlinks, long_text=_('''
+Process hyperlink (OSC 8) escape sequences. If disabled OSC 8 escape
+sequences are ignored. Otherwise they become clickable links, that you
+can click by holding down ctrl+shift and clicking with the mouse. The special
+value of ``ask`` means that kitty will ask before opening the link.'''))
+
 
 o('term', 'xterm-kitty', long_text=_('''
 The value of the TERM environment variable to set. Changing this can break many
@@ -1374,8 +1460,7 @@ if is_macos:
 k('close_tab', 'kitty_mod+q', 'close_tab', _('Close tab'))
 if is_macos:
     k('close_tab', 'cmd+w', 'close_tab', _('Close tab'), add_to_docs=False)
-    #  Not yet implemented
-    #  k('close_os_window', 'shift+cmd+w', 'close_os_window', _('Close os window'), add_to_docs=False)
+    k('close_os_window', 'shift+cmd+w', 'close_os_window', _('Close OS window'), add_to_docs=False)
 k('move_tab_forward', 'kitty_mod+.', 'move_tab_forward', _('Move tab forward'))
 k('move_tab_backward', 'kitty_mod+,', 'move_tab_backward', _('Move tab backward'))
 k('set_tab_title', 'kitty_mod+alt+t', 'set_tab_title', _('Set tab title'))
@@ -1391,6 +1476,7 @@ g('shortcuts.fonts')  # {{{
 k('increase_font_size', 'kitty_mod+equal', 'change_font_size all +2.0', _('Increase font size'))
 if is_macos:
     k('increase_font_size', 'cmd+plus', 'change_font_size all +2.0', _('Increase font size'), add_to_docs=False)
+    k('increase_font_size', 'cmd+shift+equal', 'change_font_size all +2.0', _('Increase font size'), add_to_docs=False)
 k('decrease_font_size', 'kitty_mod+minus', 'change_font_size all -2.0', _('Decrease font size'))
 if is_macos:
     k('decrease_font_size', 'cmd+minus', 'change_font_size all -2.0', _('Decrease font size'), add_to_docs=False)
@@ -1426,6 +1512,9 @@ k('goto_file_line', 'kitty_mod+p>n', 'kitten hints --type linenum', _('Open the 
 Select something that looks like :code:`filename:linenum` and open it in vim at
 the specified line number.'''))
 
+k('open_selected_hyperlink', 'kitty_mod+p>y', 'kitten hints --type hyperlink', _('Open the selected hyperlink'), long_text=_('''
+Select a hyperlink (i.e. a URL that has been marked as such by the terminal program, for example, by ls --hyperlink=auto).
+'''))
 
 # }}}
 

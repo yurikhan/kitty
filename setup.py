@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import platform
 import time
 from contextlib import suppress
 from functools import partial
@@ -46,6 +47,8 @@ version = tuple(
 )
 _plat = sys.platform.lower()
 is_macos = 'darwin' in _plat
+is_openbsd = 'openbsd' in _plat
+is_arm = platform.processor() == 'arm'
 Env = glfw.Env
 env = Env()
 PKGCONFIG = os.environ.get('PKGCONFIG_EXE', 'pkg-config')
@@ -62,7 +65,11 @@ class Options(argparse.Namespace):
     for_freeze: bool = False
     libdir_name: str = 'lib'
     extra_logging: List[str] = []
+    link_time_optimization: bool = 'KITTY_NO_LTO' not in os.environ
     update_check_interval: float = 24
+    egl_library: Optional[str] = os.getenv('KITTY_EGL_LIBRARY')
+    startup_notification_library: Optional[str] = os.getenv('KITTY_STARTUP_NOTIFICATION_LIBRARY')
+    canberra_library: Optional[str] = os.getenv('KITTY_CANBERRA_LIBRARY')
 
 
 class CompileKey(NamedTuple):
@@ -206,9 +213,12 @@ def get_sanitize_args(cc: str, ccver: Tuple[int, int]) -> List[str]:
     return sanitize_args
 
 
-def test_compile(cc: str, *cflags: str, src: Optional[str] = None) -> bool:
+def test_compile(cc: str, *cflags: str, src: Optional[str] = None, lang: str = 'c') -> bool:
     src = src or 'int main(void) { return 0; }'
-    p = subprocess.Popen([cc] + list(cflags) + ['-x', 'c', '-o', os.devnull, '-'], stdin=subprocess.PIPE)
+    p = subprocess.Popen(
+        [cc] + list(cflags) + ['-x', lang, '-o', os.devnull, '-'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.PIPE,
+    )
     stdin = p.stdin
     assert stdin is not None
     try:
@@ -219,9 +229,9 @@ def test_compile(cc: str, *cflags: str, src: Optional[str] = None) -> bool:
     return p.wait() == 0
 
 
-def first_successful_compile(cc: str, *cflags: str, src: Optional[str] = None) -> str:
+def first_successful_compile(cc: str, *cflags: str, src: Optional[str] = None, lang: str = 'c') -> str:
     for x in cflags:
-        if test_compile(cc, *shlex.split(x), src=src):
+        if test_compile(cc, *shlex.split(x), src=src, lang=lang):
             return x
     return ''
 
@@ -230,10 +240,18 @@ def init_env(
     debug: bool = False,
     sanitize: bool = False,
     native_optimizations: bool = True,
+    link_time_optimization: bool = True,
     profile: bool = False,
+    egl_library: Optional[str] = None,
+    startup_notification_library: Optional[str] = None,
+    canberra_library: Optional[str] = None,
     extra_logging: Iterable[str] = ()
 ) -> Env:
     native_optimizations = native_optimizations and not sanitize and not debug
+    if native_optimizations and is_macos and is_arm:
+        # see https://github.com/kovidgoyal/kitty/issues/3126
+        # -march=native is not supported when targeting Apple Silicon
+        native_optimizations = False
     cc, ccver = cc_version()
     print('CC:', cc, ccver)
     stack_protector = first_successful_compile(cc, '-fstack-protector-strong', '-fstack-protector')
@@ -256,10 +274,11 @@ def init_env(
         cppflags.append('-DDEBUG_{}'.format(el.upper().replace('-', '_')))
     cflags_ = os.environ.get(
         'OVERRIDE_CFLAGS', (
-            '-Wextra {} -Wno-missing-field-initializers -Wall -Wstrict-prototypes -std=c11'
+            '-Wextra {} -Wno-missing-field-initializers -Wall -Wstrict-prototypes {}'
             ' -pedantic-errors -Werror {} {} -fwrapv {} {} -pipe {} -fvisibility=hidden {}'
         ).format(
             float_conversion,
+            '' if is_openbsd else '-std=c11',
             optimize,
             ' '.join(sanitize_args),
             stack_protector,
@@ -280,16 +299,38 @@ def init_env(
     cppflags += shlex.split(os.environ.get('CPPFLAGS', ''))
     cflags += shlex.split(os.environ.get('CFLAGS', ''))
     ldflags += shlex.split(os.environ.get('LDFLAGS', ''))
-    if not debug and not sanitize:
+    if not debug and not sanitize and not is_openbsd and link_time_optimization:
         # See https://github.com/google/sanitizers/issues/647
         cflags.append('-flto')
         ldflags.append('-flto')
+
+    if debug:
+        cflags.append('-DKITTY_DEBUG_BUILD')
 
     if profile:
         cppflags.append('-DWITH_PROFILER')
         cflags.append('-g3')
         ldflags.append('-lprofiler')
-    return Env(cc, cppflags, cflags, ldflags, ccver=ccver)
+
+    library_paths = {}
+
+    if egl_library is not None:
+        assert('"' not in egl_library)
+        library_paths['glfw/egl_context.c'] = ['_GLFW_EGL_LIBRARY="' + egl_library + '"']
+
+    desktop_libs = []
+    if startup_notification_library is not None:
+        assert('"' not in startup_notification_library)
+        desktop_libs = ['_KITTY_STARTUP_NOTIFICATION_LIBRARY="' + startup_notification_library + '"']
+
+    if canberra_library is not None:
+        assert('"' not in canberra_library)
+        desktop_libs += ['_KITTY_CANBERRA_LIBRARY="' + canberra_library + '"']
+
+    if desktop_libs != []:
+        library_paths['kitty/desktop.c'] = desktop_libs
+
+    return Env(cc, cppflags, cflags, ldflags, library_paths, ccver=ccver)
 
 
 def kitty_env() -> Env:
@@ -303,23 +344,35 @@ def kitty_env() -> Env:
     cppflags.append('-DSECONDARY_VERSION={}'.format(version[1]))
     at_least_version('harfbuzz', 1, 5)
     cflags.extend(pkg_config('libpng', '--cflags-only-I'))
+    cflags.extend(pkg_config('lcms2', '--cflags-only-I'))
     if is_macos:
-        font_libs = ['-framework', 'CoreText', '-framework', 'CoreGraphics']
+        platform_libs = [
+            '-framework', 'CoreText', '-framework', 'CoreGraphics',
+        ]
+        test_program_src = '''#include <UserNotifications/UserNotifications.h>
+        int main(void) { return 0; }\n'''
+        user_notifications_framework = first_successful_compile(
+            ans.cc, '-framework UserNotifications', src=test_program_src, lang='objective-c')
+        if user_notifications_framework:
+            platform_libs.extend(shlex.split(user_notifications_framework))
+        else:
+            cppflags.append('-DKITTY_USE_DEPRECATED_MACOS_NOTIFICATION_API')
         # Apple deprecated OpenGL in Mojave (10.14) silence the endless
         # warnings about it
         cppflags.append('-DGL_SILENCE_DEPRECATION')
     else:
         cflags.extend(pkg_config('fontconfig', '--cflags-only-I'))
-        font_libs = pkg_config('fontconfig', '--libs')
+        platform_libs = pkg_config('fontconfig', '--libs')
     cflags.extend(pkg_config('harfbuzz', '--cflags-only-I'))
-    font_libs.extend(pkg_config('harfbuzz', '--libs'))
+    platform_libs.extend(pkg_config('harfbuzz', '--libs'))
     pylib = get_python_flags(cflags)
     gl_libs = ['-framework', 'OpenGL'] if is_macos else pkg_config('gl', '--libs')
     libpng = pkg_config('libpng', '--libs')
-    ans.ldpaths += pylib + font_libs + gl_libs + libpng
+    lcms2 = pkg_config('lcms2', '--libs')
+    ans.ldpaths += pylib + platform_libs + gl_libs + libpng + lcms2
     if is_macos:
         ans.ldpaths.extend('-framework Cocoa'.split())
-    else:
+    elif not is_openbsd:
         ans.ldpaths += ['-lrt']
         if '-ldl' not in ans.ldpaths:
             ans.ldpaths.append('-ldl')
@@ -349,7 +402,7 @@ def run_tool(cmd: Union[str, List[str]], desc: Optional[str] = None) -> None:
         raise SystemExit(ret)
 
 
-def get_vcs_rev_defines(env: Env) -> List[str]:
+def get_vcs_rev_defines(env: Env, src: str) -> List[str]:
     ans = []
     if os.path.exists('.git'):
         try:
@@ -368,7 +421,16 @@ def get_vcs_rev_defines(env: Env) -> List[str]:
     return ans
 
 
-SPECIAL_SOURCES: Dict[str, Tuple[str, Union[List[str], Callable[[Env], Union[List[str], Iterator[str]]]]]] = {
+def get_library_defines(env: Env, src: str) -> Optional[List[str]]:
+    try:
+        return env.library_paths[src]
+    except KeyError:
+        return None
+
+
+SPECIAL_SOURCES: Dict[str, Tuple[str, Union[List[str], Callable[[Env, str], Union[Optional[List[str]], Iterator[str]]]]]] = {
+    'glfw/egl_context.c': ('glfw/egl_context.c', get_library_defines),
+    'kitty/desktop.c': ('kitty/desktop.c', get_library_defines),
     'kitty/parser_dump.c': ('kitty/parser.c', ['DUMP_COMMANDS']),
     'kitty/data-types.c': ('kitty/data-types.c', get_vcs_rev_defines),
 }
@@ -436,14 +498,17 @@ def parallel_run(items: List[Command]) -> None:
             compile_cmd.on_success()
 
     printed = False
+    isatty = sys.stdout.isatty()
     while items and failed is None:
         while len(workers) < num_workers and items:
             compile_cmd = items.pop()
             num += 1
             if verbose:
                 print(' '.join(compile_cmd.cmd))
-            else:
+            elif isatty:
                 print('\r\x1b[K[{}/{}] {}'.format(num, total, compile_cmd.desc), end='')
+            else:
+                print('[{}/{}] {}'.format(num, total, compile_cmd.desc), flush=True)
             printed = True
             w = subprocess.Popen(compile_cmd.cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
             workers[w.pid] = compile_cmd, w
@@ -556,11 +621,9 @@ def compile_c_extension(
         is_special = src in SPECIAL_SOURCES
         if is_special:
             src, defines_ = SPECIAL_SOURCES[src]
-            if callable(defines_):
-                defines = defines_(kenv)
+            defines = defines_(kenv, src) if callable(defines_) else defines_
+            if defines is not None:
                 cppflags.extend(map(define, defines))
-            else:
-                cppflags.extend(map(define, defines_))
 
         cmd = [kenv.cc, '-MMD'] + cppflags + kenv.cflags
         cmd += ['-c', src] + ['-o', dest]
@@ -663,9 +726,17 @@ def compile_kittens(compilation_database: CompilationDatabase) -> None:
             kenv, dest, compilation_database, sources, all_headers + ['kitty/data-types.h'])
 
 
-def build(args: Options, native_optimizations: bool = True) -> None:
+def init_env_from_args(args: Options, native_optimizations: bool = False) -> None:
     global env
-    env = init_env(args.debug, args.sanitize, native_optimizations, args.profile, args.extra_logging)
+    env = init_env(
+        args.debug, args.sanitize, native_optimizations, args.link_time_optimization, args.profile,
+        args.egl_library, args.startup_notification_library, args.canberra_library,
+        args.extra_logging
+    )
+
+
+def build(args: Options, native_optimizations: bool = True) -> None:
+    init_env_from_args(args, native_optimizations)
     sources, headers = find_c_files()
     compile_c_extension(
         kitty_env(), 'kitty/fast_data_types', args.compilation_database, sources, headers
@@ -700,7 +771,7 @@ def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 's
     elif bundle_type == 'source':
         cppflags.append('-DFROM_SOURCE')
     if bundle_type.startswith('macos-'):
-        klp = '../Frameworks/kitty'
+        klp = '../Resources/kitty'
     elif bundle_type.startswith('linux-'):
         klp = '../{}/kitty'.format(args.libdir_name.strip('/'))
     elif bundle_type == 'source':
@@ -819,8 +890,15 @@ Categories=System;TerminalEmulator;
 def macos_info_plist() -> bytes:
     import plistlib
     VERSION = '.'.join(map(str, version))
+
+    def access(what: str, verb: str = 'would like to access') -> str:
+        return f'A program running inside kitty {verb} {what}'
+
     pl = dict(
+        # see https://github.com/kovidgoyal/kitty/issues/1233
         CFBundleDevelopmentRegion='English',
+        CFBundleAllowMixedLocalizations=True,
+
         CFBundleDisplayName=appname,
         CFBundleName=appname,
         CFBundleIdentifier='net.kovidgoyal.' + appname,
@@ -856,6 +934,16 @@ def macos_info_plist() -> bytes:
                 'NSSendTypes': ['NSFilenamesPboardType', 'public.plain-text'],
             },
         ],
+        NSAppleEventsUsageDescription=access('AppleScript.'),
+        NSCalendarsUsageDescription=access('your calendar data.'),
+        NSCameraUsageDescription=access('the camera.'),
+        NSContactsUsageDescription=access('your contacts.'),
+        NSLocationAlwaysUsageDescription=access('your location information, even in the background.'),
+        NSLocationUsageDescription=access('your location information.'),
+        NSLocationWhenInUseUsageDescription=access('your location while active.'),
+        NSMicrophoneUsageDescription=access('your microphone.'),
+        NSRemindersUsageDescription=access('your reminders.'),
+        NSSystemAdministrationUsageDescription=access('elevated privileges.', 'requires'),
     )
     return plistlib.dumps(pl)
 
@@ -905,9 +993,9 @@ def create_macos_bundle_gunk(dest: str) -> None:
     os.rename(ddir / 'share', ddir / 'Contents/Resources')
     os.rename(ddir / 'bin', ddir / 'Contents/MacOS')
     os.rename(ddir / 'lib', ddir / 'Contents/Frameworks')
-    os.symlink('kitty', ddir / 'Contents/MacOS/kitty-deref-symlink')
+    os.rename(ddir / 'Contents/Frameworks/kitty', ddir / 'Contents/Resources/kitty')
     launcher = ddir / 'Contents/MacOS/kitty'
-    in_src_launcher = ddir / 'Contents/Frameworks/kitty/kitty/launcher/kitty'
+    in_src_launcher = ddir / 'Contents/Resources/kitty/kitty/launcher/kitty'
     if os.path.exists(in_src_launcher):
         os.remove(in_src_launcher)
     os.makedirs(os.path.dirname(in_src_launcher), exist_ok=True)
@@ -1001,7 +1089,7 @@ def option_parser() -> argparse.ArgumentParser:  # {{{
         'action',
         nargs='?',
         default=Options.action,
-        choices='build test linux-package kitty.app linux-freeze macos-freeze clean'.split(),
+        choices='build test linux-package kitty.app linux-freeze macos-freeze build-launcher clean export-ci-bundles'.split(),
         help='Action to perform (default is build)'
     )
     p.add_argument(
@@ -1066,14 +1154,40 @@ def option_parser() -> argparse.ArgumentParser:  # {{{
         help='When building a package, the default value for the update_check_interval setting will'
         ' be set to this number. Use zero to disable update checking.'
     )
+    p.add_argument(
+        '--egl-library',
+        type=str,
+        default=Options.egl_library,
+        help='The filename argument passed to dlopen for libEGL.'
+        ' This can be used to change the name of the loaded library or specify an absolute path.'
+    )
+    p.add_argument(
+        '--startup-notification-library',
+        type=str,
+        default=Options.startup_notification_library,
+        help='The filename argument passed to dlopen for libstartup-notification-1.'
+        ' This can be used to change the name of the loaded library or specify an absolute path.'
+    )
+    p.add_argument(
+        '--canberra-library',
+        type=str,
+        default=Options.canberra_library,
+        help='The filename argument passed to dlopen for libcanberra.'
+        ' This can be used to change the name of the loaded library or specify an absolute path.'
+    )
+    p.add_argument(
+        '--disable-link-time-optimization',
+        dest='link_time_optimization',
+        default=Options.link_time_optimization,
+        action='store_false',
+        help='Turn off Link Time Optimization (LTO).'
+    )
     return p
 # }}}
 
 
 def main() -> None:
     global verbose
-    if sys.version_info < (3, 5):
-        raise SystemExit('python >= 3.5 required')
     args = option_parser().parse_args(namespace=Options())
     verbose = args.verbose > 0
     args.prefix = os.path.abspath(args.prefix)
@@ -1085,16 +1199,19 @@ def main() -> None:
     if args.action == 'clean':
         clean()
         return
+    launcher_dir = 'kitty/launcher'
 
     with CompilationDatabase(args.incremental) as cdb:
         args.compilation_database = cdb
         if args.action == 'build':
             build(args)
-            launcher_dir = 'kitty/launcher'
             if is_macos:
                 create_minimal_macos_bundle(args, launcher_dir)
             else:
                 build_launcher(args, launcher_dir=launcher_dir)
+        elif args.action == 'build-launcher':
+            init_env_from_args(args, False)
+            build_launcher(args, launcher_dir=launcher_dir)
         elif args.action == 'linux-package':
             build(args, native_optimizations=False)
             package(args, bundle_type='linux-package')
@@ -1103,6 +1220,7 @@ def main() -> None:
             package(args, bundle_type='linux-freeze')
         elif args.action == 'macos-freeze':
             build(args, native_optimizations=False)
+            build_launcher(args, launcher_dir=launcher_dir)
             package(args, bundle_type='macos-freeze')
         elif args.action == 'kitty.app':
             args.prefix = 'kitty.app'
@@ -1111,6 +1229,12 @@ def main() -> None:
             build(args)
             package(args, bundle_type='macos-package')
             print('kitty.app successfully built!')
+        elif args.action == 'export-ci-bundles':
+            cmd = [sys.executable, '../bypy', 'export']
+            dest = ['download.calibre-ebook.com:/srv/download/ci/kitty']
+            subprocess.check_call(cmd + ['linux'] + dest)
+            subprocess.check_call(cmd + ['macos'] + dest)
+            subprocess.check_call(cmd + ['linux', '32'] + dest)
 
 
 if __name__ == '__main__':

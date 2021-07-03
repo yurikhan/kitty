@@ -161,12 +161,13 @@ coretext_all_fonts(PyObject UNUSED *_self) {
     CFArrayRef matches = CTFontCollectionCreateMatchingFontDescriptors(all_fonts_collection());
     const CFIndex count = CFArrayGetCount(matches);
     PyObject *ans = PyTuple_New(count), *temp;
-    if (ans == NULL) return PyErr_NoMemory();
+    if (ans == NULL) { CFRelease(matches); return PyErr_NoMemory(); }
     for (CFIndex i = 0; i < count; i++) {
         temp = font_descriptor_to_python((CTFontDescriptorRef) CFArrayGetValueAtIndex(matches, i));
-        if (temp == NULL) { Py_DECREF(ans); return NULL; }
+        if (temp == NULL) { CFRelease(matches); Py_DECREF(ans); return NULL; }
         PyTuple_SET_ITEM(ans, i, temp); temp = NULL;
     }
+    CFRelease(matches);
     return ans;
 }
 
@@ -212,6 +213,7 @@ manually_search_fallback_fonts(CTFontRef current_font, CPUCell *cell) {
             CFRelease(new_font);
         }
     }
+    CFRelease(fonts);
     return ans;
 }
 
@@ -409,7 +411,7 @@ render_color_glyph(CTFontRef font, uint8_t *buf, int glyph_id, unsigned int widt
     CGContextSetTextDrawingMode(ctx, kCGTextFill);
     CGGlyph glyph = glyph_id;
     CGContextSetTextMatrix(ctx, transform);
-    CGContextSetTextPosition(ctx, -boxes[0].origin.x, MAX(2, height - 1.2f * baseline));  // lower the emoji a bit so its bottom is not on the baseline
+    CGContextSetTextPosition(ctx, -boxes[0].origin.x, MAX(2, height - baseline));
     CGPoint p = CGPointMake(0, 0);
     CTFontDrawGlyphs(font, &glyph, &p, 1, ctx);
     CGContextRelease(ctx);

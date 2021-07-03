@@ -2,9 +2,10 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
-import mimetypes
+import contextlib
 import os
 import re
+import socket
 import signal
 import sys
 import zlib
@@ -16,6 +17,7 @@ from typing import (
     Dict, Generator, List, NamedTuple, Optional, Pattern, Tuple, Union
 )
 
+from kitty.guess_mime_type import guess_type
 from kitty.cli import parse_args
 from kitty.cli_stub import IcatCLIOptions
 from kitty.constants import appname
@@ -28,7 +30,7 @@ from ..tui.images import (
     ConvertFailed, GraphicsCommand, NoImageMagick, OpenFailed, convert, fsenc,
     identify
 )
-from ..tui.operations import clear_images_on_screen
+from ..tui.operations import clear_images_on_screen, raw_mode
 
 OPTIONS = '''\
 --align
@@ -108,6 +110,11 @@ default=0
 Z-index of the image. When negative, text will be displayed on top of the image. Use
 a double minus for values under the threshold for drawing images under cell background
 colors. For example, --1 evaluates as -1,073,741,825.
+
+
+--hold
+type=bool-set
+Wait for keypress before exiting after displaying the images.
 '''
 
 
@@ -266,7 +273,7 @@ def process(path: str, args: IcatCLIOptions, parsed_opts: ParsedOpts, is_tempfil
 def scan(d: str) -> Generator[Tuple[str, str], None, None]:
     for dirpath, dirnames, filenames in os.walk(d):
         for f in filenames:
-            mt = mimetypes.guess_type(f)[0]
+            mt = guess_type(f)
             if mt and mt.startswith('image/'):
                 yield os.path.join(dirpath, f), mt
 
@@ -339,6 +346,16 @@ help_text = (
 usage = 'image-file-or-url-or-directory ...'
 
 
+@contextlib.contextmanager
+def socket_timeout(seconds: int) -> Generator[None, None, None]:
+    old = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(seconds)
+    try:
+        yield
+    finally:
+        socket.setdefaulttimeout(old)
+
+
 def process_single_item(
     item: Union[bytes, str],
     args: IcatCLIOptions,
@@ -358,7 +375,8 @@ def process_single_item(
             from urllib.request import urlretrieve
             with NamedTemporaryFile(prefix='url-image-data-', delete=False) as tf:
                 try:
-                    urlretrieve(item, filename=tf.name)
+                    with socket_timeout(30):
+                        urlretrieve(item, filename=tf.name)
                 except Exception as e:
                     raise SystemExit('Failed to download image at URL: {} with error: {}'.format(item, e))
                 item = tf.name
@@ -460,11 +478,14 @@ def main(args: List[str] = sys.argv) -> None:
             errors.append(e)
     if parsed_opts.place:
         sys.stdout.buffer.write(b'\0338')  # restore cursor
-    if not errors:
-        return
-    for err in errors:
-        print(err, file=sys.stderr)
-    raise SystemExit(1)
+    if errors:
+        for err in errors:
+            print(err, file=sys.stderr)
+    if cli_opts.hold:
+        with open(os.ctermid()) as tty:
+            with raw_mode(tty.fileno()):
+                tty.buffer.read(1)
+    raise SystemExit(1 if errors else 0)
 
 
 if __name__ == '__main__':

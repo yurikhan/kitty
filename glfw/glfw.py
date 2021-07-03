@@ -6,10 +6,11 @@ import json
 import os
 import re
 import sys
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 _plat = sys.platform.lower()
 is_linux = 'linux' in _plat
+is_openbsd = 'openbsd' in _plat
 base = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -19,6 +20,7 @@ class Env:
     cppflags: List[str] = []
     cflags: List[str] = []
     ldflags: List[str] = []
+    library_paths: Dict[str, List[str]] = {}
     ldpaths: List[str] = []
     ccver: Tuple[int, int]
 
@@ -32,13 +34,13 @@ class Env:
 
     def __init__(
         self, cc: str = '', cppflags: List[str] = [], cflags: List[str] = [], ldflags: List[str] = [],
-        ldpaths: Optional[List[str]] = None, ccver: Tuple[int, int] = (0, 0)
+        library_paths: Dict[str, List[str]] = {}, ldpaths: Optional[List[str]] = None, ccver: Tuple[int, int] = (0, 0)
     ):
-        self.cc, self.cppflags, self.cflags, self.ldflags, self.ldpaths = cc, cppflags, cflags, ldflags, [] if ldpaths is None else ldpaths
-        self.ccver = ccver
+        self.cc, self.cppflags, self.cflags, self.ldflags, self.library_paths = cc, cppflags, cflags, ldflags, library_paths
+        self.ldpaths, self.ccver = [] if ldpaths is None else ldpaths, ccver
 
     def copy(self) -> 'Env':
-        ans = Env(self.cc, list(self.cppflags), list(self.cflags), list(self.ldflags), list(self.ldpaths), self.ccver)
+        ans = Env(self.cc, list(self.cppflags), list(self.cflags), list(self.ldflags), dict(self.library_paths), list(self.ldpaths), self.ccver)
         ans.all_headers = list(self.all_headers)
         ans.sources = list(self.sources)
         ans.wayland_packagedir = self.wayland_packagedir
@@ -71,8 +73,9 @@ def init_env(env: Env, pkg_config: Callable, at_least_version: Callable, test_co
 
     if module in ('x11', 'wayland'):
         ans.cflags.append('-pthread')
-        ans.ldpaths.append('-pthread')
-        ans.ldpaths.extend('-lrt -lm -ldl'.split())
+        ans.ldpaths.extend('-pthread -lm'.split())
+        if not is_openbsd:
+            ans.ldpaths.extend('-lrt -ldl'.split())
         at_least_version('xkbcommon', 0, 5)
 
     if module == 'x11':
@@ -196,6 +199,7 @@ def generate_wrappers(glfw_header: str) -> None:
         functions.append(Function(decl))
     for line in '''\
     void* glfwGetCocoaWindow(GLFWwindow* window)
+    void glfwHideCocoaTitlebar(GLFWwindow* window, bool yes)
     void* glfwGetNSGLContext(GLFWwindow *window)
     uint32_t glfwGetCocoaMonitor(GLFWmonitor* monitor)
     GLFWcocoatextinputfilterfun glfwSetCocoaTextInputFilter(GLFWwindow* window, GLFWcocoatextinputfilterfun callback)

@@ -69,8 +69,18 @@ def clear_screen() -> str:
 
 
 @cmd
+def clear_to_end_of_screen() -> str:
+    return '\033[J'
+
+
+@cmd
 def clear_to_eol() -> str:
     return '\033[K'
+
+
+@cmd
+def reset_terminal() -> str:
+    return '\033]\033\\\033c'
 
 
 @cmd
@@ -101,6 +111,12 @@ def set_cursor_visible(yes_or_no: bool) -> str:
 @cmd
 def set_cursor_position(x: int, y: int) -> str:  # (0, 0) is top left
     return '\033[{};{}H'.format(y + 1, x + 1)
+
+
+@cmd
+def move_cursor_by(amt: int, direction: str) -> str:
+    suffix = {'up': 'A', 'down': 'B', 'right': 'C', 'left': 'D'}[direction]
+    return f'\033[{amt}{suffix}'
 
 
 @cmd
@@ -248,7 +264,7 @@ def init_state(alternate_screen: bool = True) -> str:
     ans = (
         S7C1T + SAVE_CURSOR + SAVE_PRIVATE_MODE_VALUES + reset_mode('LNM') +
         reset_mode('IRM') + reset_mode('DECKM') + reset_mode('DECSCNM') +
-        set_mode('DECARM') + reset_mode('DECOM') + set_mode('DECAWM') +
+        set_mode('DECARM') + set_mode('DECAWM') +
         set_mode('DECTCEM') + reset_mode('MOUSE_BUTTON_TRACKING') +
         reset_mode('MOUSE_MOTION_TRACKING') + reset_mode('MOUSE_MOVE_TRACKING') +
         reset_mode('FOCUS_TRACKING') + reset_mode('MOUSE_UTF8_MODE') +
@@ -258,7 +274,7 @@ def init_state(alternate_screen: bool = True) -> str:
         '\033[*x'  # reset DECSACE to default region select
     )
     if alternate_screen:
-        ans += set_mode('ALTERNATE_SCREEN')
+        ans += set_mode('ALTERNATE_SCREEN') + reset_mode('DECOM')
         ans += clear_screen()
     return ans
 
@@ -286,6 +302,20 @@ def alternate_screen(f: Optional[IO[str]] = None) -> Generator[None, None, None]
     print(set_mode('ALTERNATE_SCREEN'), end='', file=f)
     yield
     print(reset_mode('ALTERNATE_SCREEN'), end='', file=f)
+
+
+@contextmanager
+def raw_mode(fd: Optional[int] = None) -> Generator[None, None, None]:
+    import tty
+    import termios
+    if fd is None:
+        fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        yield
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 @cmd
@@ -341,7 +371,7 @@ def request_from_clipboard(use_primary: bool = False) -> str:
     return '\x1b]52;{};?\x07'.format('p' if use_primary else 'c')
 
 
-# Boilerplate to make operations availble via Handler.cmd  {{{
+# Boilerplate to make operations available via Handler.cmd  {{{
 
 
 def writer(handler: HandlerType, func: Callable) -> Callable:

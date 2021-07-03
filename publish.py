@@ -21,7 +21,6 @@ from typing import IO, Any, Dict, Iterable, List, Optional, cast
 import requests
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
-build_path = os.path.abspath('../build-kitty')
 docs_dir = os.path.abspath('docs')
 publish_dir = os.path.abspath(os.path.join('..', 'kovidgoyal.github.io', 'kitty'))
 with open('kitty/constants.py') as f:
@@ -47,11 +46,10 @@ def call(*cmd: str, cwd: Optional[str] = None) -> None:
 
 
 def run_build(args: Any) -> None:
-    os.chdir(build_path)
-    call('./linux 64 kitty')
-    call('./osx kitty --sign-installers')
-    call('./osx shutdown')
-    call('./linux 32 kitty')
+    call('python ../bypy linux program')
+    call('python ../bypy linux 32 program')
+    call('python ../bypy macos program --sign-installers --notarize')
+    call('python ../bypy macos shutdown')
 
 
 def run_tag(args: Any) -> None:
@@ -70,14 +68,15 @@ def run_html(args: Any) -> None:
 
 def add_analytics() -> None:
     analytics = '''
-<!-- Google Analytics -->
+<!-- Global site tag (gtag.js) - Google Analytics -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-20736318-2"></script>
 <script>
-window.ga=window.ga||function(){(ga.q=ga.q||[]).push(arguments)};ga.l=+new Date;
-ga('create', 'UA-20736318-2', 'auto');
-ga('send', 'pageview');
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'UA-20736318-2');
 </script>
-<script async="async" src='https://www.google-analytics.com/analytics.js'></script>
-<!-- End Google Analytics -->\
 '''
     for dirpath, firnames, filenames in os.walk(publish_dir):
         for fname in filenames:
@@ -87,6 +86,10 @@ ga('send', 'pageview');
                     html = html.replace('<!-- kitty analytics placeholder -->', analytics, 1)
                     f.seek(0), f.truncate()
                     f.write(html.encode('utf-8'))
+
+
+def run_docs(args: Any) -> None:
+    subprocess.check_call(['make', 'docs'])
 
 
 def run_website(args: Any) -> None:
@@ -134,7 +137,7 @@ class ReadFileWithProgressReporting(io.FileIO):  # {{{
     def __len__(self) -> int:
         return self._total
 
-    def read(self, size: int = -1) -> Optional[bytes]:
+    def read(self, size: int = -1) -> bytes:
         data = io.FileIO.read(self, size)
         if data:
             self.report_progress(len(data))
@@ -259,7 +262,7 @@ class GitHub(Base):  # {{{
                             % (asset['name'], release['tag_name']))
 
     def do_upload(self, url: str, path: str, desc: str, fname: str) -> requests.Response:
-        mime_type = mimetypes.guess_type(fname)[0]
+        mime_type = mimetypes.guess_type(fname)[0] or 'application/octet-stream'
         self.info('Uploading to GitHub: %s (%s)' % (fname, mime_type))
         with ReadFileWithProgressReporting(path) as f:
             return self.requests.post(
@@ -329,9 +332,9 @@ def get_github_data() -> Dict[str, str]:
 
 def run_upload(args: Any) -> None:
     files = {
-        os.path.join(build_path, 'build', f.format(version)): desc
+        os.path.join('bypy', 'b', f.format(version)): desc
         for f, desc in {
-            'osx/dist/kitty-{}.dmg': 'macOS dmg',
+            'macos/dist/kitty-{}.dmg': 'macOS dmg',
             'linux/64/sw/dist/kitty-{}-x86_64.txz': 'Linux amd64 binary bundle',
             'linux/32/sw/dist/kitty-{}-i686.txz': 'Linux x86 binary bundle',
         }.items()
@@ -386,6 +389,8 @@ def main() -> None:
             ans = 'n'
         if ans.lower() != 'y':
             return
+    if actions == ['website']:
+        actions.insert(0, 'docs')
     for action in actions:
         print('Running', action)
         cwd = os.getcwd()

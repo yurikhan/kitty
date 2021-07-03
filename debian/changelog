@@ -1,8 +1,43 @@
-kitty (0.17.4-1yk1focal) focal; urgency=medium
+kitty (0.19.3-1yk1focal) focal; urgency=medium
 
   * Patch terminfo so Emacs detects 24-bit color support
 
  -- Yuri Khan <yurivkhan@gmail.com>  Sat, 09 May 2020 23:23:00 +0700
+
+kitty (0.19.3-1) unstable; urgency=medium
+
+  * New upstream release
+    + Fix arbitrary command execution via graphics protocol.  CVE-2020-35605
+
+ -- James McCoy <jamessan@debian.org>  Tue, 22 Dec 2020 15:08:30 -0500
+
+kitty (0.19.2-1) unstable; urgency=medium
+
+  * New upstream release
+  * Add override for repeated-path-segment
+  * Declare compliance with Policy 4.5.1, no changes needed
+  * Bump debhelper-compat to 13
+
+ -- James McCoy <jamessan@debian.org>  Mon, 30 Nov 2020 15:38:53 -0500
+
+kitty (0.19.1-1) unstable; urgency=medium
+
+  * New upstream release
+  * d/copyright: Add information for uthash.h
+  * d/control: Add new Build-Depends on liblcms2-dev
+  * Use system uthash-dev instead of shipped version
+
+ -- James McCoy <jamessan@debian.org>  Wed, 28 Oct 2020 22:43:42 -0400
+
+kitty (0.18.3-1) unstable; urgency=medium
+
+  * New upstream release (Closes: #966107)
+    + Backwards incompatibility: The numbers used to encode mouse buttons for
+      "send_mouse_event" function that can be used in kittens have been
+      changed
+  * rules: Build launcher before running tests
+
+ -- James McCoy <jamessan@debian.org>  Wed, 12 Aug 2020 22:32:41 -0400
 
 kitty (0.17.4-1) unstable; urgency=medium
 

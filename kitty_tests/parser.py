@@ -3,10 +3,15 @@
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
 import time
+from base64 import standard_b64encode
 from binascii import hexlify
 from functools import partial
 
 from kitty.fast_data_types import CURSOR_BLOCK, parse_bytes, parse_bytes_dump
+from kitty.notify import (
+    NotificationCommand, handle_notification_cmd, notification_activated,
+    reset_registry
+)
 
 from . import BaseTest
 
@@ -177,6 +182,26 @@ class TestParser(BaseTest):
         pb('\033[3 A', ('Shift right escape code not implemented',))
         pb('\033[3;4 S', ('Select presentation directions escape code not implemented',))
 
+    def test_csi_code_rep(self):
+        s = self.create_screen(8)
+        pb = partial(self.parse_bytes_dump, s)
+        pb('\033[1b', ('screen_repeat_character', 1))
+        self.ae(str(s.line(0)), '')
+        pb('x\033[7b', 'x', ('screen_repeat_character', 7))
+        self.ae(str(s.line(0)), 'xxxxxxxx')
+        pb('\033[1;3H', ('screen_cursor_position', 1, 3))
+        pb('\033[byz\033[b', ('screen_repeat_character', 1), 'yz', ('screen_repeat_character', 1))
+        # repeat 'x' at 3, then 'yz' at 4-5, then repeat 'z' at 6
+        self.ae(str(s.line(0)), 'xxxyzzxx')
+        s.reset()
+        pb(' \033[3b', ' ', ('screen_repeat_character', 3))
+        self.ae(str(s.line(0)), '    ')
+        s.reset()
+        pb('\t\033[b', ('screen_tab',), ('screen_repeat_character', 1))
+        self.ae(str(s.line(0)), '\t')
+        s.reset()
+        b']]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]'
+
     def test_osc_codes(self):
         s = self.create_screen()
         pb = partial(self.parse_bytes_dump, s)
@@ -197,6 +222,80 @@ class TestParser(BaseTest):
         self.ae(c.titlebuf, '')
         pb('\033]110\x07', ('set_dynamic_color', 110, ''))
         self.ae(c.colorbuf, '')
+        c.clear()
+        pb('\033]9;\x07', ('desktop_notify', 9, ''))
+        pb('\033]9;test it\x07', ('desktop_notify', 9, 'test it'))
+        pb('\033]99;moo=foo;test it\x07', ('desktop_notify', 99, 'moo=foo;test it'))
+        self.ae(c.notifications, [(9, ''), (9, 'test it'), (99, 'moo=foo;test it')])
+        c.clear()
+        pb('\033]8;;\x07', ('set_active_hyperlink', None, None))
+        pb('\033]8moo\x07', ('Ignoring malformed OSC 8 code',))
+        pb('\033]8;moo\x07', ('Ignoring malformed OSC 8 code',))
+        pb('\033]8;id=xyz;\x07', ('set_active_hyperlink', 'xyz', None))
+        pb('\033]8;moo:x=z:id=xyz:id=abc;http://yay;.com\x07', ('set_active_hyperlink', 'xyz', 'http://yay;.com'))
+
+    def test_desktop_notify(self):
+        reset_registry()
+        notifications = []
+        activations = []
+        prev_cmd = NotificationCommand()
+
+        def reset():
+            nonlocal prev_cmd
+            reset_registry()
+            del notifications[:]
+            del activations[:]
+            prev_cmd = NotificationCommand()
+
+        def notify(title, body, identifier):
+            notifications.append((title, body, identifier))
+
+        def h(raw_data, osc_code=99, window_id=1):
+            nonlocal prev_cmd
+            x = handle_notification_cmd(osc_code, raw_data, window_id, prev_cmd, notify)
+            if x is not None and osc_code == 99:
+                prev_cmd = x
+
+        def activated(identifier, window_id, focus, report):
+            activations.append((identifier, window_id, focus, report))
+
+        h('test it', osc_code=9)
+        self.ae(notifications, [('test it', '', 'i0')])
+        notification_activated(notifications[-1][-1], activated)
+        self.ae(activations, [('0', 1, True, False)])
+        reset()
+
+        h('d=0:i=x;title')
+        h('d=1:i=x:p=body;body')
+        self.ae(notifications, [('title', 'body', 'i0')])
+        notification_activated(notifications[-1][-1], activated)
+        self.ae(activations, [('x', 1, True, False)])
+        reset()
+
+        h('i=x:p=body:a=-focus;body')
+        self.ae(notifications, [('body', '', 'i0')])
+        notification_activated(notifications[-1][-1], activated)
+        self.ae(activations, [])
+        reset()
+
+        h('i=x:e=1;' + standard_b64encode(b'title').decode('ascii'))
+        self.ae(notifications, [('title', '', 'i0')])
+        notification_activated(notifications[-1][-1], activated)
+        self.ae(activations, [('x', 1, True, False)])
+        reset()
+
+        h('d=0:i=x:a=-report;title')
+        h('d=1:i=x:a=report;body')
+        self.ae(notifications, [('titlebody', '', 'i0')])
+        notification_activated(notifications[-1][-1], activated)
+        self.ae(activations, [('x', 1, True, True)])
+        reset()
+
+        h(';title')
+        self.ae(notifications, [('title', '', 'i0')])
+        notification_activated(notifications[-1][-1], activated)
+        self.ae(activations, [('0', 1, True, False)])
+        reset()
 
     def test_dcs_codes(self):
         s = self.create_screen()
@@ -280,7 +379,7 @@ class TestParser(BaseTest):
             for f in 'action delete_action transmission_type compressed'.split():
                 k.setdefault(f, b'\0')
             for f in ('format more id data_sz data_offset width height x_offset y_offset data_height data_width'
-                      ' num_cells num_lines cell_x_offset cell_y_offset z_index').split():
+                      ' num_cells num_lines cell_x_offset cell_y_offset z_index placement_id image_number quiet').split():
                 k.setdefault(f, 0)
             p = k.pop('payload', '').encode('utf-8')
             k['payload_sz'] = len(p)
@@ -296,11 +395,12 @@ class TestParser(BaseTest):
         pb = partial(self.parse_bytes_dump, s)
         uint32_max = 2**32 - 1
         t('i=%d' % uint32_max, id=uint32_max)
+        t('i=3,p=4', id=3, placement_id=4)
         e('i=%d' % (uint32_max + 1), 'Malformed GraphicsCommand control block, number is too large')
         pb('\033_Gi=12\033\\', c(id=12))
         t('a=t,t=d,s=100,z=-9', payload='X', action='t', transmission_type='d', data_width=100, z_index=-9, payload_sz=1)
         t('a=t,t=d,s=100,z=9', payload='payload', action='t', transmission_type='d', data_width=100, z_index=9, payload_sz=7)
-        t('a=t,t=d,s=100,z=9', action='t', transmission_type='d', data_width=100, z_index=9)
+        t('a=t,t=d,s=100,z=9,q=2', action='t', transmission_type='d', data_width=100, z_index=9, quiet=2)
         e(',s=1', 'Malformed GraphicsCommand control block, invalid key character: 0x2c')
         e('W=1', 'Malformed GraphicsCommand control block, invalid key character: 0x57')
         e('1=1', 'Malformed GraphicsCommand control block, invalid key character: 0x31')

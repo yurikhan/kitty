@@ -1314,6 +1314,16 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, int which, int a, int b, int c,
     glfw_window = NULL;
 }
 
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+    if (item.action == @selector(performMiniaturize:)) return YES;
+    return [super validateMenuItem:item];
+}
+
+- (void)performMiniaturize:(id)sender
+{
+    if (glfw_window && (!glfw_window->decorated || glfw_window->ns.titlebar_hidden)) [self miniaturize:self];
+    else [super performMiniaturize:sender];
+}
 
 - (BOOL)canBecomeKeyWindow
 {
@@ -1460,6 +1470,11 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window,
         }
         else if (ctxconfig->source == GLFW_EGL_CONTEXT_API)
         {
+            // EGL implementation on macOS use CALayer* EGLNativeWindowType so we
+            // need to get the layer for EGL window surface creation.
+            [window->ns.view setWantsLayer:YES];
+            window->ns.layer = [window->ns.view layer];
+
             if (!_glfwInitEGL())
                 return false;
             if (!_glfwCreateContextEGL(window, ctxconfig, fbconfig))
@@ -1522,7 +1537,8 @@ void _glfwPlatformSetWindowTitle(_GLFWwindow* window UNUSED, const char* title)
 void _glfwPlatformSetWindowIcon(_GLFWwindow* window UNUSED,
                                 int count UNUSED, const GLFWimage* images UNUSED)
 {
-    // Regular windows do not have icons
+    _glfwInputError(GLFW_FEATURE_UNAVAILABLE,
+                    "Cocoa: Regular windows do not have icons on macOS");
 }
 
 void _glfwPlatformGetWindowPos(_GLFWwindow* window, int* xpos, int* ypos)
@@ -1589,10 +1605,10 @@ void _glfwPlatformSetWindowSizeLimits(_GLFWwindow* window,
 
 void _glfwPlatformSetWindowAspectRatio(_GLFWwindow* window, int numer, int denom)
 {
-    if (numer != GLFW_DONT_CARE && denom != GLFW_DONT_CARE)
-        [window->ns.object setContentAspectRatio:NSMakeSize(numer, denom)];
-    else
+    if (numer == GLFW_DONT_CARE || denom == GLFW_DONT_CARE)
         [window->ns.object setResizeIncrements:NSMakeSize(1.0, 1.0)];
+    else
+        [window->ns.object setContentAspectRatio:NSMakeSize(numer, denom)];
 }
 
 void _glfwPlatformSetWindowSizeIncrements(_GLFWwindow* window, int widthincr, int heightincr)
@@ -1848,6 +1864,11 @@ void _glfwPlatformSetWindowFloating(_GLFWwindow* window, bool enabled)
         [window->ns.object setLevel:NSNormalWindowLevel];
 }
 
+void _glfwPlatformSetWindowMousePassthrough(_GLFWwindow* window, bool enabled)
+{
+    [window->ns.object setIgnoresMouseEvents:enabled];
+}
+
 float _glfwPlatformGetWindowOpacity(_GLFWwindow* window)
 {
     return (float) [window->ns.object alphaValue];
@@ -1856,6 +1877,17 @@ float _glfwPlatformGetWindowOpacity(_GLFWwindow* window)
 void _glfwPlatformSetWindowOpacity(_GLFWwindow* window, float opacity)
 {
     [window->ns.object setAlphaValue:opacity];
+}
+
+void _glfwPlatformSetRawMouseMotion(_GLFWwindow *window UNUSED, bool enabled UNUSED)
+{
+    _glfwInputError(GLFW_FEATURE_UNIMPLEMENTED,
+                    "Cocoa: Raw mouse motion not yet implemented");
+}
+
+bool _glfwPlatformRawMouseMotionSupported(void)
+{
+    return false;
 }
 
 void
@@ -1972,8 +2004,10 @@ int _glfwPlatformCreateCursor(_GLFWcursor* cursor,
                         bitmapFormat:NSBitmapFormatAlphaNonpremultiplied
                         bytesPerRow:src->width * 4
                         bitsPerPixel:32];
-        if (rep == nil)
+        if (rep == nil) {
+            [native release];
             return false;
+        }
 
         memcpy([rep bitmapData], src->pixels, src->width * src->height * 4);
         [native addRepresentation:rep];
@@ -2038,18 +2072,38 @@ bool _glfwPlatformToggleFullscreen(_GLFWwindow* w, unsigned int flags) {
     bool made_fullscreen = true;
     bool traditional = !(flags & 1);
     NSWindowStyleMask sm = [window styleMask];
-    bool in_fullscreen = sm & NSWindowStyleMaskFullScreen;
     if (traditional) {
-        if (!(in_fullscreen)) {
-            sm |= NSWindowStyleMaskBorderless | NSWindowStyleMaskFullScreen;
-            [[NSApplication sharedApplication] setPresentationOptions: NSApplicationPresentationAutoHideMenuBar | NSApplicationPresentationAutoHideDock];
+        if (@available(macOS 10.16, *)) {
+            // As of Big Turd NSWindowStyleMaskFullScreen is no longer useable
+            if (!w->ns.in_traditional_fullscreen) {
+                w->ns.pre_full_screen_style_mask = sm;
+                [window setStyleMask: NSWindowStyleMaskBorderless];
+                [[NSApplication sharedApplication] setPresentationOptions: NSApplicationPresentationAutoHideMenuBar | NSApplicationPresentationAutoHideDock];
+                [window setFrame:[window.screen frame] display:YES];
+                w->ns.in_traditional_fullscreen = true;
+            } else {
+                made_fullscreen = false;
+                [window setStyleMask: w->ns.pre_full_screen_style_mask];
+                [[NSApplication sharedApplication] setPresentationOptions: NSApplicationPresentationDefault];
+                w->ns.in_traditional_fullscreen = false;
+            }
+            // for some reason despite calling this selector, the window doesnt actually get keyboard focus till you click on it.
+            // presumably a bug with NSWindowStyleMaskBorderless windows
+            [window performSelector:@selector(makeKeyAndOrderFront:) withObject:nil afterDelay:0];
         } else {
-            made_fullscreen = false;
-            sm &= ~(NSWindowStyleMaskBorderless | NSWindowStyleMaskFullScreen);
-            [[NSApplication sharedApplication] setPresentationOptions: NSApplicationPresentationDefault];
+            bool in_fullscreen = sm & NSWindowStyleMaskFullScreen;
+            if (!(in_fullscreen)) {
+                sm |= NSWindowStyleMaskBorderless | NSWindowStyleMaskFullScreen;
+                [[NSApplication sharedApplication] setPresentationOptions: NSApplicationPresentationAutoHideMenuBar | NSApplicationPresentationAutoHideDock];
+            } else {
+                made_fullscreen = false;
+                sm &= ~(NSWindowStyleMaskBorderless | NSWindowStyleMaskFullScreen);
+                [[NSApplication sharedApplication] setPresentationOptions: NSApplicationPresentationDefault];
+            }
+            [window setStyleMask: sm];
         }
-        [window setStyleMask: sm];
     } else {
+        bool in_fullscreen = sm & NSWindowStyleMaskFullScreen;
         if (in_fullscreen) made_fullscreen = false;
         [window toggleFullScreen: nil];
     }
@@ -2086,6 +2140,47 @@ const char* _glfwPlatformGetClipboardString(void)
     _glfw.ns.clipboardString = _glfw_strdup([object UTF8String]);
 
     return _glfw.ns.clipboardString;
+}
+
+EGLenum _glfwPlatformGetEGLPlatform(EGLint** attribs)
+{
+    if (_glfw.egl.ANGLE_platform_angle)
+    {
+        int type = 0;
+
+        if (_glfw.egl.ANGLE_platform_angle_opengl)
+        {
+            if (_glfw.hints.init.angleType == GLFW_ANGLE_PLATFORM_TYPE_OPENGL)
+                type = EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE;
+        }
+
+        if (_glfw.egl.ANGLE_platform_angle_metal)
+        {
+            if (_glfw.hints.init.angleType == GLFW_ANGLE_PLATFORM_TYPE_METAL)
+                type = EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE;
+        }
+
+        if (type)
+        {
+            *attribs = calloc(3, sizeof(EGLint));
+            (*attribs)[0] = EGL_PLATFORM_ANGLE_TYPE_ANGLE;
+            (*attribs)[1] = type;
+            (*attribs)[2] = EGL_NONE;
+            return EGL_PLATFORM_ANGLE_ANGLE;
+        }
+    }
+
+    return 0;
+}
+
+EGLNativeDisplayType _glfwPlatformGetEGLNativeDisplay(void)
+{
+    return EGL_DEFAULT_DISPLAY;
+}
+
+EGLNativeWindowType _glfwPlatformGetEGLNativeWindow(_GLFWwindow* window)
+{
+    return window->ns.layer;
 }
 
 void _glfwPlatformGetRequiredInstanceExtensions(char** extensions)
@@ -2206,6 +2301,29 @@ GLFWAPI id glfwGetCocoaWindow(GLFWwindow* handle)
     _GLFWwindow* window = (_GLFWwindow*) handle;
     _GLFW_REQUIRE_INIT_OR_RETURN(nil);
     return window->ns.object;
+}
+
+GLFWAPI void glfwHideCocoaTitlebar(GLFWwindow* handle, bool yes) {
+    @autoreleasepool {
+    _GLFWwindow* w = (_GLFWwindow*) handle;
+    NSWindow *window = w->ns.object;
+    w->ns.titlebar_hidden = yes;
+    NSButton *button;
+    button = [window standardWindowButton: NSWindowCloseButton];
+    if (button) button.hidden = yes;
+    button = [window standardWindowButton: NSWindowMiniaturizeButton];
+    if (button) button.hidden = yes;
+    button = [window standardWindowButton: NSWindowZoomButton];
+    [window setTitlebarAppearsTransparent:yes];
+    if (button) button.hidden = yes;
+    if (yes) {
+        [window setTitleVisibility:NSWindowTitleHidden];
+        [window setStyleMask: [window styleMask] | NSWindowStyleMaskFullSizeContentView];
+    } else {
+        [window setTitleVisibility:NSWindowTitleVisible];
+        [window setStyleMask: [window styleMask] & ~NSWindowStyleMaskFullSizeContentView];
+    }
+    } // autoreleasepool
 }
 
 GLFWAPI GLFWcocoatextinputfilterfun glfwSetCocoaTextInputFilter(GLFWwindow *handle, GLFWcocoatextinputfilterfun callback) {
@@ -2383,7 +2501,7 @@ START_ALLOW_CASE_RANGE
 END_ALLOW_CASE_RANGE
     }
     if (utf_16_key != 0) {
-         strncpy(cocoa_key, [[NSString stringWithCharacters:&utf_16_key length:1] UTF8String], key_sz - 1);
+        strncpy(cocoa_key, [[NSString stringWithCharacters:&utf_16_key length:1] UTF8String], key_sz - 1);
     } else {
         unsigned str_pos = 0;
         for (unsigned i = 0; i < 4 && str_pos < key_sz - 1; i++) {

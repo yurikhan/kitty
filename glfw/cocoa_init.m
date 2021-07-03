@@ -424,11 +424,7 @@ display_reconfigured(CGDirectDisplayID display UNUSED, CGDisplayChangeSummaryFla
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender
 {
     (void)sender;
-    _GLFWwindow* window;
-
-    for (window = _glfw.windowListHead;  window;  window = window->next)
-        _glfwInputWindowCloseRequest(window);
-
+    if (_glfw.callbacks.application_close) _glfw.callbacks.application_close(0);
     return NSTerminateCancel;
 }
 
@@ -673,8 +669,6 @@ int _glfwPlatformInit(void)
     if (!initializeTIS())
         return false;
 
-    _glfwInitJoysticksNS();
-
     _glfwPollMonitorsNS();
     return true;
 
@@ -727,7 +721,6 @@ void _glfwPlatformTerminate(void)
     free(_glfw.ns.clipboardString);
 
     _glfwTerminateNSGL();
-    _glfwTerminateJoysticksNS();
 
     } // autoreleasepool
 }

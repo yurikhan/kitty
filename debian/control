@@ -2,19 +2,20 @@ Source: kitty
 Priority: optional
 Maintainer: James McCoy <jamessan@debian.org>
 Section: x11
-Standards-Version: 4.5.0
+Standards-Version: 4.5.1
 Rules-Requires-Root: no
 Homepage: https://sw.kovidgoyal.net/kitty/
 Vcs-Git: https://salsa.debian.org/jamessan/kitty.git
 Vcs-Browser: https://salsa.debian.org/jamessan/kitty
 Build-Depends:
- debhelper-compat (= 12),
+ debhelper-compat (= 13),
  dh-python,
  libdbus-1-dev,
  libfontconfig1-dev,
  libfreetype6-dev,
  libgl1-mesa-dev,
  libharfbuzz-dev (>= 1.5.0),
+ liblcms2-dev,
  libpng-dev,
  libx11-xcb-dev,
  libxcursor-dev,
@@ -27,6 +28,7 @@ Build-Depends:
  python3-dev (>= 3.6),
  python3-pil <!nocheck>,
  python3-sphinx,
+ uthash-dev,
  wayland-protocols [linux-any],
  zlib1g-dev,
 

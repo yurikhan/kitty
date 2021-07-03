@@ -7,7 +7,10 @@ import re
 import shlex
 import subprocess
 import sys
-from typing import List, NoReturn, Set, Tuple
+from contextlib import suppress
+from typing import List, NoReturn, Optional, Set, Tuple
+
+from kitty.utils import SSHConnectionData
 
 SHELL_SCRIPT = '''\
 #!/bin/sh
@@ -60,6 +63,41 @@ def get_ssh_cli() -> Tuple[Set[str], Set[str]]:
     return set('-' + x for x in boolean_ssh_args), set('-' + x for x in other_ssh_args)
 
 
+def get_connection_data(args: List[str]) -> Optional[SSHConnectionData]:
+    boolean_ssh_args, other_ssh_args = get_ssh_cli()
+    found_ssh = ''
+    port: Optional[int] = None
+    expecting_port = False
+    expecting_option_val = False
+
+    for i, arg in enumerate(args):
+        if not found_ssh:
+            if os.path.basename(arg).lower() in ('ssh', 'ssh.exe'):
+                found_ssh = arg
+            continue
+        if arg.startswith('-') and not expecting_option_val:
+            if arg in boolean_ssh_args:
+                continue
+            if arg.startswith('-p'):
+                if arg[2:].isdigit():
+                    with suppress(Exception):
+                        port = int(arg[2:])
+                elif arg == '-p':
+                    expecting_port = True
+            expecting_option_val = True
+            continue
+
+        if expecting_option_val:
+            if expecting_port:
+                with suppress(Exception):
+                    port = int(arg)
+                expecting_port = False
+            expecting_option_val = False
+            continue
+
+        return SSHConnectionData(found_ssh, arg, port)
+
+
 def parse_ssh_args(args: List[str]) -> Tuple[List[str], List[str], bool]:
     boolean_ssh_args, other_ssh_args = get_ssh_cli()
     passthrough_args = {'-' + x for x in 'Nnf'}
@@ -80,15 +118,14 @@ def parse_ssh_args(args: List[str]) -> Tuple[List[str], List[str], bool]:
                 if arg in boolean_ssh_args:
                     ssh_args.append(arg)
                     continue
-                if arg.startswith('-p') and arg[2:].isdigit():
-                    ssh_args.append(arg)
-                    continue
                 if arg in other_ssh_args:
-                    if i != len(all_args) - 1:
-                        raise SystemExit('Option {} cannot occur in the middle'.format(arg))
                     ssh_args.append(arg)
-                    expecting_option_val = True
-                    continue
+                    rest = all_args[i+1:]
+                    if rest:
+                        ssh_args.append(rest)
+                    else:
+                        expecting_option_val = True
+                    break
                 raise SystemExit('Unknown option: {}'.format(arg))
             continue
         if expecting_option_val:

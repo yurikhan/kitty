@@ -4,6 +4,337 @@ Changelog
 |kitty| is a feature full, cross-platform, *fast*, GPU based terminal emulator.
 To update |kitty|, :doc:`follow the instructions <binary>`.
 
+0.19.3 [2020-12-19]
+-------------------
+
+- Happy holidays to all kitty users!
+
+- A new :doc:`broadcast <kittens/broadcast>` kitten to type in all kitty windows
+  simultaneously (:iss:`1569`)
+
+- Add a new mappable `select_tab` action to choose a tab to switch to even
+  when the tab bar is hidden (:iss:`3115`)
+
+- Allow specifying text formatting in :opt:`tab_title_template` (:iss:`3146`)
+
+- Linux: Read :opt:`font_features` from the FontConfig database as well, so
+  that they can be configured in a single, central location (:pull:`3174`)
+
+- Graphics protocol: Add support for giving individual image placements their
+  own ids and for asking the terminal emulator to assign ids for images. Also
+  allow suppressing responses from the terminal to commands.
+  These are backwards compatible protocol extensions. (:iss:`3133`,
+  :iss:`3163`)
+
+- Distribute extra pixels among all eight-blocks rather than adding them
+  all to the last block (:iss:`3097`)
+
+- Fix drawing of a few sextant characters incorrect (:pull:`3105`)
+
+- macOS: Fix minimize not working for chromeless windows (:iss:`3112`)
+
+- Preserve lines in the scrollback if a scrolling region is defined that
+  is contiguous with the top of the screen (:iss:`3113`)
+
+- Wayland: Fix key repeat being stopped by the release of an unrelated key
+  (:iss:`2191`)
+
+- Add an option, :opt:`detect_urls` to control whether kitty will detect URLs
+  when the mouse moves over them (:pull:`3118`)
+
+- Graphics protocol: Dont return filename in the error message when opening file
+  fails, since filenames can contain control characters (:iss:`3128`)
+
+- macOS: Partial fix for traditional fullscreen not working on Big Sur
+  (:iss:`3100`)
+
+- Fix one ANSI formatting escape code not being removed from the pager history
+  buffer when piping it as plain text (:iss:`3132`)
+
+- Match the save/restore cursor behavior of other terminals, for the sake of
+  interoperability. This means that doing a DECRC without a prior DECSC is now
+  undefined (:iss:`1264`)
+
+- Fix mapping ``remote_control send-text`` not working (:iss:`3147`)
+
+- Add a ``right`` option for :opt:`tab_switch_strategy` (:pull:`3155`)
+
+- Fix a regression in 0.19.0 that caused a rare crash when using the optional
+  :opt:`scrollback_pager_history_size` (:iss:`3049`)
+
+- Full screen kittens: Fix incorrect cursor position after kitten quits
+  (:iss:`3176`)
+
+
+0.19.2 [2020-11-13]
+-------------------
+
+- A new :doc:`kittens/query_terminal` kitten to easily query the running kitty
+  via escape codes to detect its version, and the values of
+  configuration options that enable or disable terminal features.
+
+- Options to control mouse pointer shape, :opt:`default_pointer_shape`, and
+  :opt:`pointer_shape_when_dragging` (:pull:`3041`)
+
+- Font independent rendering for braille characters, which ensures they are properly
+  aligned at all font sizes.
+
+- Fix a regression in 0.19.0 that caused borders not to be drawn when setting
+  :opt:`window_margin_width` and keeping :opt:`draw_minimal_borders` on
+  (:iss:`3017`)
+
+- Fix a regression in 0.19.0 that broke rendering of one-eight bar unicode
+  characters at very small font sizes (:iss:`3025`)
+
+- Wayland: Fix a crash under GNOME when using multiple OS windows
+  (:pull:`3066`)
+
+- Fix selections created by dragging upwards not being auto-cleared when
+  screen contents change (:pull:`3028`)
+
+- macOS: Fix kitty not being added to PATH automatically when using pre-built
+  binaries (:iss:`3063`)
+
+- Allow adding MIME definitions to kitty by placing a ``mime.types`` file in
+  the kitty config directory (:iss:`3056`)
+
+- Dont ignore :option:`--title` when using a session file that defines no
+  windows (:iss:`3055`)
+
+- Fix the send_text action not working in URL handlers (:iss:`3081`)
+
+- Fix last character of URL not being detected if it is the only character on a
+  new line (:iss:`3088`)
+
+- Don't restrict the ICH,DCH,REP control codes to only the current scroll region  (:iss:`3090`, :iss:`3096`)
+
+
+0.19.1 [2020-10-06]
+-------------------
+
+- hints kitten: Add an ``ip`` type for easy selection of IP addresses
+  (:pull:`3009`)
+
+- Fix a regression that caused a segfault when using
+  :opt:`scrollback_pager_history_size` and it needs to be expanded (:iss:`3011`)
+
+- Fix update available notifications repeating (:pull:`3006`)
+
+
+0.19.0 [2020-10-04]
+-------------------
+
+- Add support for `hyperlinks from terminal programs
+  <https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda>`_.
+  Controlled via :opt:`allow_hyperlinks` (:iss:`68`)
+
+- Add support for easily editing or downloading files over SSH sessions
+  without the need for any special software, see :doc:`kittens/remote_file`
+
+- A new :doc:`kittens/hyperlinked_grep` kitten to easily search files and open
+  the results at the matched line by clicking on them.
+
+- Allow customizing the :doc:`actions kitty takes <open_actions>` when clicking on URLs
+
+- Improve rendering of borders when using minimal borders. Use less space and
+  do not display a box around active windows
+
+- Add a new extensible escape code to allow terminal programs to trigger
+  desktop notifications. See :ref:`desktop_notifications` (:iss:`1474`)
+
+- Implement special rendering for various characters from the set of "Symbols
+  for Legacy Computing" from the Unicode 13 standard
+
+- Unicode input kitten: Allow choosing symbols from the NERD font as well.
+  These are mostly Private Use symbols not in any standard, however are common. (:iss:`2972`)
+
+- Allow specifying border sizes in either pts or pixels. Change the default to
+  0.5pt borders as this works best with the new minimal border style
+
+- Add support for displaying correct colors with non-sRGB PNG files (Adds a
+  dependency on liblcms2)
+
+- hints kitten: Add a new :option:`kitty +kitten hints --type` of ``hyperlink`` useful
+  for activating hyperlinks using just the keyboard
+
+- Allow tracking focus change events in watchers (:iss:`2918`)
+
+- Allow specifying watchers in session files and via a command line argument
+  (:iss:`2933`)
+
+- Add a setting :opt:`tab_activity_symbol` to show a symbol in the tab title
+  if one of the windows has some activity after it was last focused
+  (:iss:`2515`)
+
+- macOS: Switch to using the User Notifications framework for notifications.
+  The current notifications framework has been deprecated in Big Sur. The new
+  framework only allows notifications from signed and notarized applications,
+  so people using kitty from homebrew/source are out of luck. Complain to
+  Apple.
+
+- When in the main screen and a program grabs the mouse, do not use the scroll
+  wheel events to scroll the scrollback buffer, instead send them to the
+  program (:iss:`2939`)
+
+- Fix unfocused windows in which a bell occurs not changing their border color
+  to red until a relayout
+
+- Linux: Fix automatic detection of bold/italic faces for fonts such as IBM
+  Plex Mono that have the regular face with a full name that is the same as the
+  family name (:iss:`2951`)
+
+- Fix a regression that broke :opt:`kitten_alias` (:iss:`2952`)
+
+- Fix a regression that broke the ``move_window_to_top`` action (:pull:`2953`)
+
+- Fix a memory leak when changing font sizes
+
+- Fix some lines in the scrollback buffer not being properly rendered after a
+  window resize/font size change (:iss:`2619`)
+
+
+0.18.3 [2020-08-11]
+-------------------
+
+- hints kitten: Allow customizing hint colors (:pull:`2894`)
+
+- Wayland: Fix a typo in the previous release that broke reading mouse cursor size (:iss:`2895`)
+
+- Fix a regression in the previous release that could cause an exception during
+  startup in rare circumstances (:iss:`2896`)
+
+- Fix image leaving behind a black rectangle when switch away and back to
+  alternate screen (:iss:`2901`)
+
+- Fix one pixel mis-alignment of rounded corners when either the cell
+  dimensions or the thickness of the line is an odd number of pixels
+  (:iss:`2907`)
+
+- Fix a regression that broke specifying OS window size in the session file
+  (:iss:`2908`)
+
+
+0.18.2 [2020-07-28]
+--------------------
+
+- X11: Improve handling of multiple keyboards. Now pressing a modifier key in
+  one keyboard and a normal key in another works (:iss:`2362`). Don't rebuild
+  keymaps on new keyboard events that only change geometry (:iss:`2787`).
+  Better handling of multiple keyboards with incompatible layouts (:iss:`2726`)
+
+- Improve anti-aliasing of triangular box drawing characters, noticeable on
+  low-resolution screens (:iss:`2844`)
+
+- Fix ``kitty @ send-text`` not working reliably when using a socket for remote
+  control (:iss:`2852`)
+
+- Implement support for box drawing rounded-corners characters (:iss:`2240`)
+
+- Allow setting the class for new OS windows in a session file
+
+- When a character from the Unicode Dingbat block is followed by a space, use
+  the extra space to render a larger version of the character (:iss:`2850`)
+
+- macOS: Fix the LC_CTYPE env var being set to UTF-8 on systems in which the
+  language and country code do not form a valid locale (:iss:`1233`)
+
+- macOS: Fix :kbd:`cmd+plus` not changing font size (:iss:`2839`)
+
+- Make neighboring window selection in grid and splits layouts more intelligent
+  (:pull:`2840`)
+
+- Allow passing the current selection to kittens (:iss:`2796`)
+
+- Fix pre-edit text not always being cleared with ibus input (:iss:`2862`)
+
+- Allow setting the :opt:`background_opacity` of new OS windows created via
+  :option:`kitty --single-instance` using the :option:`kitty --override` command line
+  argument (:iss:`2806`)
+
+- Fix the CSI J (Erase in display ED) escape code not removing line continued
+  markers (:iss:`2809`)
+
+- hints kitten: In linenumber mode expand paths that starts with ~
+  (:iss:`2822`)
+
+- Fix ``launch --location=last`` not working (:iss:`2841`)
+
+- Fix incorrect centering when a PUA or symbol glyph is followed by more than one space
+
+- Have the :opt:`confirm_os_window_close` option also apply when closing tabs
+  with multiple windows (:iss:`2857`)
+
+- Add support for legacy DECSET codes 47, 1047 and 1048 (:pull:`2871`)
+
+- macOS: no longer render emoji 20% below the baseline. This caused some emoji
+  to be cut-off and also look misaligned with very high cells (:iss:`2873`)
+
+- macOS: Make the window id of OS windows available in the ``WINDOWID``
+  environment variable (:pull:`2877`)
+
+- Wayland: Fix a regression in 0.18.0 that could cause crashes related to mouse
+  cursors in some rare circumstances (:iss:`2810`)
+
+- Fix change in window size that does not change number of cells not being
+  reported to the kernel (:iss:`2880`)
+
+
+0.18.1 [2020-06-23]
+--------------------
+
+- macOS: Fix for diff kitten not working with python 3.8 (:iss:`2780`)
+
+
+0.18.0 [2020-06-20]
+--------------------
+
+- Allow multiple overlay windows per normal window
+
+- Add an option :opt:`confirm_os_window_close` to ask for confirmation
+  when closing an OS window with multiple kitty windows.
+
+- Tall and Fat layouts: Add a ``mirrored`` option to put the full size window
+  on the opposite edge of the screen (:iss:`2654`)
+
+- Tall and Fat layouts: Add mappable actions to increase or decrease the number
+  of full size windows (:iss:`2688`)
+
+- Allow sending arbitrary signals to the current foreground process in a window
+  using either a mapping in kitty.conf or via remote control (:iss:`2778`)
+
+- Allow sending the back and forward mouse buttons to terminal applications
+  (:pull:`2742`)
+
+- **Backwards incompatibility**: The numbers used to encode mouse buttons
+  for the ``send_mouse_event`` function that can be used in kittens have
+  been changed (see :ref:`send_mouse_event`).
+
+- Add a new mappable ``quit`` action to quit kitty completely.
+
+- Fix marks using different colors with regexes using only a single color
+  (:pull:`2663`)
+
+- Linux: Workaround for broken Nvidia drivers for old cards (:iss:`456`)
+
+- Wayland: Fix kitty being killed on some Wayland compositors if a hidden window
+  has a lot of output (:iss:`2329`)
+
+- BSD: Fix controlling terminal not being established (:pull:`2686`)
+
+- Add support for the CSI REP escape code (:pull:`2702`)
+
+- Wayland: Fix mouse cursor rendering on HiDPI screens (:pull:`2709`)
+
+- X11: Recompile keymaps on XkbNewKeyboardNotify events (:iss:`2726`)
+
+- X11: Reduce startup time by ~25% by only querying GLX for framebuffer
+  configurations once (:iss:`2754`)
+
+- macOS: Notarize the kitty application bundle (:iss:`2040`)
+
+- Fix the kitty shell launched via a mapping needlessly requiring
+  :opt:`allow_remote_control` to be turned on.
+
 
 0.17.4 [2020-05-09]
 --------------------

@@ -254,6 +254,8 @@ def complete_kitty_cli_arg(ans: Completions, opt: Optional[OptionDict], prefix: 
         complete_files_and_dirs(ans, prefix, files_group_name='Config files', predicate=is_conf_file)
     elif dest == 'session':
         complete_files_and_dirs(ans, prefix, files_group_name='Session files')
+    elif dest == 'watcher':
+        complete_files_and_dirs(ans, prefix, files_group_name='Watcher files')
     elif dest == 'directory':
         complete_files_and_dirs(ans, prefix, files_group_name='Directories', predicate=os.path.isdir)
     elif dest == 'start_as':
@@ -392,10 +394,10 @@ def complete_files_and_dirs(
 
 
 def complete_icat_args(ans: Completions, opt: Optional[OptionDict], prefix: str, unknown_args: Delegate) -> None:
-    from mimetypes import guess_type
+    from .guess_mime_type import guess_type
 
     def icat_file_predicate(filename: str) -> bool:
-        mt = guess_type(filename)[0]
+        mt = guess_type(filename)
         if mt and mt.startswith('image/'):
             return True
         return False

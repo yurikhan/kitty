@@ -422,14 +422,18 @@ static char* convertLatin1toUTF8(const char* source)
     size_t size = 1;
     const char* sp;
 
-    for (sp = source;  *sp;  sp++)
-        size += (*sp & 0x80) ? 2 : 1;
+    if (source) {
+        for (sp = source;  *sp;  sp++)
+            size += (*sp & 0x80) ? 2 : 1;
+    }
 
     char* target = calloc(size, 1);
     char* tp = target;
 
-    for (sp = source;  *sp;  sp++)
-        tp += encodeUTF8(tp, *sp);
+    if (source) {
+        for (sp = source;  *sp;  sp++)
+            tp += encodeUTF8(tp, *sp);
+    }
 
     return target;
 }
@@ -455,22 +459,41 @@ static void updateCursorImage(_GLFWwindow* window)
     }
 }
 
+// Enable XI2 raw mouse motion events
+//
+static void enableRawMouseMotion(_GLFWwindow* window UNUSED)
+{
+    XIEventMask em;
+    unsigned char mask[XIMaskLen(XI_RawMotion)] = { 0 };
+
+    em.deviceid = XIAllMasterDevices;
+    em.mask_len = sizeof(mask);
+    em.mask = mask;
+    XISetMask(mask, XI_RawMotion);
+
+    XISelectEvents(_glfw.x11.display, _glfw.x11.root, &em, 1);
+}
+
+// Disable XI2 raw mouse motion events
+//
+static void disableRawMouseMotion(_GLFWwindow* window UNUSED)
+{
+    XIEventMask em;
+    unsigned char mask[] = { 0 };
+
+    em.deviceid = XIAllMasterDevices;
+    em.mask_len = sizeof(mask);
+    em.mask = mask;
+
+    XISelectEvents(_glfw.x11.display, _glfw.x11.root, &em, 1);
+}
+
 // Apply disabled cursor mode to a focused window
 //
 static void disableCursor(_GLFWwindow* window)
 {
-    if (_glfw.x11.xi.available)
-    {
-        XIEventMask em;
-        unsigned char mask[XIMaskLen(XI_RawMotion)] = { 0 };
-
-        em.deviceid = XIAllMasterDevices;
-        em.mask_len = sizeof(mask);
-        em.mask = mask;
-        XISetMask(mask, XI_RawMotion);
-
-        XISelectEvents(_glfw.x11.display, _glfw.x11.root, &em, 1);
-    }
+    if (window->rawMouseMotion)
+        enableRawMouseMotion(window);
 
     _glfw.x11.disabledCursorWindow = window;
     _glfwPlatformGetCursorPos(window,
@@ -490,17 +513,8 @@ static void disableCursor(_GLFWwindow* window)
 //
 static void enableCursor(_GLFWwindow* window)
 {
-    if (_glfw.x11.xi.available)
-    {
-        XIEventMask em;
-        unsigned char mask[] = { 0 };
-
-        em.deviceid = XIAllMasterDevices;
-        em.mask_len = sizeof(mask);
-        em.mask = mask;
-
-        XISelectEvents(_glfw.x11.display, _glfw.x11.root, &em, 1);
-    }
+    if (window->rawMouseMotion)
+        disableRawMouseMotion(window);
 
     _glfw.x11.disabledCursorWindow = NULL;
     XUngrabPointer(_glfw.x11.display, CurrentTime);
@@ -761,7 +775,7 @@ static Atom writeTargetToProperty(const XSelectionRequestEvent* request)
 
             if (j < formatCount)
             {
-                XChangeProperty(_glfw.x11.display,
+                if (selectionString) XChangeProperty(_glfw.x11.display,
                                 request->requestor,
                                 targets[i + 1],
                                 targets[i],
@@ -813,7 +827,7 @@ static Atom writeTargetToProperty(const XSelectionRequestEvent* request)
         {
             // The requested target is one we support
 
-            XChangeProperty(_glfw.x11.display,
+            if (selectionString) XChangeProperty(_glfw.x11.display,
                             request->requestor,
                             request->property,
                             request->target,
@@ -944,8 +958,10 @@ static const char* getSelectionString(Atom selection)
                                       (XPointer) &notification))
                 {
                     monotonic_t time = glfwGetTime();
-                    if (time - start > s_to_monotonic_t(2ll))
+                    if (time - start > s_to_monotonic_t(2ll)) {
+                        free(string);
                         return "";
+                    }
                     waitForX11Event(s_to_monotonic_t(2ll) - (time - start));
                 }
 
@@ -1122,6 +1138,7 @@ static void processEvent(XEvent *event)
             _GLFWwindow* window = _glfw.x11.disabledCursorWindow;
 
             if (window &&
+                window->rawMouseMotion &&
                 event->xcookie.extension == _glfw.x11.xi.majorOpcode &&
                 XGetEventData(_glfw.x11.display, &event->xcookie) &&
                 event->xcookie.evtype == XI_RawMotion)
@@ -1165,12 +1182,26 @@ static void processEvent(XEvent *event)
     else if (event->type == _glfw.x11.xkb.eventBase)
     {
         XkbEvent *kb_event = (XkbEvent*)event;
+        if (kb_event->any.device != (unsigned int)_glfw.x11.xkb.keyboard_device_id) return;
         switch(kb_event->any.xkb_type) {
-            case XkbNewKeyboardNotify:
-                if(!glfw_xkb_update_x11_keyboard_id(&_glfw.x11.xkb)) return;
-                /* fallthrough */
+            case XkbNewKeyboardNotify: {
+                XkbNewKeyboardNotifyEvent *newkb_event = (XkbNewKeyboardNotifyEvent*)kb_event;
+                if (_glfw.hints.init.debugKeyboard) printf(
+                        "Got XkbNewKeyboardNotify event with changes: key codes: %d geometry: %d device id: %d\n",
+                        !!(newkb_event->changed & XkbNKN_KeycodesMask), !!(newkb_event->changed & XkbNKN_GeometryMask),
+                        !!(newkb_event->changed & XkbNKN_DeviceIDMask));
+                if (newkb_event->changed & XkbNKN_DeviceIDMask) {
+                    keymap_dirty = true;
+                    if (!glfw_xkb_update_x11_keyboard_id(&_glfw.x11.xkb)) return;
+                }
+                if (newkb_event->changed & XkbNKN_KeycodesMask) {
+                    keymap_dirty = true;
+                }
+                return;
+            }
             case XkbMapNotify:
             {
+                if (_glfw.hints.init.debugKeyboard) printf("Got XkbMapNotify event, keymaps will be reloaded\n");
                 keymap_dirty = true;
                 return;
             }
@@ -1363,7 +1394,7 @@ static void processEvent(XEvent *event)
                 {
                     if (_glfw.x11.disabledCursorWindow != window)
                         return;
-                    if (_glfw.x11.xi.available)
+                    if (window->rawMouseMotion)
                         return;
 
                     const int dx = x - window->x11.lastCursorPosX;
@@ -1493,7 +1524,7 @@ static void processEvent(XEvent *event)
                     count = 3;
                     formats = (Atom*) event->xclient.data.l + 2;
                 }
-                char **atom_names = calloc(count, sizeof(char**));
+                char **atom_names = calloc(count, sizeof(char*));
                 if (atom_names) {
                     get_atom_names(formats, count, atom_names);
 
@@ -1825,7 +1856,7 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window,
                               const _GLFWctxconfig* ctxconfig,
                               const _GLFWfbconfig* fbconfig)
 {
-    Visual* visual;
+    Visual* visual = NULL;
     int depth;
 
     if (ctxconfig->client != GLFW_NO_API)
@@ -1851,8 +1882,7 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window,
         }
     }
 
-    if (ctxconfig->client == GLFW_NO_API ||
-        ctxconfig->source == GLFW_OSMESA_CONTEXT_API)
+    if (!visual)
     {
         visual = DefaultVisual(_glfw.x11.display, _glfw.x11.screen);
         depth = DefaultDepth(_glfw.x11.display, _glfw.x11.screen);
@@ -2404,6 +2434,7 @@ int _glfwPlatformWindowMaximized(_GLFWwindow* window)
     {
         return maximized;
     }
+
     const unsigned long count =
         _glfwGetWindowPropertyX11(window->x11.handle,
                                   _glfw.x11.NET_WM_STATE,
@@ -2435,13 +2466,19 @@ int _glfwPlatformWindowHovered(_GLFWwindow* window)
         int rootX, rootY, childX, childY;
         unsigned int mask;
 
-        if (!XQueryPointer(_glfw.x11.display, w,
-                           &root, &w, &rootX, &rootY, &childX, &childY, &mask))
-        {
-            return false;
-        }
+        _glfwGrabErrorHandlerX11();
 
-        if (w == window->x11.handle)
+        const Bool result = XQueryPointer(_glfw.x11.display, w,
+                                          &root, &w, &rootX, &rootY,
+                                          &childX, &childY, &mask);
+
+        _glfwReleaseErrorHandlerX11();
+
+        if (_glfw.x11.errorCode == BadWindow)
+            w = _glfw.x11.root;
+        else if (!result)
+            return false;
+        else if (w == window->x11.handle)
             return true;
     }
 
@@ -2555,6 +2592,25 @@ void _glfwPlatformSetWindowFloating(_GLFWwindow* window, bool enabled)
     XFlush(_glfw.x11.display);
 }
 
+void _glfwPlatformSetWindowMousePassthrough(_GLFWwindow* window, bool enabled)
+{
+    if (!_glfw.x11.xshape.available)
+        return;
+
+    if (enabled)
+    {
+        Region region = XCreateRegion();
+        XShapeCombineRegion(_glfw.x11.display, window->x11.handle,
+                            ShapeInput, 0, 0, region, ShapeSet);
+        XDestroyRegion(region);
+    }
+    else
+    {
+        XShapeCombineMask(_glfw.x11.display, window->x11.handle,
+                          ShapeInput, 0, 0, None, ShapeSet);
+    }
+}
+
 float _glfwPlatformGetWindowOpacity(_GLFWwindow* window)
 {
     float opacity = 1.f;
@@ -2603,7 +2659,8 @@ _glfwDispatchX11Events(void) {
     unsigned dispatched = 0;
 
 #if defined(__linux__)
-    if (_glfw.hints.init.enableJoysticks) _glfwDetectJoystickConnectionLinux();
+    if (_glfw.joysticksInitialized)
+        _glfwDetectJoystickConnectionLinux();
 #endif
     dispatched += dispatch_x11_queued_events(XEventsQueued(_glfw.x11.display, QueuedAfterFlush));
 
@@ -2628,6 +2685,25 @@ _glfwDispatchX11Events(void) {
     // a flush.
     dispatched += dispatch_x11_queued_events(XEventsQueued(_glfw.x11.display, QueuedAlready));
     return dispatched;
+}
+
+void _glfwPlatformSetRawMouseMotion(_GLFWwindow *window, bool enabled)
+{
+    if (!_glfw.x11.xi.available)
+        return;
+
+    if (_glfw.x11.disabledCursorWindow != window)
+        return;
+
+    if (enabled)
+        enableRawMouseMotion(window);
+    else
+        disableRawMouseMotion(window);
+}
+
+bool _glfwPlatformRawMouseMotionSupported(void)
+{
+    return _glfw.x11.xi.available;
 }
 
 void _glfwPlatformPollEvents(void)
@@ -2809,6 +2885,55 @@ void _glfwPlatformSetPrimarySelectionString(const char* string)
 const char* _glfwPlatformGetPrimarySelectionString(void)
 {
     return getSelectionString(_glfw.x11.PRIMARY);
+}
+
+EGLenum _glfwPlatformGetEGLPlatform(EGLint** attribs)
+{
+    if (_glfw.egl.ANGLE_platform_angle)
+    {
+        int type = 0;
+
+        if (_glfw.egl.ANGLE_platform_angle_opengl)
+        {
+            if (_glfw.hints.init.angleType == GLFW_ANGLE_PLATFORM_TYPE_OPENGL)
+                type = EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE;
+        }
+
+        if (_glfw.egl.ANGLE_platform_angle_vulkan)
+        {
+            if (_glfw.hints.init.angleType == GLFW_ANGLE_PLATFORM_TYPE_VULKAN)
+                type = EGL_PLATFORM_ANGLE_TYPE_VULKAN_ANGLE;
+        }
+
+        if (type)
+        {
+            *attribs = calloc(5, sizeof(EGLint));
+            (*attribs)[0] = EGL_PLATFORM_ANGLE_TYPE_ANGLE;
+            (*attribs)[1] = type;
+            (*attribs)[2] = EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE;
+            (*attribs)[3] = EGL_PLATFORM_X11_EXT;
+            (*attribs)[4] = EGL_NONE;
+            return EGL_PLATFORM_ANGLE_ANGLE;
+        }
+    }
+
+    if (_glfw.egl.EXT_platform_base && _glfw.egl.EXT_platform_x11)
+        return EGL_PLATFORM_X11_EXT;
+
+    return 0;
+}
+
+EGLNativeDisplayType _glfwPlatformGetEGLNativeDisplay(void)
+{
+    return _glfw.x11.display;
+}
+
+EGLNativeWindowType _glfwPlatformGetEGLNativeWindow(_GLFWwindow* window)
+{
+    if (_glfw.egl.platform)
+        return &window->x11.handle;
+    else
+        return (EGLNativeWindowType) window->x11.handle;
 }
 
 void _glfwPlatformGetRequiredInstanceExtensions(char** extensions)

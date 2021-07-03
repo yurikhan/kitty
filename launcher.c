@@ -22,7 +22,6 @@
 #include <Python.h>
 #include <wchar.h>
 
-#define MIN(x, y) ((x) < (y)) ? (x) : (y)
 #define MAX_ARGC 1024
 #ifndef KITTY_LIB_PATH
 #define KITTY_LIB_PATH "../.."
@@ -43,14 +42,19 @@ safe_realpath(const char* src, char *buf, size_t buf_sz) {
 #endif
 
 static inline void
-set_bundle_exe_dir(const wchar_t *exe_dir) {
+set_xoptions(const wchar_t *exe_dir, const char *lc_ctype, bool from_source) {
     wchar_t buf[PATH_MAX+1] = {0};
     swprintf(buf, PATH_MAX, L"bundle_exe_dir=%ls", exe_dir);
     PySys_AddXOption(buf);
+    if (from_source) PySys_AddXOption(L"kitty_from_source=1");
+    if (lc_ctype) {
+        swprintf(buf, PATH_MAX, L"lc_ctype_before_python=%s", lc_ctype);
+        PySys_AddXOption(buf);
+    }
 }
 
 #ifdef FOR_BUNDLE
-static int run_embedded(const char* exe_dir_, const char *libpath, int argc, wchar_t **argv) {
+static int run_embedded(const char* exe_dir_, const char *libpath, int argc, wchar_t **argv, const char *lc_ctype) {
     int num;
     Py_NoSiteFlag = 1;
     Py_FrozenFlag = 1;
@@ -63,7 +67,6 @@ static int run_embedded(const char* exe_dir_, const char *libpath, int argc, wch
     int ret = 1;
     wchar_t *exe_dir = Py_DecodeLocale(exe_dir_, NULL);
     if (exe_dir == NULL) { fprintf(stderr, "Fatal error: cannot decode exe_dir\n"); return 1; }
-    set_bundle_exe_dir(exe_dir);
     wchar_t stdlib[PATH_MAX+1] = {0};
 #ifdef __APPLE__
     const char *python_relpath = "../Resources/Python/lib";
@@ -77,9 +80,9 @@ static int run_embedded(const char* exe_dir_, const char *libpath, int argc, wch
     );
     if (num < 0 || num >= PATH_MAX) { fprintf(stderr, "Failed to create path to python stdlib\n"); return 1; }
     Py_SetPath(stdlib);
-    PyMem_RawFree(exe_dir);
-    if (num < 0 || num >= PATH_MAX) { fprintf(stderr, "Failed to create path to kitty lib\n"); return 1; }
     Py_Initialize();
+    set_xoptions(exe_dir, lc_ctype, false);
+    PyMem_RawFree(exe_dir);
     PySys_SetArgvEx(argc - 1, argv + 1, 0);
     PySys_SetObject("frozen", Py_True);
     PyObject *kitty = PyUnicode_FromString(libpath);
@@ -97,14 +100,15 @@ end:
     return ret;
 }
 #else
-static int run_embedded(const char* exe_dir_, const char *libpath, int argc, wchar_t **argv) {
+static int run_embedded(const char* exe_dir_, const char *libpath, int argc, wchar_t **argv, const char *lc_ctype) {
     (void)libpath;
     wchar_t *exe_dir = Py_DecodeLocale(exe_dir_, NULL);
     if (exe_dir == NULL) { fprintf(stderr, "Fatal error: cannot decode exe_dir: %s\n", exe_dir_); return 1; }
-    set_bundle_exe_dir(exe_dir);
+    bool from_source = false;
 #ifdef FROM_SOURCE
-    PySys_AddXOption(L"kitty_from_source=1");
+    from_source = true;
 #endif
+    set_xoptions(exe_dir, lc_ctype, from_source);
     PyMem_RawFree(exe_dir);
     return Py_Main(argc, argv);
 }
@@ -145,6 +149,24 @@ read_exe_path(char *exe, size_t buf_sz) {
     return true;
 }
 
+#elif defined(__OpenBSD__)
+static inline bool
+read_exe_path(char *exe, size_t buf_sz) {
+    const char *path = getenv("PATH");
+    if (!path) { fprintf(stderr, "No PATH environment variable set, aborting\n"); return false; }
+    char buf[PATH_MAX + 1] = {0};
+    strncpy(buf, path, PATH_MAX);
+    char *token = strtok(buf, ":");
+    while (token != NULL) {
+        char q[PATH_MAX + 1] = {0};
+        snprintf(q, PATH_MAX, "%s/kitty", token);
+        if (safe_realpath(q, exe, buf_sz)) return true;
+        token = strtok(NULL, ":");
+    }
+    fprintf(stderr, "kitty not found in PATH aborting\n");
+    return false;
+}
+
 #else
 
 static inline bool
@@ -156,6 +178,10 @@ read_exe_path(char *exe, size_t buf_sz) {
 
 int main(int argc, char *argv[]) {
     char exe[PATH_MAX+1] = {0};
+    const char *lc_ctype = NULL;
+#ifdef __APPLE__
+    lc_ctype = getenv("LC_CTYPE");
+#endif
     if (!read_exe_path(exe, sizeof(exe))) return 1;
 
     char *exe_dir = dirname(exe);
@@ -183,7 +209,9 @@ int main(int argc, char *argv[]) {
             ret = 1; goto end;
         }
     }
-    ret = run_embedded(exe_dir, lib, num_args, argvw);
+    if (lc_ctype) lc_ctype = strdup(lc_ctype);
+    ret = run_embedded(exe_dir, lib, num_args, argvw, lc_ctype);
+    if (lc_ctype) free((void*)lc_ctype);
 end:
     for (i = 0; i < num_args; i++) { if(argvw[i]) PyMem_RawFree(argvw[i]); }
     return ret;

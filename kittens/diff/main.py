@@ -13,7 +13,9 @@ from collections import defaultdict
 from contextlib import suppress
 from functools import partial
 from gettext import gettext as _
-from typing import DefaultDict, Dict, Iterable, List, Optional, Tuple, Union
+from typing import (
+    Any, DefaultDict, Dict, Iterable, List, Optional, Tuple, Union
+)
 
 from kitty.cli import CONFIG_HELP, parse_args
 from kitty.cli_stub import DiffCLIOptions
@@ -24,6 +26,11 @@ from kitty.key_encoding import RELEASE, KeyEvent, enter_key, key_defs as K
 from kitty.options_stub import DiffOptions
 from kitty.utils import ScreenSize
 
+from ..tui.handler import Handler
+from ..tui.images import ImageManager, Placement
+from ..tui.line_edit import LineEdit
+from ..tui.loop import Loop
+from ..tui.operations import styled
 from . import global_data
 from .collect import (
     Collection, create_collection, data_for_path, lines_for_path, sanitize,
@@ -35,14 +42,11 @@ from .render import (
     ImagePlacement, ImageSupportWarning, Line, LineRef, Reference, render_diff
 )
 from .search import BadRegex, Search
-from ..tui.handler import Handler
-from ..tui.images import ImageManager, Placement
-from ..tui.line_edit import LineEdit
-from ..tui.loop import Loop
-from ..tui.operations import styled
 
 try:
-    from .highlight import initialize_highlighter, highlight_collection, DiffHighlight
+    from .highlight import (
+        DiffHighlight, highlight_collection, initialize_highlighter
+    )
     has_highlighter = True
     DiffHighlight
 except ImportError:
@@ -113,13 +117,13 @@ class DiffHandler(Handler):
                 return self.scroll_lines(amt)
             if func == 'change_context':
                 new_ctx = self.current_context_count
-                to = int(args[0])
+                to = args[0]
                 if to == 'all':
                     new_ctx = 100000
                 elif to == 'default':
                     new_ctx = self.original_context_count
                 else:
-                    new_ctx += to
+                    new_ctx += int(to)
                 return self.change_context_count(new_ctx)
             if func == 'start_search':
                 self.start_search(bool(args[0]), bool(args[1]))
@@ -334,8 +338,8 @@ class DiffHandler(Handler):
             if candidate.image.image_id == image_id:
                 q = self.xpos_for_image(row, candidate, is_left)
                 if q is not None:
-                    pl['x'] = q[0]
-                    pl['y'] = row
+                    pl.x = q[0]
+                    pl.y = row
                     return True
             return False
 
@@ -566,8 +570,8 @@ class ShowWarning:
     def __init__(self) -> None:
         self.warnings: List[str] = []
 
-    def __call__(self, message: str, category: object, filename: str, lineno: int, file: object = None, line: object = None) -> None:
-        if category is ImageSupportWarning:
+    def __call__(self, message: Any, category: Any, filename: str, lineno: int, file: object = None, line: object = None) -> None:
+        if category is ImageSupportWarning and isinstance(message, str):
             showwarning.warnings.append(message)
 
 

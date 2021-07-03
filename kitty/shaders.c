@@ -65,7 +65,7 @@ copy_image_sub_data(GLuint src_texture_id, GLuint dest_texture_id, unsigned int 
             copy_image_warned = true;
             log_error("WARNING: Your system's OpenGL implementation does not have glCopyImageSubData, falling back to a slower implementation");
         }
-        size_t sz = width * height * num_levels;
+        size_t sz = (size_t)width * height * num_levels;
         pixel *src = malloc(sz * sizeof(pixel));
         if (src == NULL) { fatal("Out of memory."); }
         glBindTexture(GL_TEXTURE_2D_ARRAY, src_texture_id);
@@ -318,8 +318,9 @@ cell_prepare_to_render(ssize_t vao_idx, ssize_t gvao_idx, Screen *screen, GLfloa
     bool cursor_pos_changed = screen->cursor->x != screen->last_rendered.cursor_x
                            || screen->cursor->y != screen->last_rendered.cursor_y;
     bool disable_ligatures = screen->disable_ligatures == DISABLE_LIGATURES_CURSOR;
+    bool screen_resized = screen->last_rendered.columns != screen->columns || screen->last_rendered.lines != screen->lines;
 
-    if (screen->reload_all_gpu_data || screen->scroll_changed || screen->is_dirty || (disable_ligatures && cursor_pos_changed)) {
+    if (screen->reload_all_gpu_data || screen->scroll_changed || screen->is_dirty || screen_resized || (disable_ligatures && cursor_pos_changed)) {
         sz = sizeof(GPUCell) * screen->lines * screen->columns;
         address = alloc_and_map_vao_buffer(vao_idx, sz, cell_data_buffer, GL_STREAM_DRAW, GL_WRITE_ONLY);
         screen_update_cell_data(screen, address, fonts_data, disable_ligatures && cursor_pos_changed);
@@ -332,8 +333,8 @@ cell_prepare_to_render(ssize_t vao_idx, ssize_t gvao_idx, Screen *screen, GLfloa
         screen->last_rendered.cursor_y = screen->cursor->y;
     }
 
-    if (screen->reload_all_gpu_data || screen_is_selection_dirty(screen)) {
-        sz = screen->lines * screen->columns;
+    if (screen->reload_all_gpu_data || screen_resized || screen_is_selection_dirty(screen)) {
+        sz = (size_t)screen->lines * screen->columns;
         address = alloc_and_map_vao_buffer(vao_idx, sz, selection_buffer, GL_STREAM_DRAW, GL_WRITE_ONLY);
         screen_apply_selection(screen, address, sz);
         unmap_vao_buffer(vao_idx, selection_buffer); address = NULL;
@@ -345,6 +346,8 @@ cell_prepare_to_render(ssize_t vao_idx, ssize_t gvao_idx, Screen *screen, GLfloa
         changed = true;
     }
     screen->last_rendered.scrolled_by = screen->scrolled_by;
+    screen->last_rendered.columns = screen->columns;
+    screen->last_rendered.lines = screen->lines;
     return changed;
 }
 
@@ -656,19 +659,13 @@ static GLint border_uniform_locations[NUM_BORDER_UNIFORMS] = {0};
 
 static void
 init_borders_program(void) {
-    Program *p = program_ptr(BORDERS_PROGRAM);
-    int left = NUM_BORDER_UNIFORMS;
-    for (int i = 0; i < p->num_of_uniforms; i++, left--) {
-#define SET_LOC(which) (strcmp(p->uniforms[i].name, #which) == 0) border_uniform_locations[BORDER_##which] = p->uniforms[i].location
-        if SET_LOC(viewport);
-        else if SET_LOC(background_opacity);
-        else if SET_LOC(default_bg);
-        else if SET_LOC(active_border_color);
-        else if SET_LOC(inactive_border_color);
-        else if SET_LOC(bell_border_color);
-        else { fatal("Unknown uniform in borders program: %s", p->uniforms[i].name); return; }
-    }
-    if (left) { fatal("Left over uniforms in borders program"); return; }
+#define SET_LOC(which) border_uniform_locations[BORDER_##which] = get_uniform_location(BORDERS_PROGRAM, #which);
+        SET_LOC(viewport)
+        SET_LOC(background_opacity)
+        SET_LOC(default_bg)
+        SET_LOC(active_border_color)
+        SET_LOC(inactive_border_color)
+        SET_LOC(bell_border_color)
 #undef SET_LOC
 }
 

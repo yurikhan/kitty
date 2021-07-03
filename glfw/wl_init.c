@@ -113,7 +113,7 @@ static void pointerHandleEnter(void* data UNUSED,
     }
 
     window->wl.decorations.focus = focus;
-    _glfw.wl.pointerSerial = serial;
+    _glfw.wl.serial = serial;
     _glfw.wl.pointerFocus = window;
 
     window->wl.hovered = true;
@@ -134,20 +134,23 @@ static void pointerHandleLeave(void* data UNUSED,
 
     window->wl.hovered = false;
 
-    _glfw.wl.pointerSerial = serial;
+    _glfw.wl.serial = serial;
     _glfw.wl.pointerFocus = NULL;
     _glfwInputCursorEnter(window, false);
     _glfw.wl.cursorPreviousShape = GLFW_INVALID_CURSOR;
 }
 
-static void setCursor(GLFWCursorShape shape)
+static void setCursor(GLFWCursorShape shape, _GLFWwindow* window)
 {
     struct wl_buffer* buffer;
     struct wl_cursor* cursor;
     struct wl_cursor_image* image;
     struct wl_surface* surface = _glfw.wl.cursorSurface;
+    const int scale = window->wl.scale;
 
-    cursor = _glfwLoadCursor(shape);
+    struct wl_cursor_theme *theme = glfw_wlc_theme_for_scale(scale);
+    if (!theme) return;
+    cursor = _glfwLoadCursor(shape, theme);
     if (!cursor) return;
     // TODO: handle animated cursors too.
     image = cursor->images[0];
@@ -158,10 +161,11 @@ static void setCursor(GLFWCursorShape shape)
     buffer = wl_cursor_image_get_buffer(image);
     if (!buffer)
         return;
-    wl_pointer_set_cursor(_glfw.wl.pointer, _glfw.wl.pointerSerial,
+    wl_pointer_set_cursor(_glfw.wl.pointer, _glfw.wl.serial,
                           surface,
-                          image->hotspot_x,
-                          image->hotspot_y);
+                          image->hotspot_x / scale,
+                          image->hotspot_y / scale);
+    wl_surface_set_buffer_scale(surface, scale);
     wl_surface_attach(surface, buffer, 0, 0);
     wl_surface_damage(surface, 0, 0,
                       image->width, image->height);
@@ -225,7 +229,7 @@ static void pointerHandleMotion(void* data UNUSED,
             assert(0);
     }
     if (_glfw.wl.cursorPreviousShape != cursorShape)
-        setCursor(cursorShape);
+        setCursor(cursorShape, window);
 }
 
 static void pointerHandleButton(void* data UNUSED,
@@ -301,7 +305,7 @@ static void pointerHandleButton(void* data UNUSED,
     if (window->wl.decorations.focus != mainWindow)
         return;
 
-    _glfw.wl.pointerSerial = serial;
+    _glfw.wl.serial = serial;
 
     /* Makes left, right and middle 0, 1 and 2. Overall order follows evdev
      * codes. */
@@ -330,9 +334,9 @@ static void pointerHandleAxis(void* data UNUSED,
            axis == WL_POINTER_AXIS_VERTICAL_SCROLL);
 
     if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL)
-        x = wl_fixed_to_double(value) * -1;
+        x = -wl_fixed_to_double(value);
     else if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
-        y = wl_fixed_to_double(value) * -1;
+        y = -wl_fixed_to_double(value);
 
     _glfwInputScroll(window, x, y, 1, _glfw.wl.xkb.states.modifiers);
 }
@@ -372,7 +376,7 @@ static void keyboardHandleKeymap(void* data UNUSED,
 
 static void keyboardHandleEnter(void* data UNUSED,
                                 struct wl_keyboard* keyboard UNUSED,
-                                uint32_t serial UNUSED,
+                                uint32_t serial,
                                 struct wl_surface* surface,
                                 struct wl_array* keys)
 {
@@ -388,6 +392,7 @@ static void keyboardHandleEnter(void* data UNUSED,
             return;
     }
 
+    _glfw.wl.serial = serial;
     _glfw.wl.keyboardFocus = window;
     _glfwInputWindowFocus(window, true);
     uint32_t* key;
@@ -403,7 +408,7 @@ static void keyboardHandleEnter(void* data UNUSED,
 
 static void keyboardHandleLeave(void* data UNUSED,
                                 struct wl_keyboard* keyboard UNUSED,
-                                uint32_t serial UNUSED,
+                                uint32_t serial,
                                 struct wl_surface* surface UNUSED)
 {
     _GLFWwindow* window = _glfw.wl.keyboardFocus;
@@ -411,6 +416,7 @@ static void keyboardHandleLeave(void* data UNUSED,
     if (!window)
         return;
 
+    _glfw.wl.serial = serial;
     _glfw.wl.keyboardFocus = NULL;
     _glfwInputWindowFocus(window, false);
     toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.keyRepeatInfo.keyRepeatTimer, 0);
@@ -427,7 +433,7 @@ dispatchPendingKeyRepeats(id_type timer_id UNUSED, void *data UNUSED) {
 
 static void keyboardHandleKey(void* data UNUSED,
                               struct wl_keyboard* keyboard UNUSED,
-                              uint32_t serial UNUSED,
+                              uint32_t serial,
                               uint32_t time UNUSED,
                               uint32_t key,
                               uint32_t state)
@@ -436,30 +442,31 @@ static void keyboardHandleKey(void* data UNUSED,
     if (!window)
         return;
     int action = state == WL_KEYBOARD_KEY_STATE_PRESSED ? GLFW_PRESS : GLFW_RELEASE;
+
+    _glfw.wl.serial = serial;
     glfw_xkb_handle_key_event(window, &_glfw.wl.xkb, key, action);
-    bool repeatable = false;
-    _glfw.wl.keyRepeatInfo.key = 0;
 
     if (action == GLFW_PRESS && _glfw.wl.keyboardRepeatRate > 0 && glfw_xkb_should_repeat(&_glfw.wl.xkb, key))
     {
         _glfw.wl.keyRepeatInfo.key = key;
-        repeatable = true;
         _glfw.wl.keyRepeatInfo.keyboardFocus = window;
-    }
-    if (repeatable) {
         changeTimerInterval(&_glfw.wl.eventLoopData, _glfw.wl.keyRepeatInfo.keyRepeatTimer, _glfw.wl.keyboardRepeatDelay);
+        toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.keyRepeatInfo.keyRepeatTimer, 1);
+    } else if (action == GLFW_RELEASE && key == _glfw.wl.keyRepeatInfo.key) {
+        _glfw.wl.keyRepeatInfo.key = 0;
+        toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.keyRepeatInfo.keyRepeatTimer, 0);
     }
-    toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.keyRepeatInfo.keyRepeatTimer, repeatable ? 1 : 0);
 }
 
 static void keyboardHandleModifiers(void* data UNUSED,
                                     struct wl_keyboard* keyboard UNUSED,
-                                    uint32_t serial UNUSED,
+                                    uint32_t serial,
                                     uint32_t modsDepressed,
                                     uint32_t modsLatched,
                                     uint32_t modsLocked,
                                     uint32_t group)
 {
+    _glfw.wl.serial = serial;
     glfw_xkb_update_modifiers(&_glfw.wl.xkb, modsDepressed, modsLatched, modsLocked, 0, 0, group);
 }
 
@@ -708,6 +715,9 @@ glfwWaylandCheckForServerSideDecorations(void) {
 
 int _glfwPlatformInit(void)
 {
+    int i;
+    _GLFWmonitor* monitor;
+
     _glfw.wl.cursor.handle = _glfw_dlopen("libwayland-cursor.so.0");
     if (!_glfw.wl.cursor.handle)
     {
@@ -759,12 +769,16 @@ int _glfwPlatformInit(void)
     // Sync so we got all initial output events
     wl_display_roundtrip(_glfw.wl.display);
 
-#ifdef __linux__
-    if (_glfw.hints.init.enableJoysticks) {
-        if (!_glfwInitJoysticksLinux())
-            return false;
+    for (i = 0; i < _glfw.monitorCount; ++i)
+    {
+        monitor = _glfw.monitors[i];
+        if (monitor->widthMM <= 0 || monitor->heightMM <= 0)
+        {
+            // If Wayland does not provide a physical size, assume the default 96 DPI
+            monitor->widthMM  = (int) (monitor->modes[monitor->wl.currentMode].width * 25.4f / 96.f);
+            monitor->heightMM = (int) (monitor->modes[monitor->wl.currentMode].height * 25.4f / 96.f);
+        }
     }
-#endif
 
     if (!_glfw.wl.wmBase)
     {
@@ -775,25 +789,14 @@ int _glfwPlatformInit(void)
 
     if (_glfw.wl.shm)
     {
-        const char *cursorTheme = getenv("XCURSOR_THEME"), *cursorSizeStr = getenv("XCURSOR_SIZE");
-        char *cursorSizeEnd;
-        int cursorSize = 32;
-        if (cursorSizeStr)
-        {
-            errno = 0;
-            long cursorSizeLong = strtol(cursorSizeStr, &cursorSizeEnd, 10);
-            if (!*cursorSizeEnd && !errno && cursorSizeLong > 0 && cursorSizeLong <= INT_MAX)
-                cursorSize = (int)cursorSizeLong;
-        }
-        _glfw.wl.cursorTheme = wl_cursor_theme_load(cursorTheme, cursorSize, _glfw.wl.shm);
-        if (!_glfw.wl.cursorTheme)
-        {
-            _glfwInputError(GLFW_PLATFORM_ERROR,
-                            "Wayland: Unable to load default cursor theme");
-            return false;
-        }
         _glfw.wl.cursorSurface =
             wl_compositor_create_surface(_glfw.wl.compositor);
+    }
+    else
+    {
+        _glfwInputError(GLFW_PLATFORM_ERROR,
+                        "Wayland: Failed to find Wayland SHM");
+        return false;
     }
 
     return true;
@@ -801,9 +804,6 @@ int _glfwPlatformInit(void)
 
 void _glfwPlatformTerminate(void)
 {
-#ifdef __linux__
-    _glfwTerminateJoysticksLinux();
-#endif
     _glfwTerminateEGL();
     if (_glfw.wl.egl.handle)
     {
@@ -814,8 +814,7 @@ void _glfwPlatformTerminate(void)
     glfw_xkb_release(&_glfw.wl.xkb);
     glfw_dbus_terminate(&_glfw.wl.dbus);
 
-    if (_glfw.wl.cursorTheme)
-        wl_cursor_theme_destroy(_glfw.wl.cursorTheme);
+    glfw_wlc_destroy();
     if (_glfw.wl.cursor.handle)
     {
         _glfw_dlclose(_glfw.wl.cursor.handle);

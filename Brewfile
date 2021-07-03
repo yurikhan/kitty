@@ -1,5 +1,6 @@
 pkg-config
-python 
-imagemagick 
-harfbuzz 
+zlib
+python
+imagemagick
+harfbuzz
 sphinx-doc

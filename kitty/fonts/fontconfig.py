@@ -8,12 +8,14 @@ from typing import Dict, Generator, List, Optional, Tuple, cast
 
 from kitty.fast_data_types import (
     FC_DUAL, FC_MONO, FC_SLANT_ITALIC, FC_SLANT_ROMAN, FC_WEIGHT_BOLD,
-    FC_WEIGHT_REGULAR, FC_WIDTH_NORMAL, fc_list, fc_match as fc_match_impl
+    FC_WEIGHT_REGULAR, FC_WIDTH_NORMAL, fc_list, fc_match as fc_match_impl,
+    fc_match_postscript_name, parse_font_feature
 )
 from kitty.options_stub import Options
 from kitty.typing import FontConfigPattern
+from kitty.utils import log_error
 
-from . import ListedFont
+from . import ListedFont, FontFeature
 
 attr_map = {(False, False): 'font_family',
             (True, False): 'bold_font',
@@ -69,6 +71,24 @@ def fc_match(family: str, bold: bool, italic: bool, spacing: int = FC_MONO) -> F
     return fc_match_impl(family, bold, italic, spacing)
 
 
+def find_font_features(postscript_name: str) -> Tuple[str, ...]:
+    pat = fc_match_postscript_name(postscript_name)
+
+    if pat.get('postscript_name') != postscript_name or 'fontfeatures' not in pat:
+        return ()
+
+    features = []
+    for feat in pat['fontfeatures']:
+        try:
+            parsed = parse_font_feature(feat)
+        except ValueError:
+            log_error('Ignoring invalid font feature: {}'.format(feat))
+        else:
+            features.append(FontFeature(feat, parsed))
+
+    return tuple(features)
+
+
 def find_best_match(family: str, bold: bool = False, italic: bool = False, monospaced: bool = True) -> FontConfigPattern:
     q = family_name_to_key(family)
     font_map = all_fonts_map(monospaced)
@@ -84,9 +104,14 @@ def find_best_match(family: str, bold: bool = False, italic: bool = False, monos
     # First look for an exact match
     for selector in ('ps_map', 'full_map', 'family_map'):
         candidates = font_map[selector].get(q)
-        if candidates:
-            candidates.sort(key=score)
-            return candidates[0]
+        if not candidates:
+            continue
+        if len(candidates) == 1 and (bold or italic) and candidates[0].get('family') == candidates[0].get('full_name'):
+            # IBM Plex Mono does this, where the full name of the regular font
+            # face is the same as its family name
+            continue
+        candidates.sort(key=score)
+        return candidates[0]
 
     # Use fc-match to see if we can find a monospaced font that matches family
     for spacing in (FC_MONO, FC_DUAL):

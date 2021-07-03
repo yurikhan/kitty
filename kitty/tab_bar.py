@@ -2,7 +2,8 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
-from typing import Any, Dict, NamedTuple, Optional, Sequence, Set, Tuple
+from functools import lru_cache
+from typing import Any, Dict, NamedTuple, Optional, Sequence, Tuple
 
 from .config import build_ansi_color_table
 from .constants import WindowGeometry
@@ -10,9 +11,9 @@ from .fast_data_types import (
     DECAWM, Screen, cell_size_for_window, pt_to_px, set_tab_bar_render_data,
     viewport_for_window
 )
-from .layout import Rect
+from .layout.base import Rect
 from .options_stub import Options
-from .rgb import Color, alpha_blend, color_from_int
+from .rgb import Color, alpha_blend, color_as_sgr, color_from_int, to_color
 from .utils import color_as_int, log_error
 from .window import calculate_gl_geometry
 
@@ -23,6 +24,7 @@ class TabBarData(NamedTuple):
     needs_attention: bool
     num_windows: int
     layout_name: str
+    has_activity_since_last_focus: bool
 
 
 class DrawData(NamedTuple):
@@ -39,13 +41,53 @@ class DrawData(NamedTuple):
     default_bg: Color
     title_template: str
     active_title_template: Optional[str]
+    tab_activity_symbol: Optional[str]
 
 
 def as_rgb(x: int) -> int:
     return (x << 8) | 2
 
 
-template_failures: Set[str] = set()
+@lru_cache()
+def report_template_failure(template: str, e: str) -> None:
+    log_error('Invalid tab title template: "{}" with error: {}'.format(template, e))
+
+
+@lru_cache()
+def compile_template(template: str) -> Any:
+    try:
+        return compile('f"""' + template + '"""', '<template>', 'eval')
+    except Exception as e:
+        report_template_failure(template, str(e))
+
+
+class ColorFormatter:
+
+    def __init__(self, which: str):
+        self.which = which
+
+    def __getattr__(self, name: str) -> str:
+        q = name
+        if q == 'default':
+            ans = '9'
+        else:
+            if name.startswith('_'):
+                q = '#' + name[1:]
+            c = to_color(q)
+            if c is None:
+                raise AttributeError(f'{name} is not a valid color')
+            ans = '8' + color_as_sgr(c)
+        return f'\x1b[{self.which}{ans}m'
+
+
+class Formatter:
+    reset = '\x1b[0m'
+    fg = ColorFormatter('3')
+    bg = ColorFormatter('4')
+    bold = '\x1b[1m'
+    nobold = '\x1b[22m'
+    italic = '\x1b[3m'
+    noitalic = '\x1b[23m'
 
 
 def draw_title(draw_data: DrawData, screen: Screen, tab: TabBarData, index: int) -> None:
@@ -54,17 +96,36 @@ def draw_title(draw_data: DrawData, screen: Screen, tab: TabBarData, index: int)
         screen.cursor.fg = draw_data.bell_fg
         screen.draw('🔔 ')
         screen.cursor.fg = fg
+    if tab.has_activity_since_last_focus and draw_data.tab_activity_symbol:
+        fg = screen.cursor.fg
+        screen.cursor.fg = draw_data.bell_fg
+        screen.draw(draw_data.tab_activity_symbol)
+        screen.cursor.fg = fg
+
     template = draw_data.title_template
     if tab.is_active and draw_data.active_title_template is not None:
         template = draw_data.active_title_template
     try:
-        title = template.format(title=tab.title, index=index, layout_name=tab.layout_name, num_windows=tab.num_windows)
+        eval_locals = {
+            'index': index,
+            'layout_name': tab.layout_name,
+            'num_windows': tab.num_windows,
+            'title': tab.title,
+            'fmt': Formatter,
+        }
+        title = eval(compile_template(template), {'__builtins__': {}}, eval_locals)
     except Exception as e:
-        if template not in template_failures:
-            template_failures.add(template)
-            log_error('Invalid tab title template: "{}" with error: {}'.format(template, e))
+        report_template_failure(template, str(e))
         title = tab.title
-    screen.draw(title)
+    if '\x1b' in title:
+        import re
+        for x in re.split('(\x1b\\[[^m]*m)', title):
+            if x.startswith('\x1b') and x.endswith('m'):
+                screen.apply_sgr(x[2:-1])
+            else:
+                screen.draw(x)
+    else:
+        screen.draw(title)
 
 
 def draw_tab_with_separator(draw_data: DrawData, screen: Screen, tab: TabBarData, before: int, max_title_length: int, index: int, is_last: bool) -> int:
@@ -211,7 +272,8 @@ class TabBar:
             self.opts.tab_fade, self.opts.active_tab_foreground, self.opts.active_tab_background,
             self.opts.inactive_tab_foreground, self.opts.inactive_tab_background,
             self.opts.tab_bar_background or self.opts.background, self.opts.tab_title_template,
-            self.opts.active_tab_title_template
+            self.opts.active_tab_title_template,
+            self.opts.tab_activity_symbol
         )
         if self.opts.tab_bar_style == 'separator':
             self.draw_func = draw_tab_with_separator
@@ -246,7 +308,7 @@ class TabBar:
             return
         self.cell_width = cell_width
         s = self.screen
-        viewport_width = tab_bar.width - 2 * self.margin_width
+        viewport_width = max(4 * cell_width, tab_bar.width - 2 * self.margin_width)
         ncells = viewport_width // cell_width
         s.resize(1, ncells)
         s.reset_mode(DECAWM)

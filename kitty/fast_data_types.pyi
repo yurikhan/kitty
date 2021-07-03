@@ -4,12 +4,16 @@ from typing import (
     Union
 )
 
+import termios
 from kitty.boss import Boss
 from kitty.fonts.render import FontObject
 from kitty.options_stub import Options
 
 # Constants {{{
 KITTY_VCS_REV: str
+NO_CLOSE_REQUESTED: int
+IMPERATIVE_CLOSE_REQUESTED: int
+CLOSE_BEING_CONFIRMED: int
 ERROR_PREFIX: str
 GLSL_VERSION: int
 GLFW_IBEAM_CURSOR: int
@@ -272,7 +276,7 @@ GLFW_CONTEXT_VERSION_MINOR: int
 GLFW_CONTEXT_REVISION: int
 GLFW_CONTEXT_ROBUSTNESS: int
 GLFW_OPENGL_FORWARD_COMPAT: int
-GLFW_OPENGL_DEBUG_CONTEXT: int
+GLFW_CONTEXT_DEBUG: int
 GLFW_OPENGL_PROFILE: int
 GLFW_OPENGL_API: int
 GLFW_OPENGL_ES_API: int
@@ -406,6 +410,7 @@ class FontConfigPattern(TypedDict):
     postscript_name: str
     style: str
     spacing: str
+    fontfeatures: List[str]
     weight: int
     width: int
     slant: int
@@ -437,6 +442,12 @@ def fc_match(
     pass
 
 
+def fc_match_postscript_name(
+    postscript_name: str
+) -> FontConfigPattern:
+    pass
+
+
 class CoreTextFont(TypedDict):
     path: str
     postscript_name: str
@@ -458,7 +469,7 @@ def coretext_all_fonts() -> Tuple[CoreTextFont, ...]:
 
 
 def add_timer(
-    callback: Callable[[Optional[int]], bool],
+    callback: Callable[[Optional[int]], None],
     interval: float,
     repeats: bool = True
 ) -> int:
@@ -516,9 +527,8 @@ def dbus_send_notification(
 def cocoa_send_notification(
     identifier: Optional[str],
     title: str,
-    informative_text: str,
-    path_to_img: Optional[str],
-    subtitle: Optional[str] = None
+    body: Optional[str],
+    subtitle: Optional[str],
 ) -> None:
     pass
 
@@ -544,7 +554,7 @@ def update_window_title(
 
 
 def update_window_visibility(
-    os_window_id: int, tab_id: int, window_id: int, window_idx: int,
+    os_window_id: int, tab_id: int, window_id: int,
     visible: bool
 ) -> None:
     pass
@@ -706,7 +716,15 @@ def cocoa_get_lang() -> Optional[str]:
     pass
 
 
-def mark_os_window_for_close(os_window_id: int, yes: bool = True) -> bool:
+def mark_os_window_for_close(os_window_id: int, cr_type: int = 2) -> bool:
+    pass
+
+
+def set_application_quit_request(cr_type: int = 2) -> None:
+    pass
+
+
+def current_application_quit_request() -> int:
     pass
 
 
@@ -770,11 +788,11 @@ def x11_window_id(os_window_id: int) -> int:
     pass
 
 
-def swap_tabs(os_window_id: int, a: int, b: int) -> None:
+def cocoa_window_id(os_window_id: int) -> int:
     pass
 
 
-def swap_windows(os_window_id: int, tab_id: int, a: int, b: int) -> None:
+def swap_tabs(os_window_id: int, a: int, b: int) -> None:
     pass
 
 
@@ -782,7 +800,7 @@ def set_active_tab(os_window_id: int, a: int) -> None:
     pass
 
 
-def set_active_window(os_window_id: int, tab_id: int, window_idx: int) -> None:
+def set_active_window(os_window_id: int, tab_id: int, window_id: int) -> None:
     pass
 
 
@@ -855,19 +873,19 @@ def viewport_for_window(
 TermiosPtr = NewType('TermiosPtr', int)
 
 
-def raw_tty(fd: int, termios_ptr: TermiosPtr) -> None:
+def raw_tty(fd: int, termios_ptr: TermiosPtr, optional_actions: int = termios.TCSAFLUSH) -> None:
     pass
 
 
-def close_tty(fd: int, termios_ptr: TermiosPtr) -> None:
+def close_tty(fd: int, termios_ptr: TermiosPtr, optional_actions: int = termios.TCSAFLUSH) -> None:
     pass
 
 
-def normal_tty(fd: int, termios_ptr: TermiosPtr) -> None:
+def normal_tty(fd: int, termios_ptr: TermiosPtr, optional_actions: int = termios.TCSAFLUSH) -> None:
     pass
 
 
-def open_tty(read_with_timeout: bool = False) -> Tuple[int, TermiosPtr]:
+def open_tty(read_with_timeout: bool = False, optional_actions: int = termios.TCSAFLUSH) -> Tuple[int, TermiosPtr]:
     pass
 
 
@@ -934,7 +952,10 @@ class HistoryBuf:
     def as_text(self, callback: Callable[[str], None], as_ansi: bool, insert_wrap_markers: bool) -> None:
         pass
 
-    def pagerhist_as_text(self, callback: Callable[[str], None]) -> None:
+    def pagerhist_as_text(self) -> str:
+        pass
+
+    def pagerhist_as_bytes(self) -> bytes:
         pass
 
 
@@ -986,6 +1007,9 @@ class Screen:
         pass
 
     def draw(self, text: str) -> None:
+        pass
+
+    def apply_sgr(self, text: str) -> None:
         pass
 
     def copy_colors_from(self, other: 'Screen') -> None:
@@ -1054,6 +1078,15 @@ class Screen:
     def erase_in_display(self, how: int = 0, private: bool = False) -> None:
         pass
 
+    def focus_changed(self, focused: bool) -> bool:
+        pass
+
+    def has_focus(self) -> bool:
+        pass
+
+    def has_activity_since_last_focus(self) -> bool:
+        pass
+
 
 def set_tab_bar_render_data(
     os_window_id: int, xstart: float, ystart: float, dx: float, dy: float,
@@ -1063,7 +1096,7 @@ def set_tab_bar_render_data(
 
 
 def set_window_render_data(
-    os_window_id: int, tab_id: int, window_id: int, window_idx: int,
+    os_window_id: int, tab_id: int, window_id: int,
     xstart: float, ystart: float, dx: float, dy: float, screen: Screen,
     left: int, top: int, right: int, bottom: int
 ) -> None:

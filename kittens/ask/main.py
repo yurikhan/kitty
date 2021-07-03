@@ -3,6 +3,7 @@
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
+import sys
 from contextlib import suppress
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
@@ -13,6 +14,7 @@ from kitty.typing import BossType
 
 from ..tui.handler import result_handler
 from ..tui.operations import alternate_screen, styled
+from ..tui.utils import get_key_press
 
 if TYPE_CHECKING:
     import readline
@@ -69,7 +71,7 @@ class HistoryCompleter:
 def option_text() -> str:
     return '''\
 --type -t
-choices=line
+choices=line,yesno,choices
 default=line
 Type of input. Defaults to asking for a line of text.
 
@@ -82,6 +84,16 @@ message is shown.
 --name -n
 The name for this question. Used to store history of previous answers which can
 be used for completions and via the browse history readline bindings.
+
+
+--choice -c
+type=list
+dest=choices
+A choice for the choices type. Every choice has the syntax: letter:text Where
+letter is the accelerator key and text is the corresponding text.  There can be
+an optional color specification after the letter to indicate what color it should
+be.
+For example: y:Yes and n;red:No
 '''
 
 
@@ -96,14 +108,41 @@ class Response(TypedDict):
     response: Optional[str]
 
 
+def choice(cli_opts: AskCLIOptions, items: List[str]) -> Response:
+    with alternate_screen():
+        if cli_opts.message:
+            print(styled(cli_opts.message, bold=True))
+        print()
+        allowed = ''
+        for choice in cli_opts.choices:
+            color = 'green'
+            letter, text = choice.split(':', maxsplit=1)
+            if ';' in letter:
+                letter, color = letter.split(';', maxsplit=1)
+            letter = letter.lower()
+            idx = text.lower().index(letter)
+            allowed += letter
+            print(text[:idx], styled(text[idx], fg=color), text[idx + 1:], sep='', end='  ')
+        print()
+        response = get_key_press(allowed, '')
+        return {'items': items, 'response': response}
+
+
+def yesno(cli_opts: AskCLIOptions, items: List[str]) -> Response:
+    with alternate_screen():
+        if cli_opts.message:
+            print(styled(cli_opts.message, bold=True))
+        print()
+        print(' ', styled('Y', fg='green') + 'es', ' ', styled('N', fg='red') + 'o')
+        response = get_key_press('yn', 'n')
+        return {'items': items, 'response': response}
+
+
 def main(args: List[str]) -> Response:
     # For some reason importing readline in a key handler in the main kitty process
     # causes a crash of the python interpreter, probably because of some global
     # lock
     global readline
-    import readline as rl
-    readline = rl
-    from kitty.shell import init_readline
     msg = 'Ask the user for input'
     try:
         cli_opts, items = parse_args(args[1:], option_text, '', msg, 'kitty ask', result_class=AskCLIOptions)
@@ -113,6 +152,14 @@ def main(args: List[str]) -> Response:
             input('Press enter to quit...')
         raise SystemExit(e.code)
 
+    if cli_opts.type == 'yesno':
+        return yesno(cli_opts, items)
+    if cli_opts.type == 'choices':
+        return choice(cli_opts, items)
+
+    import readline as rl
+    readline = rl
+    from kitty.shell import init_readline
     init_readline(readline)
     response = None
 
@@ -134,7 +181,6 @@ def handle_result(args: List[str], data: Response, target_window_id: int, boss: 
 
 
 if __name__ == '__main__':
-    import sys
     ans = main(sys.argv)
     if ans:
         print(ans)

@@ -23,15 +23,21 @@ like a path or filename followed by a colon and a line number and open
 the file in vim at the specified line number. The patterns and editor
 to be used can be modified using options passed to the kitten. For example::
 
-    map ctrl+g kitten hints --type=linenum --linenum-action=tab nvim +{line} +{path}
+    map ctrl+g kitten hints --type=linenum --linenum-action=tab nvim +{line} {path}
 
 will open the selected file in a new tab inside neovim when you press
 :kbd:`ctrl+g`.
+
+Pressing :sc:`open_selected_hyperlink` will open hyperlinks, i.e. a URL
+that has been marked as such by the program running in the terminal,
+for example, by ``ls --hyperlink=auto``. You can also :doc:`customize what actions are
+taken for different types of URLs <../open_actions>`.
 
 The hints kitten is very powerful to see more detailed help on its various
 options and modes of operation, see below. You can use these options to
 create mappings in :file:`kitty.conf` to select various different text
 snippets. See :sc:`insert_selected_path` for examples.
+
 
 Completely customizing the matching and actions of the kitten
 ---------------------------------------------------------------

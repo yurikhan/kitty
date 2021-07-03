@@ -47,6 +47,10 @@ terminfo files to the server::
 
     kitty +kitten ssh myserver
 
+This ssh kitten takes all the same command line arguments
+as ssh, you can alias it to ssh in your shell's rc files to avoid having to
+type it each time.
+
 If for some reason that does not work (typically because the server is using a
 non POSIX compliant shell), you can use the following one-liner instead (it
 is slower as it needs to ssh into the server twice, but will work with most
@@ -165,11 +169,14 @@ kitty is not able to use my favorite font?
 |kitty| achieves its stellar performance by caching alpha masks of each rendered
 character on the GPU, so that every character needs to be rendered only once.
 This means it is a strictly character cell based display.  As such it can use
-only monospace fonts, since every cell in the grid has to be the same size. If
-your font is not listed in ``kitty list-fonts`` it means that it is not
-monospace. On Linux you can list all monospace fonts with::
+only monospace fonts, since every cell in the grid has to be the same size.
+Furthermore, it needs fonts to be freely resizable, so it does not support
+bitmapped fonts.
 
-    fc-list : family spacing | grep -e spacing=100 -e spacing=90
+If your font is not listed in ``kitty list-fonts`` it means that it is not
+monospace or is a bitmapped font. On Linux you can list all monospace fonts with::
+
+    fc-list : family spacing outline scalable | grep -e spacing=100 -e spacing=90 | grep -e outline=True | grep -e scalable=True
 
 Note that the spacing property is calculated by fontconfig based on actual
 glyph widths in the font. If for some reason fontconfig concludes your favorite
@@ -179,7 +186,7 @@ following :file:`~/.config/fontconfig/fonts.conf`::
     <?xml version="1.0"?>
     <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
     <fontconfig>
-    <match target="font">
+    <match target="scan">
         <test name="family">
             <string>Your Font Family Name</string>
         </test>
@@ -232,3 +239,42 @@ available. The manual way to figure it out is:
        This shows the hex value, ``13`` in this case.
 
     3. Use ``\x(hexval)`` in your ``send_text`` command in kitty. So in this example, ``\x13``
+
+How do I open a new window or tab with the same working directory as the current window?
+--------------------------------------------------------------------------------------------
+
+In :file:`kitty.conf` add the following::
+
+    map f1 launch --cwd=current
+    map f2  launch --cwd=current --type=tab
+
+Pressing :kbd:`F1` will open a new kitty window with the same working directory
+as the current window. The :doc:`launch command <launch>` is very powerful,
+explore :doc:`its documentation <launch>`.
+
+
+I am using tmux and have a problem
+--------------------------------------
+
+First, terminal multiplexers are `a bad idea
+<https://github.com/kovidgoyal/kitty/issues/391#issuecomment-638320745>`_, do
+not use them, if at all possible. kitty contains features that do all of what
+tmux does, but better, with the exception of remote persistence (:iss:`391`).
+If you still want to use tmux, read on.
+
+Image display will not work, see `tmux issue
+<https://github.com/tmux/tmux/issues/1391>`_.
+
+If you are using tmux with multiple terminals or you start it under one
+terminal and then switch to another and these terminals have different TERM
+variables, tmux will break. You will need to restart it as tmux does not
+support multiple terminfo definitions.
+
+Copying to clipboard via OSC 52 will not work, because tmux does not support
+the extended version of that protocol, you will need to add ``no-append`` to
+:opt:`clipboard_control` in kitty.conf.
+
+If you use any of the advanced features that kitty has innovated, such as
+styled underlines, desktop notifications, extended keyboard support, etc.
+they may or may not work, depending on the whims of tmux's maintainer, your
+version of tmux, etc.
