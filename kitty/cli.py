@@ -2,21 +2,19 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2017, Kovid Goyal <kovid at kovidgoyal.net>
 
-import os
 import re
 import sys
 from collections import deque
 from typing import (
-    Any, Callable, Dict, FrozenSet, Iterable, Iterator, List, Match, Optional,
-    Sequence, Set, Tuple, Type, TypeVar, Union, cast
+    Any, Callable, Dict, FrozenSet, Iterator, List, Match, Optional, Sequence,
+    Tuple, Type, TypeVar, Union, cast
 )
 
 from .cli_stub import CLIOptions
 from .conf.utils import resolve_config
-from .config import KeyAction
-from .constants import appname, defconf, is_macos, is_wayland, str_version
-from .options_stub import Options as OptionsStub
-from .typing import BadLineType, KeySpec, SequenceMap, TypedDict
+from .constants import appname, defconf, is_macos, str_version
+from .options.types import Options as KittyOpts
+from .typing import BadLineType, TypedDict
 
 
 class OptionDict(TypedDict):
@@ -586,7 +584,7 @@ Override individual configuration options, can be specified multiple times.
 Syntax: :italic:`name=value`. For example: :option:`kitty -o` font_size=20
 
 
---directory -d
+--directory --working-directory -d
 default=.
 Change to the specified directory when launching
 
@@ -610,7 +608,7 @@ created after startup.
 --hold
 type=bool-set
 Remain open after child process exits. Note that this only affects the first
-window. You can quit by either using the close window shortcut or :kbd:`Ctrl+d`.
+window. You can quit by either using the close window shortcut or pressing any key.
 
 
 --single-instance -1
@@ -689,19 +687,15 @@ instead of ignoring them. Also prints out miscellaneous debug information.
 Useful when debugging rendering problems
 
 
---debug-keyboard
+--debug-input --debug-keyboard
+dest=debug_keyboard
 type=bool-set
-This option will cause kitty to print out key events as they are received
+This option will cause kitty to print out key and mouse events as they are received
 
 
 --debug-font-fallback
 type=bool-set
 Print out information about the selection of fallback fonts for characters not present in the main font.
-
-
---debug-config
-type=bool-set
-Print out information about the system and kitty configuration.
 
 
 --execute -e
@@ -755,106 +749,18 @@ def parse_args(
 
 
 SYSTEM_CONF = '/etc/xdg/kitty/kitty.conf'
-ShortcutMap = Dict[Tuple[KeySpec, ...], KeyAction]
 
 
-def print_shortcut(key_sequence: Iterable[KeySpec], action: KeyAction) -> None:
-    if not getattr(print_shortcut, 'maps', None):
-        from kitty.keys import defines
-        v = vars(defines)
-        mmap = {m[len('GLFW_MOD_'):].lower(): x for m, x in v.items() if m.startswith('GLFW_MOD_')}
-        kmap = {k[len('GLFW_KEY_'):].lower(): x for k, x in v.items() if k.startswith('GLFW_KEY_')}
-        krmap = {v: k for k, v in kmap.items()}
-        setattr(print_shortcut, 'maps', (mmap, krmap))
-    mmap, krmap = getattr(print_shortcut, 'maps')
-    keys = []
-    for key_spec in key_sequence:
-        names = []
-        mods, is_native, key = key_spec
-        for name, val in mmap.items():
-            if mods & val:
-                names.append(name)
-        if key:
-            if is_native:
-                from .fast_data_types import GLFW_KEY_UNKNOWN, glfw_get_key_name
-                kn = glfw_get_key_name(GLFW_KEY_UNKNOWN, key) or 'Unknown key'
-                names.append(kn)
-            else:
-                names.append(krmap[key])
-        keys.append('+'.join(names))
-
-    print('\t', ' > '.join(keys), action)
-
-
-def print_shortcut_changes(defns: ShortcutMap, text: str, changes: Set[Tuple[KeySpec, ...]]) -> None:
-    if changes:
-        print(title(text))
-
-        for k in sorted(changes):
-            print_shortcut(k, defns[k])
-
-
-def compare_keymaps(final: ShortcutMap, initial: ShortcutMap) -> None:
-    added = set(final) - set(initial)
-    removed = set(initial) - set(final)
-    changed = {k for k in set(final) & set(initial) if final[k] != initial[k]}
-    print_shortcut_changes(final, 'Added shortcuts:', added)
-    print_shortcut_changes(initial, 'Removed shortcuts:', removed)
-    print_shortcut_changes(final, 'Changed shortcuts:', changed)
-
-
-def flatten_sequence_map(m: SequenceMap) -> ShortcutMap:
-    ans: Dict[Tuple[KeySpec, ...], KeyAction] = {}
-    for key_spec, rest_map in m.items():
-        for r, action in rest_map.items():
-            ans[(key_spec,) + (r)] = action
-    return ans
-
-
-def compare_opts(opts: OptionsStub) -> None:
-    from .config import defaults, load_config
-    print('\nConfig options different from defaults:')
-    default_opts = load_config()
-    changed_opts = [
-        f for f in sorted(defaults._fields)  # type: ignore
-        if f not in ('key_definitions', 'keymap', 'sequence_map') and getattr(opts, f) != getattr(defaults, f)
-    ]
-    field_len = max(map(len, changed_opts)) if changed_opts else 20
-    fmt = '{{:{:d}s}}'.format(field_len)
-    for f in changed_opts:
-        print(title(fmt.format(f)), getattr(opts, f))
-
-    final_, initial_ = opts.keymap, default_opts.keymap
-    final: ShortcutMap = {(k,): v for k, v in final_.items()}
-    initial: ShortcutMap = {(k,): v for k, v in initial_.items()}
-    final_s, initial_s = map(flatten_sequence_map, (opts.sequence_map, default_opts.sequence_map))
-    final.update(final_s)
-    initial.update(initial_s)
-    compare_keymaps(final, initial)
-
-
-def create_opts(args: CLIOptions, debug_config: bool = False, accumulate_bad_lines: Optional[List[BadLineType]] = None) -> OptionsStub:
+def create_opts(args: CLIOptions, accumulate_bad_lines: Optional[List[BadLineType]] = None) -> KittyOpts:
     from .config import load_config
     config = tuple(resolve_config(SYSTEM_CONF, defconf, args.config))
-    if debug_config:
-        print(version(add_rev=True))
-        print(' '.join(os.uname()))
-        if is_macos:
-            import subprocess
-            print(' '.join(subprocess.check_output(['sw_vers']).decode('utf-8').splitlines()).strip())
-        if os.path.exists('/etc/issue'):
-            with open('/etc/issue', encoding='utf-8', errors='replace') as f:
-                print(f.read().strip())
-        if os.path.exists('/etc/lsb-release'):
-            with open('/etc/lsb-release', encoding='utf-8', errors='replace') as f:
-                print(f.read().strip())
-        config = tuple(x for x in config if os.path.exists(x))
-        if config:
-            print(green('Loaded config files:'), ', '.join(config))
     overrides = (a.replace('=', ' ', 1) for a in args.override or ())
     opts = load_config(*config, overrides=overrides, accumulate_bad_lines=accumulate_bad_lines)
-    if debug_config:
-        if not is_macos:
-            print('Running under:', green('Wayland' if is_wayland(opts) else 'X11'))
-        compare_opts(opts)
+    return opts
+
+
+def create_default_opts() -> KittyOpts:
+    from .config import load_config
+    config = tuple(resolve_config(SYSTEM_CONF, defconf, ()))
+    opts = load_config(*config)
     return opts

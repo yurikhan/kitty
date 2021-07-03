@@ -5,18 +5,18 @@
 from functools import partial
 from itertools import repeat
 from typing import (
-    Dict, Generator, Iterable, Iterator, List, NamedTuple, Optional, Sequence,
-    Tuple
+    Any, Dict, Generator, Iterable, Iterator, List, NamedTuple, Optional,
+    Sequence, Tuple
 )
 
-from kitty.constants import Edges, WindowGeometry
+from kitty.borders import BorderColor
 from kitty.fast_data_types import (
     Region, set_active_window, viewport_for_window
 )
-from kitty.options_stub import Options
+from kitty.options.types import Options
+from kitty.types import Edges, WindowGeometry
 from kitty.typing import TypedDict, WindowType
 from kitty.window_list import WindowGroup, WindowList
-from kitty.borders import BorderColor
 
 
 class BorderLine(NamedTuple):
@@ -374,9 +374,16 @@ class Layout:
     def compute_needs_borders_map(self, all_windows: WindowList) -> Dict[int, bool]:
         return all_windows.compute_needs_borders_map(lgd.draw_active_borders)
 
+    def get_minimal_borders(self, windows: WindowList) -> Generator[BorderLine, None, None]:
+        self._set_dimensions()
+        yield from self.minimal_borders(windows)
+
     def minimal_borders(self, windows: WindowList) -> Generator[BorderLine, None, None]:
         return
         yield BorderLine()  # type: ignore
 
     def layout_action(self, action_name: str, args: Sequence[str], all_windows: WindowList) -> Optional[bool]:
         pass
+
+    def layout_state(self) -> Dict[str, Any]:
+        return {}

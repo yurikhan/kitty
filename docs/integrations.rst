@@ -28,11 +28,23 @@ images and other types of documents directly in your terminal, even over SSH.
     another terminal file manager, with previews of file contents powered by kitty's graphics protocol.
 
 `koneko <https://github.com/twenty5151/koneko>`_
-    browse images from the pixiv artist community directly in kitty
+    browse images from the pixiv artist community directly in kitty.
 
 `viu <https://github.com/atanunq/viu>`_
-    view images in the terminal, similar to kitty's icat, however also supports
-    displaying animated GIFs
+    view images in the terminal, similar to kitty's icat.
+
+`nb <https://github.com/xwmx/nb>`_
+    command line and local web note-taking, bookmarking, archiving, and
+    knowledge base application that uses kitty's graphics protocol for images.
+
+`w3m <https://github.com/tats/w3m>`_
+    A text mode WWW browser that supports kitty's graphics protocol to display
+    images.
+
+`timg <https://github.com/hzeller/timg>`_
+    A terminal image and video viewer, that displays static and animated
+    images or plays videos. Fast multi-threaded loading, JPEG exif rotation,
+    grid view and connecting to the webcam make it a versatile terminal utility.
 
 
 System and data visualisation tools
@@ -46,6 +58,10 @@ System and data visualisation tools
 
 `KittyTerminalImages.jl <https://github.com/simonschoelly/KittyTerminalImages.jl>`_
     show images from Julia directly in kitty
+
+`euporie <https://github.com/joouha/euporie>`_
+    a text-based user interface for running and editing Jupyter notebooks,
+    powered by kitty's graphics protocol for displaying plots
 
 `gnuplot <http://www.gnuplot.info/>`_
     a graphing and data visualization tool that can be made to display its
@@ -70,8 +86,18 @@ System and data visualisation tools
 `onefetch <https://github.com/o2sh/onefetch>`_
     a tool to fetch information about your git repositories
 
-`wttr <https://github.com/chubin/wttr.in>`_
+`patat <https://github.com/jaspervdj/patat>`_
+    terminal based presentations using pandoc and kitty's image protocol for
+    images
+
+`wttr.in <https://github.com/chubin/wttr.in>`_
     a tool to display weather information in your terminal with curl
+
+`wl-clipboard-manager <https://github.com/maximbaz/wl-clipboard-manager>`_
+    view and manage the system clipboard under Wayland in your kitty terminal
+
+`dmenu-term <https://github.com/maximbaz/dmenu-term>`_
+    run applications on your system with fuzzy find inside a kitty window
 
 
 Editor integration
@@ -92,6 +118,9 @@ such a split windows, previews, REPLs etc.
 
 `vim-test <https://github.com/vim-test/vim-test>`_
     allows easily running tests in a terminal window
+
+`hologram.nvim <https://github.com/edluffy/hologram.nvim>`_
+    terminal image viewer for nvim
 
 
 Scrollback manipulation

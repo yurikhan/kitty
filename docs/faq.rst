@@ -4,6 +4,7 @@ Frequently Asked Questions
 .. highlight:: sh
 
 .. contents::
+   :local:
 
 Some special symbols are rendered small/truncated in kitty?
 -----------------------------------------------------------
@@ -49,14 +50,24 @@ terminfo files to the server::
 
 This ssh kitten takes all the same command line arguments
 as ssh, you can alias it to ssh in your shell's rc files to avoid having to
-type it each time.
+type it each time::
+
+    alias ssh="kitty +kitten ssh"
+
+Remember to also setup :ref:`completion`.
 
 If for some reason that does not work (typically because the server is using a
-non POSIX compliant shell), you can use the following one-liner instead (it
+non POSIX compliant shell as ``/bin/sh``), you can try using it with ``python``
+instead::
+
+    kitty +kitten ssh use-python myserver
+
+If that also fails, perhaps because python is not installed on the remote
+server, use the following one-liner instead (it
 is slower as it needs to ssh into the server twice, but will work with most
 servers)::
 
-    infocmp xterm-kitty | ssh myserver tic -x -o \~/.terminfo /dev/stdin
+    infocmp -a xterm-kitty | ssh myserver tic -x -o \~/.terminfo /dev/stdin
 
 If you are behind a proxy (like Balabit) that prevents this, you must redirect the
 1st command to a file, copy that to the server and run ``tic`` manually.  If you
@@ -162,6 +173,19 @@ You can, of course, also run |kitty| from a terminal with command line options, 
 And within |kitty| itself, you can always run |kitty| using just `kitty` as it
 cleverly adds itself to the ``PATH``.
 
+I catted a binary file and now kitty is hung?
+-----------------------------------------------
+
+**Never** output unknown binary data directly into a terminal.
+
+Terminals have a single channel for both data and control. Certain bytes
+are control codes. Some of these control codes are of arbitrary length, so
+if the binary data you output into the terminal happens to contain the starting
+sequence for one of these control codes, the terminal will hang waiting for
+the closing sequence. Press :kbd:`ctrl+shift+delete` to reset the terminal.
+
+If you do want to cat unknown data, use ``cat -v``.
+
 
 kitty is not able to use my favorite font?
 ---------------------------------------------
@@ -219,26 +243,14 @@ How do I map key presses in kitty to different keys in the terminal program?
 This is accomplished by using ``map`` with :sc:`send_text <send_text>` in :file:`kitty.conf`.
 For example::
 
-    map alt+s send_text all \x13
+    map alt+s send_text normal,application \x13
 
 This maps :kbd:`alt+s` to :kbd:`ctrl+s`. To figure out what bytes to use for
-the :sc:`send_text <send_text>` you can use the ``showkey`` utility. Run::
+the :sc:`send_text <send_text>` you can use the ``show_key`` kitten. Run::
 
-    showkey -a
+    kitty +kitten show_key
 
-Then press the key you want to emulate. On macOS, this utility is currently not
-available. The manual way to figure it out is:
-
-    1. Look up your key's decimal value in the table at the bottom of `this
-       page <http://ascii-table.com/ansi-escape-sequences.php>`_ or any
-       ANSI escape sequence table. There are different modifiers for :kbd:`ctrl`,
-       :kbd:`alt`, etc. For e.g., for :kbd:`ctrl+s`, find the ``S`` row and look at
-       the third column value, ``19``.
-
-    2. Convert the decimal value to hex with ``kitty +runpy "print(hex(19))"``.
-       This shows the hex value, ``13`` in this case.
-
-    3. Use ``\x(hexval)`` in your ``send_text`` command in kitty. So in this example, ``\x13``
+Then press the key you want to emulate.
 
 How do I open a new window or tab with the same working directory as the current window?
 --------------------------------------------------------------------------------------------
@@ -251,6 +263,33 @@ In :file:`kitty.conf` add the following::
 Pressing :kbd:`F1` will open a new kitty window with the same working directory
 as the current window. The :doc:`launch command <launch>` is very powerful,
 explore :doc:`its documentation <launch>`.
+
+
+Things behave differently when running kitty from system launcher vs. from another terminal?
+-----------------------------------------------------------------------------------------------
+
+This will be because of environment variables. When you run kitty from the
+system launcher, it gets a default set of system environment variables. When
+you run kitty from another terminal, you are actually running it from a shell,
+and the shell's rc files will have setup a whole different set of environment
+variables which kitty will now inherit.
+
+You need to make sure that the environment variables you define in your shell's
+rc files are either also defined system wide or via the :opt:`env` directive in
+:file:`kitty.conf`. Common environment variables that cause issues are those
+related to localization, such as ``LANG, LC_*`` and loading of configuration
+files such as ``XDG_*, KITTY_CONFIG_DIRECTORY``.
+
+To see the environment variables that kitty sees, you can add the following
+mapping to :file:`kitty.conf`::
+
+    map f1 show_kitty_env_vars
+
+then pressing :kbd:`F1` will show you the environment variables kitty sees.
+
+This problem is most common on macOS, as Apple makes it exceedingly difficult to
+setup environment variables system-wide, so people end up putting them in all
+sorts of places where they may or may not work.
 
 
 I am using tmux and have a problem
@@ -278,3 +317,40 @@ If you use any of the advanced features that kitty has innovated, such as
 styled underlines, desktop notifications, extended keyboard support, etc.
 they may or may not work, depending on the whims of tmux's maintainer, your
 version of tmux, etc.
+
+
+I opened and closed a lot of windows/tabs and top shows kitty's memory usage is very high?
+-------------------------------------------------------------------------------------------
+
+``top`` is not a good way to measure process memory usage. That is because on
+modern systems, when allocating memory to a process, the C library functions
+will typically allocate memory in large blocks, and give the process chunks of
+these blocks. When the process frees a chunk, the C library will not
+necessarily release the underlying block back to the OS. So even though the
+application has released the memory, ``top`` will still claim the process is
+using it.
+
+To check for memory leaks, instead use a tool like ``valgrind``. Run::
+
+    PYTHONMALLOC=malloc valgrind --tool=massif kitty
+
+Now open lots of tabs/windows, generate lots of output using tools like find/yes
+etc. Then close all but one window. Do some random work for a few seconds in
+that window, maybe run yes or find again. Then quit kitty and run::
+
+    massif-visualizer massif.out.*
+
+You will see the allocations graph goes up when you opened the windows, then
+goes back down when you closed them, indicating there were no memory leaks.
+
+For those interested, you can get a similar profile out of ``valgrind`` as you get
+with ``top`` by adding ``--pages-as-heap=yes`` then you will see that memory
+allocated in malloc is not freed in free. This can be further refined if you
+use `glibc`` as your C library by setting the environment variable
+``MALLOC_MMAP_THRESHOLD_=64``. This will cause free to actually free memory
+allocated in sizes of more than 64 bytes. With this set, memory usage will
+climb high, then fall when closing windows, but not fall all the way back. The
+remaining used memory can be investigated using valgrind again, and it will
+come from arenas in the GPU drivers and the per thread arenas glibc's malloc
+maintains. These too allocate memory in large blocks and dont release it back
+to the OS immediately.

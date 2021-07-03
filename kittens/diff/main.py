@@ -19,11 +19,10 @@ from typing import (
 
 from kitty.cli import CONFIG_HELP, parse_args
 from kitty.cli_stub import DiffCLIOptions
-from kitty.conf.utils import KittensKeyAction
+from kitty.conf.utils import KeyAction
 from kitty.constants import appname
 from kitty.fast_data_types import wcswidth
-from kitty.key_encoding import RELEASE, KeyEvent, enter_key, key_defs as K
-from kitty.options_stub import DiffOptions
+from kitty.key_encoding import EventType, KeyEvent
 from kitty.utils import ScreenSize
 
 from ..tui.handler import Handler
@@ -33,10 +32,11 @@ from ..tui.loop import Loop
 from ..tui.operations import styled
 from . import global_data
 from .collect import (
-    Collection, create_collection, data_for_path, lines_for_path, sanitize,
-    set_highlight_data
+    Collection, add_remote_dir, create_collection, data_for_path,
+    lines_for_path, sanitize, set_highlight_data
 )
 from .config import init_config
+from .options.types import Options as DiffOptions
 from .patch import Differ, Patch, set_diff_command, worker_processes
 from .render import (
     ImagePlacement, ImageSupportWarning, Line, LineRef, Reference, render_diff
@@ -57,7 +57,6 @@ except ImportError:
 
 
 INITIALIZING, COLLECTED, DIFFED, COMMAND, MESSAGE = range(5)
-ESCAPE = K['ESCAPE']
 
 
 def generate_diff(collection: Collection, context: int) -> Union[str, Dict[str, Patch]]:
@@ -94,16 +93,16 @@ class DiffHandler(Handler):
         self.highlighting_done = False
         self.restore_position: Optional[Reference] = None
         for key_def, action in self.opts.key_definitions.items():
-            self.add_shortcut(action, *key_def)
+            self.add_shortcut(action, key_def)
 
-    def perform_action(self, action: KittensKeyAction) -> None:
+    def perform_action(self, action: KeyAction) -> None:
         func, args = action
         if func == 'quit':
             self.quit_loop(0)
             return
         if self.state <= DIFFED:
             if func == 'scroll_by':
-                return self.scroll_lines(int(args[0]))
+                return self.scroll_lines(int(args[0] or 0))
             if func == 'scroll_to':
                 where = str(args[0])
                 if 'change' in where:
@@ -123,7 +122,7 @@ class DiffHandler(Handler):
                 elif to == 'default':
                     new_ctx = self.original_context_count
                 else:
-                    new_ctx += int(to)
+                    new_ctx += int(to or 0)
                 return self.change_context_count(new_ctx)
             if func == 'start_search':
                 self.start_search(bool(args[0]), bool(args[1]))
@@ -483,48 +482,44 @@ class DiffHandler(Handler):
                 self.message = sanitize(_('No matches found'))
                 self.cmd.bell()
 
-    def on_text(self, text: str, in_bracketed_paste: bool = False) -> None:
-        if self.state is COMMAND:
-            self.line_edit.on_text(text, in_bracketed_paste)
-            self.draw_status_line()
-            return
-        if self.state is MESSAGE:
-            self.state = DIFFED
-            self.draw_status_line()
-            return
-        action = self.shortcut_action(text)
-        if action is not None:
-            return self.perform_action(action)
-
-    def on_key(self, key_event: KeyEvent) -> None:
-        if self.state is MESSAGE:
-            if key_event.type is not RELEASE:
+    def on_key_event(self, key_event: KeyEvent, in_bracketed_paste: bool = False) -> None:
+        if key_event.text:
+            if self.state is COMMAND:
+                self.line_edit.on_text(key_event.text, in_bracketed_paste)
+                self.draw_status_line()
+                return
+            if self.state is MESSAGE:
                 self.state = DIFFED
                 self.draw_status_line()
-            return
-        if self.state is COMMAND:
-            if self.line_edit.on_key(key_event):
-                if not self.line_edit.current_input:
+                return
+        else:
+            if self.state is MESSAGE:
+                if key_event.type is not EventType.RELEASE:
                     self.state = DIFFED
-                self.draw_status_line()
+                    self.draw_status_line()
                 return
-        if key_event.type is RELEASE:
-            return
-        if self.state is COMMAND:
-            if key_event.key is ESCAPE:
-                self.state = DIFFED
-                self.draw_status_line()
-                return
-            if key_event is enter_key:
-                self.state = DIFFED
-                self.do_search()
-                self.line_edit.clear()
+            if self.state is COMMAND:
+                if self.line_edit.on_key(key_event):
+                    if not self.line_edit.current_input:
+                        self.state = DIFFED
+                    self.draw_status_line()
+                    return
+                if key_event.matches('enter'):
+                    self.state = DIFFED
+                    self.do_search()
+                    self.line_edit.clear()
+                    self.draw_screen()
+                    return
+                if key_event.matches('esc'):
+                    self.state = DIFFED
+                    self.draw_status_line()
+                    return
+            if self.state >= DIFFED and self.current_search is not None and key_event.matches('esc'):
+                self.current_search = None
                 self.draw_screen()
                 return
-        if self.state >= DIFFED and self.current_search is not None and key_event.key is ESCAPE:
-            self.current_search = None
-            self.draw_screen()
-            return
+            if key_event.type is EventType.RELEASE:
+                return
         action = self.shortcut_action(key_event)
         if action is not None:
             return self.perform_action(action)
@@ -586,17 +581,39 @@ def terminate_processes(processes: Iterable[int]) -> None:
             os.kill(pid, signal.SIGKILL)
 
 
+def get_ssh_file(hostname: str, rpath: str) -> str:
+    import io
+    import shutil
+    import tarfile
+    tdir = tempfile.mkdtemp(suffix=f'-{hostname}')
+    add_remote_dir(tdir)
+    atexit.register(shutil.rmtree, tdir)
+    is_abs = rpath.startswith('/')
+    rpath = rpath.lstrip('/')
+    cmd = ['ssh', hostname, 'tar', '-c', '-f', '-']
+    if is_abs:
+        cmd.extend(('-C', '/'))
+    cmd.append(rpath)
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    assert p.stdout is not None
+    raw = p.stdout.read()
+    if p.wait() != 0:
+        raise SystemExit(p.returncode)
+    with tarfile.open(fileobj=io.BytesIO(raw), mode='r:') as tf:
+        members = tf.getmembers()
+        tf.extractall(tdir)
+        if len(members) == 1:
+            for root, dirs, files in os.walk(tdir):
+                if files:
+                    return os.path.join(root, files[0])
+        return os.path.abspath(os.path.join(tdir, rpath))
+
+
 def get_remote_file(path: str) -> str:
     if path.startswith('ssh:'):
         parts = path.split(':', 2)
         if len(parts) == 3:
-            hostname, rpath = parts[1:]
-            with tempfile.NamedTemporaryFile(suffix='-' + os.path.basename(rpath), prefix='remote:', delete=False) as tf:
-                atexit.register(os.remove, tf.name)
-                p = subprocess.Popen(['ssh', hostname, 'cat', rpath], stdout=tf)
-                if p.wait() != 0:
-                    raise SystemExit(p.returncode)
-                return tf.name
+            return get_ssh_file(parts[1], parts[2])
     return path
 
 
@@ -607,12 +624,12 @@ def main(args: List[str]) -> None:
         raise SystemExit('You must specify exactly two files/directories to compare')
     left, right = items
     global_data.title = _('{} vs. {}').format(left, right)
-    if os.path.isdir(left) != os.path.isdir(right):
-        raise SystemExit('The items to be diffed should both be either directories or files. Comparing a directory to a file is not valid.')
     opts = init_config(cli_opts)
     set_diff_command(opts.diff_cmd)
     lines_for_path.replace_tab_by = opts.replace_tab_by
     left, right = map(get_remote_file, (left, right))
+    if os.path.isdir(left) != os.path.isdir(right):
+        raise SystemExit('The items to be diffed should both be either directories or files. Comparing a directory to a file is not valid.')
     for f in left, right:
         if not os.path.exists(f):
             raise SystemExit('{} does not exist'.format(f))
@@ -641,5 +658,5 @@ elif __name__ == '__doc__':
     cd['options'] = OPTIONS
     cd['help_text'] = help_text
 elif __name__ == '__conf__':
-    from .config_data import all_options
-    sys.all_options = all_options  # type: ignore
+    from .options.definition import definition
+    sys.options_definition = definition  # type: ignore

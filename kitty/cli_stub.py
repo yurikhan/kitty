@@ -13,12 +13,12 @@ class CLIOptions:
 LaunchCLIOptions = AskCLIOptions = ClipboardCLIOptions = DiffCLIOptions = CLIOptions
 HintsCLIOptions = IcatCLIOptions = PanelCLIOptions = ResizeCLIOptions = CLIOptions
 ErrorCLIOptions = UnicodeCLIOptions = RCOptions = RemoteFileCLIOptions = CLIOptions
-QueryTerminalCLIOptions = BroadcastCLIOptions = CLIOptions
+QueryTerminalCLIOptions = BroadcastCLIOptions = ShowKeyCLIOptions = CLIOptions
 
 
 def generate_stub() -> None:
     from .cli import parse_option_spec, as_type_stub
-    from .conf.definition import save_type_stub
+    from .conf.utils import save_type_stub
     text = 'import typing\n\n\n'
 
     def do(otext=None, cls: str = 'CLIOptions', extra_fields: Sequence[str] = ()):
@@ -41,6 +41,9 @@ def generate_stub() -> None:
 
     from kittens.clipboard.main import OPTIONS
     do(OPTIONS(), 'ClipboardCLIOptions')
+
+    from kittens.show_key.main import OPTIONS
+    do(OPTIONS(), 'ShowKeyCLIOptions')
 
     from kittens.diff.main import OPTIONS
     do(OPTIONS(), 'DiffCLIOptions')

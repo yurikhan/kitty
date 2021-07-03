@@ -39,6 +39,9 @@ typedef void* CVDisplayLinkRef;
 // NOTE: Many Cocoa enum values have been renamed and we need to build across
 //       SDK versions where one is unavailable or the other deprecated
 //       We use the newer names in code and these macros to handle compatibility
+#if (MAC_OS_X_VERSION_MAX_ALLOWED < 120000) // Before macOS 12 Monterey
+  #define kIOMainPortDefault kIOMasterPortDefault
+#endif
 #if MAC_OS_X_VERSION_MAX_ALLOWED < 101200
  #define NSBitmapFormatAlphaNonpremultiplied NSAlphaNonpremultipliedBitmapFormat
  #define NSEventMaskAny NSAnyEventMask
@@ -67,6 +70,7 @@ typedef void* CVDisplayLinkRef;
 
 typedef int (* GLFWcocoatextinputfilterfun)(int,int,unsigned int, unsigned long);
 typedef bool (* GLFWapplicationshouldhandlereopenfun)(int);
+typedef bool (* GLFWhandlefileopen)(const char*);
 typedef void (* GLFWapplicationwillfinishlaunchingfun)(void);
 typedef bool (* GLFWcocoatogglefullscreenfun)(GLFWwindow*);
 typedef void (* GLFWcocoarenderframefun)(GLFWwindow*);
@@ -157,7 +161,7 @@ typedef struct _GLFWDisplayLinkNS
 {
     CVDisplayLinkRef displayLink;
     CGDirectDisplayID displayID;
-    monotonic_t lastRenderFrameRequestedAt;
+    monotonic_t lastRenderFrameRequestedAt, first_unserviced_render_frame_request_at;
 } _GLFWDisplayLinkNS;
 
 // Cocoa-specific global data
@@ -178,8 +182,6 @@ typedef struct _GLFWlibraryNS
 
     char                keyName[64];
     char                text[256];
-    short int           keycodes[256];
-    short int           key_to_keycode[GLFW_KEY_LAST + 1];
     char*               clipboardString;
     CGPoint             cascadePoint;
     // Where to place the cursor when re-enabled
@@ -199,6 +201,8 @@ typedef struct _GLFWlibraryNS
         _GLFWDisplayLinkNS entries[256];
         size_t count;
     } displayLinks;
+    // the callback to handle file open events
+    GLFWhandlefileopen file_open_callback;
 
 } _GLFWlibraryNS;
 
@@ -245,3 +249,4 @@ void _glfwDispatchTickCallback(void);
 void _glfwDispatchRenderFrame(CGDirectDisplayID);
 void _glfwShutdownCVDisplayLink(unsigned long long, void*);
 void _glfwCocoaPostEmptyEvent(void);
+void _glfw_create_cv_display_link(_GLFWDisplayLinkNS *entry);

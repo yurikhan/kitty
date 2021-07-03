@@ -10,7 +10,6 @@ from typing import (
     Any, Callable, Dict, Generator, List, Optional, Tuple, Union, cast
 )
 
-from kitty.config import defaults
 from kitty.constants import is_macos
 from kitty.fast_data_types import (
     Screen, create_test_font_group, get_fallback_font, set_font_data,
@@ -20,7 +19,7 @@ from kitty.fast_data_types import (
 from kitty.fonts.box_drawing import (
     BufType, render_box_char, render_missing_glyph
 )
-from kitty.options_stub import Options as OptionsStub
+from kitty.options.types import Options, defaults
 from kitty.typing import CoreTextFont, FontConfigPattern
 from kitty.utils import log_error
 
@@ -33,7 +32,7 @@ FontObject = Union[CoreTextFont, FontConfigPattern]
 current_faces: List[Tuple[FontObject, bool, bool]] = []
 
 
-def get_font_files(opts: OptionsStub) -> Dict[str, Any]:
+def get_font_files(opts: Options) -> Dict[str, Any]:
     if is_macos:
         return get_font_files_coretext(opts)
     return get_font_files_fontconfig(opts)
@@ -136,7 +135,7 @@ def coalesce_symbol_maps(maps: Dict[Tuple[int, int], str]) -> Dict[Tuple[int, in
     return dict(ans)
 
 
-def create_symbol_map(opts: OptionsStub) -> Tuple[Tuple[int, int, int], ...]:
+def create_symbol_map(opts: Options) -> Tuple[Tuple[int, int, int], ...]:
     val = coalesce_symbol_maps(opts.symbol_map)
     family_map: Dict[str, int] = {}
     count = 0
@@ -174,7 +173,7 @@ def dump_faces(ftypes: List[str], indices: Dict[str, int]) -> None:
             log_error(face_str(face))
 
 
-def set_font_family(opts: Optional[OptionsStub] = None, override_font_size: Optional[float] = None, debug_font_matching: bool = False) -> None:
+def set_font_family(opts: Optional[Options] = None, override_font_size: Optional[float] = None, debug_font_matching: bool = False) -> None:
     global current_faces
     opts = opts or defaults
     sz = override_font_size or opts.font_size
@@ -236,7 +235,15 @@ def add_dline(buf: ctypes.Array, cell_width: int, position: int, thickness: int,
 def add_curl(buf: ctypes.Array, cell_width: int, position: int, thickness: int, cell_height: int) -> None:
     max_x, max_y = cell_width - 1, cell_height - 1
     xfactor = 2.0 * pi / max_x
-    half_height = max(thickness // 2, 1)
+    thickness = max(1, thickness)
+    if thickness < 3:
+        half_height = thickness
+        thickness -= 1
+    elif thickness == 3:
+        half_height = thickness = 2
+    else:
+        half_height = thickness // 2
+        thickness -= 2
 
     def add_intensity(x: int, y: int, val: int) -> None:
         y += position
@@ -244,20 +251,22 @@ def add_curl(buf: ctypes.Array, cell_width: int, position: int, thickness: int, 
         idx = cell_width * y + x
         buf[idx] = min(255, buf[idx] + val)
 
-    # Ensure all space at bottom of cell is used
-    if position + half_height < max_y:
-        position += max_y - (position + half_height)
+    # Ensure curve doesn't exceed cell boundary at the bottom
+    position += half_height * 2
     if position + half_height > max_y:
-        position -= position + half_height - max_y
+        position = max_y - half_height
 
     # Use the Wu antialias algorithm to draw the curve
     # cosine waves always have slope <= 1 so are never steep
     for x in range(cell_width):
         y = half_height * cos(x * xfactor)
-        y1, y2 = floor(y), ceil(y)
-        i1 = int(255 * abs(y - y1))
-        add_intensity(x, y1, 255 - i1)
-        add_intensity(x, y2, i1)
+        y1, y2 = floor(y - thickness), ceil(y)
+        i1 = int(255 * abs(y - floor(y)))
+        add_intensity(x, y1, 255 - i1)  # upper bound
+        add_intensity(x, y2, i1)  # lower bound
+        # fill between upper and lower bound
+        for t in range(1, thickness + 1):
+            add_intensity(x, y1 + t, 255)
 
 
 def render_special(
@@ -269,7 +278,9 @@ def render_special(
     underline_position: int = 0,
     underline_thickness: int = 0,
     strikethrough_position: int = 0,
-    strikethrough_thickness: int = 0
+    strikethrough_thickness: int = 0,
+    dpi_x: float = 96.,
+    dpi_y: float = 96.,
 ) -> ctypes.Array:
     underline_position = min(underline_position, cell_height - underline_thickness)
     CharTexture = ctypes.c_ubyte * (cell_width * cell_height)
@@ -356,7 +367,9 @@ def prerender_function(
     f = partial(
         render_special, cell_width=cell_width, cell_height=cell_height, baseline=baseline,
         underline_position=underline_position, underline_thickness=underline_thickness,
-        strikethrough_position=strikethrough_position, strikethrough_thickness=strikethrough_thickness)
+        strikethrough_position=strikethrough_position, strikethrough_thickness=strikethrough_thickness,
+        dpi_x=dpi_x, dpi_y=dpi_y
+    )
     c = partial(
         render_cursor, cursor_beam_thickness=cursor_beam_thickness,
         cursor_underline_thickness=cursor_underline_thickness, cell_width=cell_width,

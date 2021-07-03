@@ -7,7 +7,7 @@ from binascii import hexlify, unhexlify
 from typing import TYPE_CHECKING, Dict, Generator, Optional, cast
 
 if TYPE_CHECKING:
-    from .options_stub import Options
+    from .options.types import Options
 
 
 def modify_key_bytes(keybytes: bytes, amt: int) -> bytes:
@@ -231,6 +231,7 @@ string_capabilities = {
     'smso': r'\E[7m',
     # Enter underline mode
     'smul': r'\E[4m',
+    'Smulx': r'\E[4:%p1%dm',  # this is a non-standard extension that some terminals use, so match them
     # Enter strikethrough mode
     'smxx': r'\E[9m',
     # Clear all tab stops
@@ -261,6 +262,15 @@ string_capabilities = {
     'setrgbf': r'\E[38:2:%p1%d:%p2%d:%p3%dm',
     # Set RGB background color (non-standard used by neovim)
     'setrgbb': r'\E[48:2:%p1%d:%p2%d:%p3%dm',
+
+    # The following entries are for compatibility with xterm,
+    # and shell scripts using e.g. `tput u7` to emit a CPR escape
+    # See https://invisible-island.net/ncurses/terminfo.src.html
+    # and INTERPRETATION OF USER CAPABILITIES
+    'u6': r'\E[%i%d;%dR',
+    'u7': r'\E[6n',
+    'u8': r'\E[?%[;0123456789]c',
+    'u9': r'\E[c',
 
     # The following are entries that we don't use
     # # turn on blank mode, (characters invisible)
@@ -401,6 +411,10 @@ termcap_aliases.update({
     'fs': 'fsl',
     'ds': 'dsl',
 
+    'u6': 'u6',
+    'u7': 'u7',
+    'u8': 'u8',
+    'u9': 'u9',
 
     # 'ut': 'bce',
     # 'ds': 'dsl',
@@ -423,7 +437,7 @@ queryable_capabilities = cast(Dict[str, str], numeric_capabilities.copy())
 queryable_capabilities.update(string_capabilities)
 extra = (bool_capabilities | numeric_capabilities.keys() | string_capabilities.keys()) - set(termcap_aliases.values())
 no_termcap_for = frozenset(
-    'Su Tc setrgbf setrgbb fullkbd kUP kDN'.split() + [
+    'Su Smulx Tc setrgbf setrgbb fullkbd kUP kDN'.split() + [
         'k{}{}'.format(key, mod)
         for key in 'UP DN RIT LFT END HOM IC DC PRV NXT'.split()
         for mod in range(3, 8)])
@@ -465,17 +479,15 @@ def get_capabilities(query_string: str, opts: 'Options') -> Generator[str, None,
         if name in ('TN', 'name'):
             yield result(encoded_query_name, names[0])
         elif name.startswith('kitty-query-'):
+            from kittens.query_terminal.main import get_result
             name = name[len('kitty-query-'):]
-            if name == 'version':
-                from .constants import str_version
-                yield result(encoded_query_name, str_version)
-            elif name == 'allow_hyperlinks':
-                yield result(encoded_query_name,
-                             'ask' if opts.allow_hyperlinks == 0b11 else ('yes' if opts.allow_hyperlinks else 'no'))
-            else:
+            rval = get_result(name)
+            if rval is None:
                 from .utils import log_error
                 log_error('Unknown kitty terminfo query:', name)
                 yield result(encoded_query_name)
+            else:
+                yield result(encoded_query_name, rval)
         else:
             try:
                 val = queryable_capabilities[name]

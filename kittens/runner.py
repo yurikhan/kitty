@@ -6,10 +6,17 @@
 import importlib
 import os
 import sys
-from functools import lru_cache, partial
-from typing import Any, Dict, FrozenSet, List
+from contextlib import contextmanager
+from functools import partial
+from typing import TYPE_CHECKING, Any, Dict, FrozenSet, Generator, List, cast
+
+from kitty.types import run_once
 
 aliases = {'url_hints': 'hints'}
+if TYPE_CHECKING:
+    from kitty.conf.types import Definition
+else:
+    Definition = object
 
 
 def resolved_kitten(k: str) -> str:
@@ -24,21 +31,29 @@ def path_to_custom_kitten(config_dir: str, kitten: str) -> str:
     return path
 
 
+@contextmanager
+def preserve_sys_path() -> Generator[None, None, None]:
+    orig = sys.path[:]
+    try:
+        yield
+    finally:
+        if sys.path != orig:
+            del sys.path[:]
+            sys.path.extend(orig)
+
+
 def import_kitten_main_module(config_dir: str, kitten: str) -> Dict[str, Any]:
     if kitten.endswith('.py'):
-        path_modified = False
-        path = path_to_custom_kitten(config_dir, kitten)
-        if os.path.dirname(path):
-            sys.path.insert(0, os.path.dirname(path))
-            path_modified = True
-        with open(path) as f:
-            src = f.read()
-        code = compile(src, path, 'exec')
-        g = {'__name__': 'kitten'}
-        exec(code, g)
-        hr = g.get('handle_result', lambda *a, **kw: None)
-        if path_modified:
-            del sys.path[0]
+        with preserve_sys_path():
+            path = path_to_custom_kitten(config_dir, kitten)
+            if os.path.dirname(path):
+                sys.path.insert(0, os.path.dirname(path))
+            with open(path) as f:
+                src = f.read()
+            code = compile(src, path, 'exec')
+            g = {'__name__': 'kitten'}
+            exec(code, g)
+            hr = g.get('handle_result', lambda *a, **kw: None)
         return {'start': g['main'], 'end': hr}
 
     kitten = resolved_kitten(kitten)
@@ -57,8 +72,9 @@ def create_kitten_handler(kitten: str, orig_args: List[str]) -> Any:
 
 
 def set_debug(kitten: str) -> None:
-    from kittens.tui.loop import debug
     import builtins
+
+    from kittens.tui.loop import debug
     setattr(builtins, 'debug', debug)
 
 
@@ -118,16 +134,17 @@ def run_kitten(kitten: str, run_name: str = '__main__') -> None:
     m['main'](sys.argv)
 
 
-@lru_cache(maxsize=2)
+@run_once
 def all_kitten_names() -> FrozenSet[str]:
-    n = []
-    import glob
-    base = os.path.dirname(os.path.abspath(__file__))
-    for x in glob.glob(os.path.join(base, '*', '__init__.py')):
-        q = os.path.basename(os.path.dirname(x))
-        if q != 'tui':
-            n.append(q)
-    return frozenset(n)
+    try:
+        from importlib.resources import contents
+    except ImportError:
+        from importlib_resources import contents  # type: ignore
+    ans = []
+    for name in contents('kittens'):
+        if '__' not in name and '.' not in name and name != 'tui':
+            ans.append(name)
+    return frozenset(ans)
 
 
 def list_kittens() -> None:
@@ -147,12 +164,20 @@ def get_kitten_cli_docs(kitten: str) -> Any:
         return ans
 
 
-def get_kitten_conf_docs(kitten: str) -> Any:
-    setattr(sys, 'all_options', None)
-    run_kitten(kitten, run_name='__conf__')
-    ans = getattr(sys, 'all_options')
-    delattr(sys, 'all_options')
+def get_kitten_completer(kitten: str) -> Any:
+    run_kitten(kitten, run_name='__completer__')
+    ans = getattr(sys, 'kitten_completer', None)
+    if ans is not None:
+        delattr(sys, 'kitten_completer')
     return ans
+
+
+def get_kitten_conf_docs(kitten: str) -> Definition:
+    setattr(sys, 'options_definition', None)
+    run_kitten(kitten, run_name='__conf__')
+    ans = getattr(sys, 'options_definition')
+    delattr(sys, 'options_definition')
+    return cast(Definition, ans)
 
 
 def main() -> None:

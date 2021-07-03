@@ -5,7 +5,8 @@
  * Distributed under terms of the GPL3 license.
  */
 
-#include "state.h"
+#include "cleanup.h"
+#include "options/to-c-generated.h"
 #include <math.h>
 
 GlobalState global_state = {{0}};
@@ -60,6 +61,39 @@ GlobalState global_state = {{0}};
             if (wp->id == cb_window_id && cb_window_id) global_state.callback_os_window = wp; \
     }}
 
+static double
+dpi_for_os_window(OSWindow *os_window) {
+    double dpi = (os_window->logical_dpi_x + os_window->logical_dpi_y) / 2.;
+    if (dpi == 0) dpi = (global_state.default_dpi.x + global_state.default_dpi.y) / 2.;
+    return dpi;
+}
+
+static double
+dpi_for_os_window_id(id_type os_window_id) {
+    double dpi = 0;
+    if (os_window_id) {
+        WITH_OS_WINDOW(os_window_id)
+            dpi = dpi_for_os_window(os_window);
+        END_WITH_OS_WINDOW
+    }
+    if (dpi == 0) {
+        dpi = (global_state.default_dpi.x + global_state.default_dpi.y) / 2.;
+    }
+    return dpi;
+}
+
+static long
+pt_to_px_for_os_window(double pt, OSWindow *w) {
+    const double dpi = dpi_for_os_window(w);
+    return ((long)round((pt * (dpi / 72.0))));
+}
+
+static long
+pt_to_px(double pt, id_type os_window_id) {
+    const double dpi = dpi_for_os_window_id(os_window_id);
+    return ((long)round((pt * (dpi / 72.0))));
+}
+
 
 OSWindow*
 current_os_window() {
@@ -78,6 +112,20 @@ os_window_for_kitty_window(id_type kitty_window_id) {
             Tab *tab = w->tabs + t;
             for (size_t c = 0; c < tab->num_windows; c++) {
                 if (tab->windows[c].id == kitty_window_id) return w;
+            }
+        }
+    }
+    return NULL;
+}
+
+Window*
+window_for_window_id(id_type kitty_window_id) {
+    for (size_t i = 0; i < global_state.num_os_windows; i++) {
+        OSWindow *w = global_state.os_windows + i;
+        for (size_t t = 0; t < w->num_tabs; t++) {
+            Tab *tab = w->tabs + t;
+            for (size_t c = 0; c < tab->num_windows; c++) {
+                if (tab->windows[c].id == kitty_window_id) return tab->windows + c;
             }
         }
     }
@@ -143,7 +191,7 @@ add_os_window() {
         }
     }
 
-    ans->font_sz_in_pts = global_state.font_sz_in_pts;
+    ans->font_sz_in_pts = OPT(font_size);
     END_WITH_OS_WINDOW_REFS
     return ans;
 }
@@ -432,21 +480,26 @@ add_borders_rect(id_type os_window_id, id_type tab_id, uint32_t left, uint32_t t
 
 void
 os_window_regions(OSWindow *os_window, Region *central, Region *tab_bar) {
-    if (!global_state.tab_bar_hidden && os_window->num_tabs >= OPT(tab_bar_min_tabs)) {
+    if (!OPT(tab_bar_hidden) && os_window->num_tabs >= OPT(tab_bar_min_tabs)) {
+        long margin_outer = pt_to_px_for_os_window(OPT(tab_bar_margin_height.outer), os_window);
+        long margin_inner = pt_to_px_for_os_window(OPT(tab_bar_margin_height.inner), os_window);
         switch(OPT(tab_bar_edge)) {
             case TOP_EDGE:
-                central->left = 0; central->top = os_window->fonts_data->cell_height; central->right = os_window->viewport_width - 1;
+                central->left = 0;  central->right = os_window->viewport_width - 1;
+                central->top = os_window->fonts_data->cell_height + margin_inner + margin_outer;
                 central->bottom = os_window->viewport_height - 1;
-                tab_bar->left = central->left; tab_bar->right = central->right; tab_bar->top = 0;
-                tab_bar->bottom = central->top - 1;
+                central->top = MIN(central->top, central->bottom);
+                tab_bar->top = margin_outer;
                 break;
             default:
                 central->left = 0; central->top = 0; central->right = os_window->viewport_width - 1;
-                central->bottom = os_window->viewport_height - os_window->fonts_data->cell_height - 1;
-                tab_bar->left = central->left; tab_bar->right = central->right; tab_bar->top = central->bottom + 1;
-                tab_bar->bottom = os_window->viewport_height - 1;
+                long bottom = os_window->viewport_height - os_window->fonts_data->cell_height - 1 - margin_inner - margin_outer;
+                central->bottom = MAX(0, bottom);
+                tab_bar->top = central->bottom + 1 + margin_inner;
                 break;
         }
+        tab_bar->left = central->left; tab_bar->right = central->right;
+        tab_bar->bottom = tab_bar->top + os_window->fonts_data->cell_height - 1;
     } else {
         zero_at_ptr(tab_bar);
         central->left = 0; central->top = 0; central->right = os_window->viewport_width - 1;
@@ -460,6 +513,52 @@ mark_os_window_for_close(OSWindow* w, CloseRequest cr) {
     w->close_request = cr;
 }
 
+static bool
+owners_for_window_id(id_type window_id, OSWindow **os_window, Tab **tab) {
+    if (os_window) *os_window = NULL;
+    if (tab) *tab = NULL;
+    for (size_t o = 0; o < global_state.num_os_windows; o++) {
+        OSWindow *osw = global_state.os_windows + o;
+        for (size_t t = 0; t < osw->num_tabs; t++) {
+            Tab *qtab = osw->tabs + t;
+            for (size_t w = 0; w < qtab->num_windows; w++) {
+                Window *window = qtab->windows + w;
+                if (window->id == window_id) {
+                    if (os_window) *os_window = osw;
+                    if (tab) *tab = qtab;
+                    return true;
+    }}}}
+    return false;
+}
+
+
+bool
+make_window_context_current(id_type window_id) {
+    OSWindow *os_window;
+    if (owners_for_window_id(window_id, &os_window, NULL)) {
+        make_os_window_context_current(os_window);
+        return true;
+    }
+    return false;
+}
+
+void
+send_pending_click_to_window_id(id_type timer_id UNUSED, void *data) {
+    id_type window_id = *((id_type*)data);
+    for (size_t o = 0; o < global_state.num_os_windows; o++) {
+        OSWindow *osw = global_state.os_windows + o;
+        for (size_t t = 0; t < osw->num_tabs; t++) {
+            Tab *qtab = osw->tabs + t;
+            for (size_t w = 0; w < qtab->num_windows; w++) {
+                Window *window = qtab->windows + w;
+                if (window->id == window_id) {
+                    send_pending_click_to_window(window, data);
+                    return;
+                }
+            }
+        }
+    }
+}
 
 
 // Python API {{{
@@ -480,139 +579,9 @@ mark_os_window_for_close(OSWindow* w, CloseRequest cr) {
 #define KKKK(name) PYWRAP1(name) { id_type a, b, c, d; PA("KKKK", &a, &b, &c, &d); name(a, b, c, d); Py_RETURN_NONE; }
 #define KK5I(name) PYWRAP1(name) { id_type a, b; unsigned int c, d, e, f, g; PA("KKIIIII", &a, &b, &c, &d, &e, &f, &g); name(a, b, c, d, e, f, g); Py_RETURN_NONE; }
 #define BOOL_SET(name) PYWRAP1(set_##name) { global_state.name = PyObject_IsTrue(args); Py_RETURN_NONE; }
-
-static color_type default_color = 0;
-
-static inline color_type
-color_as_int(PyObject *color) {
-    if (color == Py_None && default_color) return default_color;
-    if (!PyTuple_Check(color)) { PyErr_SetString(PyExc_TypeError, "Not a color tuple"); return 0; }
-#define I(n, s) ((PyLong_AsUnsignedLong(PyTuple_GET_ITEM(color, n)) & 0xff) << s)
-    return (I(0, 16) | I(1, 8) | I(2, 0)) & 0xffffff;
-#undef I
-}
-
-static inline monotonic_t
-parse_s_double_to_monotonic_t(PyObject *val) {
-    return s_double_to_monotonic_t(PyFloat_AsDouble(val));
-}
-
-static inline monotonic_t
-parse_ms_long_to_monotonic_t(PyObject *val) {
-    return ms_to_monotonic_t(PyLong_AsUnsignedLong(val));
-}
-
-static int kitty_mod = 0;
-
-static inline int
-resolve_mods(int mods) {
-    if (mods & GLFW_MOD_KITTY) {
-        mods = (mods & ~GLFW_MOD_KITTY) | kitty_mod;
-    }
-    return mods;
-}
-
-static int
-convert_mods(PyObject *obj) {
-    return resolve_mods(PyLong_AsLong(obj));
-}
-
-static WindowTitleIn
-window_title_in(PyObject *title_in) {
-    const char *in = PyUnicode_AsUTF8(title_in);
-    switch(in[0]) {
-        case 'a': return ALL;
-        case 'w': return WINDOW;
-        case 'm': return MENUBAR;
-        case 'n': return NONE;
-        default: break;
-    }
-    return ALL;
-}
-
-static BackgroundImageLayout
-bglayout(PyObject *layout_name) {
-    const char *name = PyUnicode_AsUTF8(layout_name);
-    switch(name[0]) {
-        case 't': return TILING;
-        case 'm': return MIRRORED;
-        case 's': return SCALED;
-        default: break;
-    }
-    return TILING;
-}
-
-static void
-background_image(PyObject *src) {
-    if (OPT(background_image)) free(OPT(background_image));
-    OPT(background_image) = NULL;
-    if (src == Py_None || !PyUnicode_Check(src)) return;
-    Py_ssize_t sz;
-    const char *s = PyUnicode_AsUTF8AndSize(src, &sz);
-    OPT(background_image) = calloc(sz + 1, 1);
-    if (OPT(background_image)) memcpy(OPT(background_image), s, sz);
-}
-
-
-static MouseShape
-pointer_shape(PyObject *shape_name) {
-    const char *name = PyUnicode_AsUTF8(shape_name);
-    switch(name[0]) {
-        case 'a': return ARROW;
-        case 'h': return HAND;
-        case 'b': return BEAM;
-        default: break;
-    }
-    return BEAM;
-}
-
-static inline void
-free_url_prefixes(void) {
-    OPT(url_prefixes).num = 0;
-    OPT(url_prefixes).max_prefix_len = 0;
-    if (OPT(url_prefixes).values) {
-        free(OPT(url_prefixes.values));
-        OPT(url_prefixes).values = NULL;
-    }
-}
-
-static void
-set_url_prefixes(PyObject *up) {
-    free_url_prefixes();
-    OPT(url_prefixes).values = calloc(PyTuple_GET_SIZE(up), sizeof(UrlPrefix));
-    if (!OPT(url_prefixes).values) { PyErr_NoMemory(); return; }
-    OPT(url_prefixes).num = PyTuple_GET_SIZE(up);
-    for (size_t i = 0; i < OPT(url_prefixes).num; i++) {
-        PyObject *t = PyTuple_GET_ITEM(up, i);
-        if (!PyUnicode_Check(t)) { PyErr_SetString(PyExc_TypeError, "url_prefixes must be strings"); return; }
-        OPT(url_prefixes).values[i].len = MIN(arraysz(OPT(url_prefixes).values[i].string) - 1, (size_t)PyUnicode_GET_LENGTH(t));
-        int kind = PyUnicode_KIND(t);
-        OPT(url_prefixes).max_prefix_len = MAX(OPT(url_prefixes).max_prefix_len, OPT(url_prefixes).values[i].len);
-        for (size_t x = 0; x < OPT(url_prefixes).values[i].len; x++) {
-            OPT(url_prefixes).values[i].string[x] = PyUnicode_READ(kind, PyUnicode_DATA(t), x);
-        }
-    }
-}
-
 #define dict_iter(d) { \
     PyObject *key, *value; Py_ssize_t pos = 0; \
     while (PyDict_Next(d, &pos, &key, &value))
-
-static inline void
-set_special_keys(PyObject *dict) {
-    dict_iter(dict) {
-        if (!PyTuple_Check(key)) { PyErr_SetString(PyExc_TypeError, "dict keys for special keys must be tuples"); return; }
-        int mods = PyLong_AsLong(PyTuple_GET_ITEM(key, 0));
-        bool is_native = PyTuple_GET_ITEM(key, 1) == Py_True;
-        int glfw_key = PyLong_AsLong(PyTuple_GET_ITEM(key, 2));
-        set_special_key_combo(glfw_key, mods, is_native);
-    }}
-}
-
-static inline float
-PyFloat_AsFloat(PyObject *o) {
-    return (float)PyFloat_AsDouble(o);
-}
 
 PYWRAP0(next_window_id) {
     return PyLong_FromUnsignedLongLong(global_state.window_id_counter + 1);
@@ -628,10 +597,25 @@ PYWRAP1(handle_for_window_id) {
     return NULL;
 }
 
+static PyObject* options_object = NULL;
+
+PYWRAP0(get_options) {
+    if (!options_object) {
+        PyErr_SetString(PyExc_RuntimeError, "Must call set_options() before using get_options()");
+        return NULL;
+    }
+    Py_INCREF(options_object);
+    return options_object;
+}
+
 PYWRAP1(set_options) {
-    PyObject *ret, *opts;
+    PyObject *opts;
     int is_wayland = 0, debug_rendering = 0, debug_font_fallback = 0;
     PA("O|ppp", &opts, &is_wayland, &debug_rendering, &debug_font_fallback);
+    if (opts == Py_None) {
+        Py_CLEAR(options_object);
+        Py_RETURN_NONE;
+    }
     global_state.is_wayland = is_wayland ? true : false;
 #ifdef __APPLE__
     global_state.has_render_frames = true;
@@ -639,117 +623,9 @@ PYWRAP1(set_options) {
     if (global_state.is_wayland) global_state.has_render_frames = true;
     global_state.debug_rendering = debug_rendering ? true : false;
     global_state.debug_font_fallback = debug_font_fallback ? true : false;
-#define GA(name) ret = PyObject_GetAttrString(opts, #name); if (ret == NULL) return NULL;
-#define SS(name, dest, convert) { GA(name); dest = convert(ret); Py_DECREF(ret); if (PyErr_Occurred()) return NULL; }
-#define S(name, convert) SS(name, OPT(name), convert)
-    SS(kitty_mod, kitty_mod, PyLong_AsLong);
-    S(hide_window_decorations, PyLong_AsUnsignedLong);
-    S(visual_bell_duration, parse_s_double_to_monotonic_t);
-    S(enable_audio_bell, PyObject_IsTrue);
-    S(focus_follows_mouse, PyObject_IsTrue);
-    S(cursor_blink_interval, parse_s_double_to_monotonic_t);
-    S(cursor_stop_blinking_after, parse_s_double_to_monotonic_t);
-    S(background_opacity, PyFloat_AsFloat);
-    S(background_image_layout, bglayout);
-    S(background_tint, PyFloat_AsFloat);
-    S(background_image_linear, PyObject_IsTrue);
-    S(dim_opacity, PyFloat_AsFloat);
-    S(dynamic_background_opacity, PyObject_IsTrue);
-    S(inactive_text_alpha, PyFloat_AsFloat);
-    S(scrollback_pager_history_size, PyLong_AsUnsignedLong);
-    S(cursor_shape, PyLong_AsLong);
-    S(cursor_beam_thickness, PyFloat_AsFloat);
-    S(cursor_underline_thickness, PyFloat_AsFloat);
-    S(url_style, PyLong_AsUnsignedLong);
-    S(tab_bar_edge, PyLong_AsLong);
-    S(mouse_hide_wait, parse_s_double_to_monotonic_t);
-    S(wheel_scroll_multiplier, PyFloat_AsDouble);
-    S(touch_scroll_multiplier, PyFloat_AsDouble);
-    S(open_url_modifiers, convert_mods);
-    S(rectangle_select_modifiers, convert_mods);
-    S(terminal_select_modifiers, convert_mods);
-    S(click_interval, parse_s_double_to_monotonic_t);
-    S(resize_debounce_time, parse_s_double_to_monotonic_t);
-    S(mark1_foreground, color_as_int);
-    S(mark1_background, color_as_int);
-    S(mark2_foreground, color_as_int);
-    S(mark2_background, color_as_int);
-    S(mark3_foreground, color_as_int);
-    S(mark3_background, color_as_int);
-    S(url_color, color_as_int);
-    S(background, color_as_int);
-    S(foreground, color_as_int);
-    default_color = 0x00ff00;
-    S(active_border_color, color_as_int);
-    default_color = 0;
-    S(inactive_border_color, color_as_int);
-    S(bell_border_color, color_as_int);
-    S(repaint_delay, parse_ms_long_to_monotonic_t);
-    S(input_delay, parse_ms_long_to_monotonic_t);
-    S(sync_to_monitor, PyObject_IsTrue);
-    S(close_on_child_death, PyObject_IsTrue);
-    S(window_alert_on_bell, PyObject_IsTrue);
-    S(macos_option_as_alt, PyLong_AsUnsignedLong);
-    S(macos_traditional_fullscreen, PyObject_IsTrue);
-    S(macos_quit_when_last_window_closed, PyObject_IsTrue);
-    S(macos_show_window_title_in, window_title_in);
-    S(macos_window_resizable, PyObject_IsTrue);
-    S(macos_hide_from_tasks, PyObject_IsTrue);
-    S(macos_thicken_font, PyFloat_AsFloat);
-    S(tab_bar_min_tabs, PyLong_AsUnsignedLong);
-    S(disable_ligatures, PyLong_AsLong);
-    S(force_ltr, PyObject_IsTrue);
-    S(resize_draw_strategy, PyLong_AsLong);
-    S(resize_in_steps, PyObject_IsTrue);
-    S(allow_hyperlinks, PyObject_IsTrue);
-    S(pointer_shape_when_grabbed, pointer_shape);
-    S(default_pointer_shape, pointer_shape);
-    S(pointer_shape_when_dragging, pointer_shape);
-    S(detect_urls, PyObject_IsTrue);
-
-    GA(tab_bar_style);
-    global_state.tab_bar_hidden = PyUnicode_CompareWithASCIIString(ret, "hidden") == 0 ? true: false;
-    Py_CLEAR(ret);
-    if (PyErr_Occurred()) return NULL;
-
-    PyObject *up = PyObject_GetAttrString(opts, "url_prefixes");
-    if (up == NULL) return NULL;
-    if (!PyTuple_Check(up)) { PyErr_SetString(PyExc_TypeError, "url_prefixes must be a tuple"); return NULL; }
-    set_url_prefixes(up);
-    Py_DECREF(up);
-    if (PyErr_Occurred()) return NULL;
-
-    PyObject *chars = PyObject_GetAttrString(opts, "select_by_word_characters");
-    if (chars == NULL) return NULL;
-    for (size_t i = 0; i < MIN((size_t)PyUnicode_GET_LENGTH(chars), sizeof(OPT(select_by_word_characters))/sizeof(OPT(select_by_word_characters[0]))); i++) {
-        OPT(select_by_word_characters)[i] = PyUnicode_READ(PyUnicode_KIND(chars), PyUnicode_DATA(chars), i);
-    }
-    OPT(select_by_word_characters_count) = PyUnicode_GET_LENGTH(chars);
-    Py_DECREF(chars);
-
-    GA(keymap); set_special_keys(ret);
-    Py_DECREF(ret); if (PyErr_Occurred()) return NULL;
-    GA(sequence_map); set_special_keys(ret);
-    Py_DECREF(ret); if (PyErr_Occurred()) return NULL;
-
-    GA(background_image); background_image(ret); Py_CLEAR(ret);
-
-#define read_adjust(name) { \
-    PyObject *al = PyObject_GetAttrString(opts, #name); \
-    if (PyFloat_Check(al)) { \
-        OPT(name##_frac) = (float)PyFloat_AsDouble(al); \
-        OPT(name##_px) = 0; \
-    } else { \
-        OPT(name##_frac) = 0; \
-        OPT(name##_px) = (int)PyLong_AsLong(al); \
-    } \
-    Py_DECREF(al); \
-}
-    read_adjust(adjust_line_height);
-    read_adjust(adjust_column_width);
-#undef read_adjust
-#undef S
-#undef SS
+    if (!convert_opts_from_python_opts(opts, &global_state.opts)) return NULL;
+    options_object = opts;
+    Py_INCREF(options_object);
     Py_RETURN_NONE;
 }
 
@@ -864,9 +740,10 @@ PYWRAP1(focus_os_window) {
 PYWRAP1(set_titlebar_color) {
     id_type os_window_id;
     unsigned int color;
-    PA("KI", &os_window_id, &color);
+    int use_system_color = 0;
+    PA("KI|p", &os_window_id, &color, &use_system_color);
     WITH_OS_WINDOW(os_window_id)
-        set_titlebar_color(os_window, color);
+        set_titlebar_color(os_window, color, use_system_color);
         Py_RETURN_TRUE;
     END_WITH_OS_WINDOW
     Py_RETURN_FALSE;
@@ -936,7 +813,9 @@ PYWRAP1(update_window_visibility) {
     int visible;
     PA("KKKp", &os_window_id, &tab_id, &window_id, &visible);
     WITH_WINDOW(os_window_id, tab_id, window_id);
+        bool was_visible = window->visible & 1;
         window->visible = visible & 1;
+        if (!was_visible && window->visible) global_state.check_for_active_animated_images = true;
     END_WITH_WINDOW;
     Py_RETURN_NONE;
 }
@@ -952,33 +831,18 @@ PYWRAP1(sync_os_window_title) {
 }
 
 
-static inline double
-dpi_for_os_window_id(id_type os_window_id) {
-    double dpi = 0;
-    if (os_window_id) {
-        WITH_OS_WINDOW(os_window_id)
-            dpi = (os_window->logical_dpi_x + os_window->logical_dpi_y) / 2.;
-        END_WITH_OS_WINDOW
-    }
-    if (dpi == 0) {
-        dpi = (global_state.default_dpi.x + global_state.default_dpi.y) / 2.;
-    }
-    return dpi;
-}
-
 PYWRAP1(pt_to_px) {
-    double pt, dpi = 0;
+    double pt;
     id_type os_window_id = 0;
     PA("d|K", &pt, &os_window_id);
-    dpi = dpi_for_os_window_id(os_window_id);
-    return PyLong_FromLong((long)round((pt * (dpi / 72.0))));
+    return PyLong_FromLong(pt_to_px(pt, os_window_id));
 }
 
 PYWRAP1(global_font_size) {
     double set_val = -1;
     PA("|d", &set_val);
-    if (set_val > 0) global_state.font_sz_in_pts = set_val;
-    return Py_BuildValue("d", global_state.font_sz_in_pts);
+    if (set_val > 0) OPT(font_size) = set_val;
+    return Py_BuildValue("d", OPT(font_size));
 }
 
 PYWRAP1(os_window_font_size) {
@@ -1000,7 +864,7 @@ PYWRAP1(os_window_font_size) {
                     resize_screen(os_window, w->render_data.screen, true);
                 }
             }
-            if (OPT(resize_in_steps)) os_window_update_size_increments(os_window);
+            os_window_update_size_increments(os_window);
         }
         return Py_BuildValue("d", os_window->font_sz_in_pts);
     END_WITH_OS_WINDOW
@@ -1018,6 +882,17 @@ PYWRAP0(get_boss) {
     if (global_state.boss) {
         Py_INCREF(global_state.boss);
         return global_state.boss;
+    }
+    Py_RETURN_NONE;
+}
+
+PYWRAP0(apply_options_update) {
+    for (size_t o = 0; o < global_state.num_os_windows; o++) {
+        OSWindow *os_window = global_state.os_windows + o;
+        get_platform_dependent_config_values(os_window->handle);
+        os_window->background_opacity = OPT(background_opacity);
+        os_window->is_damaged = true;
+        break;
     }
     Py_RETURN_NONE;
 }
@@ -1114,11 +989,30 @@ pycreate_mock_window(PyObject *self UNUSED, PyObject *args) {
     return ans;
 }
 
+static inline void
+click_mouse_url(id_type os_window_id, id_type tab_id, id_type window_id) {
+    WITH_WINDOW(os_window_id, tab_id, window_id);
+    mouse_open_url(window);
+    END_WITH_WINDOW;
+}
+
+static PyObject*
+pymouse_selection(PyObject *self UNUSED, PyObject *args) {
+    id_type os_window_id, tab_id, window_id;
+    int code, button;
+    PA("KKKii", &os_window_id, &tab_id, &window_id, &code, &button);
+    WITH_WINDOW(os_window_id, tab_id, window_id);
+    mouse_selection(window, code, button);
+    END_WITH_WINDOW;
+    Py_RETURN_NONE;
+}
+
 THREE_ID_OBJ(update_window_title)
 THREE_ID(remove_window)
+THREE_ID(click_mouse_url)
 THREE_ID(detach_window)
 THREE_ID(attach_window)
-PYWRAP1(resolve_key_mods) { int mods; PA("ii", &kitty_mod, &mods); return PyLong_FromLong(resolve_mods(mods)); }
+PYWRAP1(resolve_key_mods) { int mods, kitty_mod; PA("ii", &kitty_mod, &mods); return PyLong_FromLong(resolve_mods(kitty_mod, mods)); }
 PYWRAP1(add_tab) { return PyLong_FromUnsignedLongLong(add_tab(PyLong_AsUnsignedLongLong(args))); }
 PYWRAP1(add_window) { PyObject *title; id_type a, b; PA("KKO", &a, &b, &title); return PyLong_FromUnsignedLongLong(add_window(a, b, title)); }
 PYWRAP0(current_os_window) { OSWindow *w = current_os_window(); if (!w) Py_RETURN_NONE; return PyLong_FromUnsignedLongLong(w->id); }
@@ -1135,6 +1029,9 @@ static PyMethodDef module_methods[] = {
     MW(current_os_window, METH_NOARGS),
     MW(next_window_id, METH_NOARGS),
     MW(set_options, METH_VARARGS),
+    MW(get_options, METH_NOARGS),
+    MW(click_mouse_url, METH_VARARGS),
+    MW(mouse_selection, METH_VARARGS),
     MW(set_in_sequence_mode, METH_O),
     MW(resolve_key_mods, METH_VARARGS),
     MW(handle_for_window_id, METH_VARARGS),
@@ -1171,6 +1068,7 @@ static PyMethodDef module_methods[] = {
     MW(os_window_font_size, METH_VARARGS),
     MW(set_boss, METH_O),
     MW(get_boss, METH_NOARGS),
+    MW(apply_options_update, METH_NOARGS),
     MW(patch_global_colors, METH_VARARGS),
     MW(create_mock_window, METH_VARARGS),
     MW(destroy_global_data, METH_NOARGS),
@@ -1193,11 +1091,13 @@ finalize(void) {
     free_bgimage(&global_state.bgimage, false);
     global_state.bgimage = NULL;
     free_url_prefixes();
+    free(OPT(select_by_word_characters)); OPT(select_by_word_characters) = NULL;
+    free(OPT(url_excluded_characters)); OPT(url_excluded_characters) = NULL;
 }
 
 bool
 init_state(PyObject *module) {
-    global_state.font_sz_in_pts = 11.0;
+    OPT(font_size) = 11.0;
 #ifdef __APPLE__
 #define DPI 72.0
 #else
@@ -1211,10 +1111,7 @@ init_state(PyObject *module) {
     PyModule_AddIntConstant(module, "IMPERATIVE_CLOSE_REQUESTED", IMPERATIVE_CLOSE_REQUESTED);
     PyModule_AddIntConstant(module, "NO_CLOSE_REQUESTED", NO_CLOSE_REQUESTED);
     PyModule_AddIntConstant(module, "CLOSE_BEING_CONFIRMED", CLOSE_BEING_CONFIRMED);
-    if (Py_AtExit(finalize) != 0) {
-        PyErr_SetString(PyExc_RuntimeError, "Failed to register the state at exit handler");
-        return false;
-    }
+    register_at_exit_cleanup_func(STATE_CLEANUP_FUNC, finalize);
     return true;
 }
 // }}}

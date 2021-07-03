@@ -4,7 +4,7 @@
 
 from typing import TYPE_CHECKING, Optional
 
-from kitty.config import parse_marker_spec
+from kitty.options.utils import parse_marker_spec
 
 from .base import (
     MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType,
@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 class CreateMarker(RemoteCommand):
 
     '''
-    match: Which window to detach
-    self: Boolean indicating whether to detach the window the command is run in
+    match: Which window to create the marker in
+    self: Boolean indicating whether to create marker in the window the command is run in
     marker_spec: A list or arguments that define the marker specification, for example: ['text', '1', 'ERROR']
     '''
 

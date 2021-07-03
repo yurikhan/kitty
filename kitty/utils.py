@@ -14,18 +14,22 @@ from contextlib import suppress
 from functools import lru_cache
 from time import monotonic
 from typing import (
-    Any, Callable, Dict, Generator, Iterable, List, Mapping, Match, NamedTuple,
-    Optional, Tuple, Union, cast
+    TYPE_CHECKING, Any, Callable, Dict, Generator, Iterable, List, Mapping,
+    Match, NamedTuple, Optional, Tuple, Union, cast
 )
 
 from .constants import (
-    appname, is_macos, is_wayland, shell_path, supports_primary_selection
+    appname, is_macos, is_wayland, read_kitty_resource, shell_path,
+    supports_primary_selection
 )
-from .options_stub import Options
 from .rgb import Color, to_color
+from .types import run_once
 from .typing import AddressFamily, PopenType, Socket, StartupCtx
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+if TYPE_CHECKING:
+    from .options.types import Options
+else:
+    Options = object
 
 
 def expandvars(val: str, env: Mapping[str, str] = {}, fallback_to_os_env: bool = True) -> str:
@@ -58,11 +62,11 @@ def platform_window_id(os_window_id: int) -> Optional[int]:
 
 def load_shaders(name: str) -> Tuple[str, str]:
     from .fast_data_types import GLSL_VERSION
-    with open(os.path.join(BASE, '{}_vertex.glsl'.format(name))) as f:
-        vert = f.read().replace('GLSL_VERSION', str(GLSL_VERSION), 1)
-    with open(os.path.join(BASE, '{}_fragment.glsl'.format(name))) as f:
-        frag = f.read().replace('GLSL_VERSION', str(GLSL_VERSION), 1)
-    return vert, frag
+
+    def load(which: str) -> str:
+        return read_kitty_resource(f'{name}_{which}.glsl').decode('utf-8').replace('GLSL_VERSION', str(GLSL_VERSION), 1)
+
+    return load('vertex'), load('fragment')
 
 
 def safe_print(*a: Any, **k: Any) -> None:
@@ -72,9 +76,10 @@ def safe_print(*a: Any, **k: Any) -> None:
 
 def log_error(*a: Any, **k: str) -> None:
     from .fast_data_types import log_error_string
+    output = getattr(log_error, 'redirect', log_error_string)
     with suppress(Exception):
-        msg = k.get('sep', ' ').join(map(str, a)) + k.get('end', '')
-        log_error_string(msg.replace('\0', ''))
+        msg = k.get('sep', ' ').join(map(str, a)) + k.get('end', '').replace('\0', '')
+        output(msg)
 
 
 def ceil_int(x: float) -> int:
@@ -264,7 +269,14 @@ def init_startup_notification(window_handle: Optional[int], startup_id: Optional
         log_error('Could not perform startup notification as window handle not present')
         return None
     try:
-        return init_startup_notification_x11(window_handle, startup_id)
+        try:
+            return init_startup_notification_x11(window_handle, startup_id)
+        except OSError as e:
+            if not str(e).startswith("Failed to load libstartup-notification"):
+                raise e
+            log_error(
+                f'{e}. This has two main effects:',
+                'There will be no startup feedback and when using --single-instance, kitty windows may start on an incorrect desktop/workspace.')
     except Exception:
         import traceback
         traceback.print_exc()
@@ -462,17 +474,64 @@ def natsort_ints(iterable: Iterable[str]) -> List[str]:
     return sorted(iterable, key=alphanum_key)
 
 
-@lru_cache(maxsize=2)
-def get_editor() -> List[str]:
+def resolve_editor_cmd(editor: str, shell_env: Mapping[str, str]) -> Optional[str]:
+    import shlex
+    editor_cmd = shlex.split(editor)
+    editor_exe = (editor_cmd or ('',))[0]
+    if editor_exe and os.path.isabs(editor_exe):
+        return editor
+    if not editor_exe:
+        return None
+
+    def patched(exe: str) -> str:
+        editor_cmd[0] = exe
+        return ' '.join(map(shlex.quote, editor_cmd))
+
+    if shell_env is os.environ:
+        q = find_exe(editor_exe)
+        if q:
+            return patched(q)
+    elif 'PATH' in shell_env:
+        import shutil
+        q = shutil.which(editor_exe, path=shell_env['PATH'])
+        if q:
+            return patched(q)
+
+
+def get_editor_from_env(env: Mapping[str, str]) -> Optional[str]:
+    for var in ('VISUAL', 'EDITOR'):
+        editor = env.get(var)
+        if editor:
+            editor = resolve_editor_cmd(editor, env)
+            if editor:
+                return editor
+
+
+def get_editor_from_env_vars(opts: Optional[Options] = None) -> List[str]:
     import shlex
     import shutil
-    for ans in (os.environ.get('VISUAL'), os.environ.get('EDITOR'), 'vim',
-                'nvim', 'vi', 'emacs', 'kak', 'micro', 'nano', 'vis'):
+
+    editor = get_editor_from_env(os.environ)
+    if not editor:
+        shell_env = read_shell_environment(opts)
+        editor = get_editor_from_env(shell_env)
+
+    for ans in (editor, 'vim', 'nvim', 'vi', 'emacs', 'kak', 'micro', 'nano', 'vis'):
         if ans and shutil.which(shlex.split(ans)[0]):
             break
     else:
         ans = 'vim'
     return shlex.split(ans)
+
+
+def get_editor(opts: Optional[Options] = None) -> List[str]:
+    if opts is None:
+        from .fast_data_types import get_options
+        opts = get_options()
+    if opts.editor == '.':
+        return get_editor_from_env_vars()
+    import shlex
+    return shlex.split(opts.editor)
 
 
 def is_path_in_temp_dir(path: str) -> bool:
@@ -508,6 +567,48 @@ def resolved_shell(opts: Optional[Options] = None) -> List[str]:
     else:
         import shlex
         ans = shlex.split(q)
+    return ans
+
+
+@run_once
+def system_paths_on_macos() -> List[str]:
+    entries, seen = [], set()
+
+    def add_from_file(x: str) -> None:
+        try:
+            f = open(x)
+        except FileNotFoundError:
+            return
+        with f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and line not in seen:
+                    if os.path.isdir(line):
+                        seen.add(line)
+                        entries.append(line)
+    try:
+        files = os.listdir('/etc/paths.d')
+    except FileNotFoundError:
+        files = []
+    for name in sorted(files):
+        add_from_file(os.path.join('/etc/paths.d', name))
+    add_from_file('/etc/paths')
+    return entries
+
+
+@lru_cache(maxsize=32)
+def find_exe(name: str) -> Optional[str]:
+    import shutil
+    ans = shutil.which(name)
+    if ans is None:
+        # In case PATH is messed up
+        if is_macos:
+            paths = system_paths_on_macos()
+        else:
+            paths = ['/usr/local/bin', '/opt/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']
+        paths.insert(0, os.path.expanduser('~/.local/bin'))
+        path = os.pathsep.join(paths) + os.pathsep + os.defpath
+        ans = shutil.which(name, path=path)
     return ans
 
 

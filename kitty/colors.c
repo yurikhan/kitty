@@ -79,6 +79,7 @@ new(PyTypeObject *type, PyObject UNUSED *args, PyObject UNUSED *kwds) {
 
 static void
 dealloc(ColorProfile* self) {
+    if (self->color_stack) free(self->color_stack);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
@@ -91,11 +92,11 @@ alloc_color_profile() {
 static PyObject*
 update_ansi_color_table(ColorProfile *self, PyObject *val) {
 #define update_ansi_color_table_doc "Update the 256 basic colors"
-    if (!PyList_Check(val)) { PyErr_SetString(PyExc_TypeError, "color table must be a list"); return NULL; }
-    if (PyList_GET_SIZE(val) != arraysz(FG_BG_256)) { PyErr_SetString(PyExc_TypeError, "color table must have 256 items"); return NULL; }
+    if (!PyLong_Check(val)) { PyErr_SetString(PyExc_TypeError, "color table must be a long"); return NULL; }
+    unsigned long *color_table = PyLong_AsVoidPtr(val);
     for (size_t i = 0; i < arraysz(FG_BG_256); i++) {
-        self->color_table[i] = PyLong_AsUnsignedLong(PyList_GET_ITEM(val, i));
-        self->orig_color_table[i] = self->color_table[i];
+        self->color_table[i] = color_table[i];
+        self->orig_color_table[i] = color_table[i];
     }
     self->dirty = true;
     Py_RETURN_NONE;
@@ -318,19 +319,65 @@ copy_color_table_to_buffer(ColorProfile *self, color_type *buf, int offset, size
     self->dirty = false;
 }
 
-void
-colorprofile_push_dynamic_colors(ColorProfile *self) {
-    if (self->dynamic_color_stack_idx >= arraysz(self->dynamic_color_stack)) {
-        memmove(self->dynamic_color_stack, self->dynamic_color_stack + 1, sizeof(self->dynamic_color_stack) - sizeof(self->dynamic_color_stack[0]));
-        self->dynamic_color_stack_idx = arraysz(self->dynamic_color_stack) - 1;
+static void
+push_onto_color_stack_at(ColorProfile *self, unsigned int i) {
+    self->color_stack[i].dynamic_colors = self->overridden;
+    memcpy(self->color_stack[i].color_table, self->color_table, sizeof(self->color_stack->color_table));
+}
+
+static void
+copy_from_color_stack_at(ColorProfile *self, unsigned int i) {
+    self->overridden = self->color_stack[i].dynamic_colors;
+    memcpy(self->color_table, self->color_stack[i].color_table, sizeof(self->color_table));
+}
+
+bool
+colorprofile_push_colors(ColorProfile *self, unsigned int idx) {
+    if (idx > 10) return false;
+    size_t sz = idx ? idx : self->color_stack_idx + 1;
+    sz = MIN(10u, sz);
+    if (self->color_stack_sz < sz) {
+        self->color_stack = realloc(self->color_stack, sz * sizeof(self->color_stack[0]));
+        if (self->color_stack == NULL) fatal("Out of memory while ensuring space for %zu elements in color stack", sz);
+        memset(self->color_stack + self->color_stack_sz, 0, (sz - self->color_stack_sz) * sizeof(self->color_stack[0]));
+        self->color_stack_sz = sz;
     }
-    self->dynamic_color_stack[self->dynamic_color_stack_idx++] = self->overridden;
+    if (idx == 0) {
+        if (self->color_stack_idx >= self->color_stack_sz) {
+            memmove(self->color_stack, self->color_stack + 1, (self->color_stack_sz - 1) * sizeof(self->color_stack[0]));
+            idx = self->color_stack_sz - 1;
+        } else idx = self->color_stack_idx++;
+        push_onto_color_stack_at(self, idx);
+        return true;
+    }
+    idx -= 1;
+    if (idx < self->color_stack_sz) {
+        push_onto_color_stack_at(self, idx);
+        return true;
+    }
+    return false;
+}
+
+bool
+colorprofile_pop_colors(ColorProfile *self, unsigned int idx) {
+    if (idx == 0) {
+        if (!self->color_stack_idx) return false;
+        copy_from_color_stack_at(self, --self->color_stack_idx);
+        memset(self->color_stack + self->color_stack_idx, 0, sizeof(self->color_stack[0]));
+        return true;
+    }
+    idx -= 1;
+    if (idx < self->color_stack_sz) {
+        copy_from_color_stack_at(self, idx);
+        return true;
+    }
+    return false;
 }
 
 void
-colorprofile_pop_dynamic_colors(ColorProfile *self) {
-    if (!self->dynamic_color_stack_idx) return;
-    self->overridden = self->dynamic_color_stack[--(self->dynamic_color_stack_idx)];
+colorprofile_report_stack(ColorProfile *self, unsigned int *idx, unsigned int *count) {
+    *count = self->color_stack_idx;
+    *idx = self->color_stack_idx ? self->color_stack_idx - 1 : 0;
 }
 
 static PyObject*

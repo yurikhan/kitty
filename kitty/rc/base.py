@@ -4,8 +4,8 @@
 
 from contextlib import suppress
 from typing import (
-    TYPE_CHECKING, Any, Callable, Dict, FrozenSet, Generator, List, NoReturn,
-    Optional, Tuple, Type, Union, cast
+    TYPE_CHECKING, Any, Callable, Dict, FrozenSet, Generator, Iterable, List,
+    NoReturn, Optional, Tuple, Type, Union, cast
 )
 
 from kitty.cli import get_defaults_from_seq, parse_args, parse_option_spec
@@ -14,8 +14,8 @@ from kitty.constants import appname, running_in_kitty
 
 if TYPE_CHECKING:
     from kitty.boss import Boss as B
-    from kitty.window import Window as W
     from kitty.tabs import Tab
+    from kitty.window import Window as W
     Window = W
     Boss = B
     Tab
@@ -89,12 +89,15 @@ and value, for example, :italic:`env:MY_ENV_VAR=2`
 MATCH_TAB_OPTION = '''\
 --match -m
 The tab to match. Match specifications are of the form:
-:italic:`field:regexp`. Where field can be one of: id, title, pid, cwd, env, cmdline.
+:italic:`field:regexp`. Where field can be one of:
+id, index, title, window_id, window_title, pid, cwd, env, cmdline.
 You can use the :italic:`ls` command to get a list of tabs. Note that for
-numeric fields such as id and pid the expression is interpreted as a number,
+numeric fields such as id, index and pid the expression is interpreted as a number,
 not a regular expression. When using title or id, first a matching tab is
 looked for and if not found a matching window is looked for, and the tab
-for that window is used.
+for that window is used. You can also use window_id and window_title to match
+the tab that contains the window with the specified id or title. The index number
+is used to match the nth tab in the currently active OS window.
 '''
 
 
@@ -108,7 +111,7 @@ class RemoteCommand:
     no_response: bool = False
     string_return_is_error: bool = False
     args_count: Optional[int] = None
-    args_completion: Optional[Dict[str, Tuple[str, Tuple[str, ...]]]] = None
+    args_completion: Optional[Dict[str, Tuple[str, Union[Callable[[], Iterable[str]], Tuple[str, ...]]]]] = None
     defaults: Optional[Dict[str, Any]] = None
     options_class: Type = RCOptions
 

@@ -10,7 +10,7 @@ from typing import (
     Any, Deque, Dict, Generator, Iterator, List, Optional, Tuple, Union
 )
 
-from .constants import WindowGeometry
+from .types import WindowGeometry
 from .typing import EdgeLiteral, TabType, WindowType
 
 WindowOrId = Union[WindowType, int]
@@ -330,6 +330,8 @@ class WindowList:
                 if self.groups:
                     if self.active_group_idx == i:
                         self.make_previous_group_active(notify=False)
+                    elif self.active_group_idx >= len(self.groups):
+                        self._active_group_idx -= 1
                 else:
                     self._active_group_idx = -1
                 break

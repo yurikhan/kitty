@@ -52,7 +52,7 @@ cell_text(CPUCell *cell) {
 static inline index_type
 find_colon_slash(Line *self, index_type x, index_type limit) {
     // Find :// at or before x
-    index_type pos = x;
+    index_type pos = MIN(x, self->xnum - 1);
     enum URL_PARSER_STATES {ANY, FIRST_SLASH, SECOND_SLASH};
     enum URL_PARSER_STATES state = ANY;
     limit = MAX(2u, limit);
@@ -108,7 +108,6 @@ has_url_prefix_at(Line *self, index_type at, index_type min_prefix_len, index_ty
 
 static inline bool
 has_url_beyond(Line *self, index_type x) {
-    if (self->xnum <= x + MIN_URL_LEN + 3) return false;
     for (index_type i = x; i < MIN(x + MIN_URL_LEN + 3, self->xnum); i++) {
         if (!is_url_char(self->cpu_cells[i].ch)) return false;
     }
@@ -122,7 +121,7 @@ line_url_start_at(Line *self, index_type x) {
     if (x >= self->xnum || self->xnum <= MIN_URL_LEN + 3) return self->xnum;
     index_type ds_pos = 0, t;
     // First look for :// ahead of x
-    if (self->xnum - x > OPT(url_prefixes).max_prefix_len + 3) ds_pos = find_colon_slash(self, x + OPT(url_prefixes).max_prefix_len + 3, x < 2 ? 0 : x - 2);
+    ds_pos = find_colon_slash(self, x + OPT(url_prefixes).max_prefix_len + 3, x < 2 ? 0 : x - 2);
     if (ds_pos != 0 && has_url_beyond(self, ds_pos)) {
         if (has_url_prefix_at(self, ds_pos, ds_pos > x ? ds_pos - x: 0, &t)) return t;
     }
@@ -229,7 +228,7 @@ cell_as_utf8_for_fallback(CPUCell *cell, char *buf) {
 
 
 PyObject*
-unicode_in_range(Line *self, index_type start, index_type limit, bool include_cc, char leading_char) {
+unicode_in_range(const Line *self, const index_type start, const index_type limit, const bool include_cc, const char leading_char, const bool skip_zero_cells) {
     size_t n = 0;
     static Py_UCS4 buf[4096];
     if (leading_char) buf[n++] = leading_char;
@@ -238,6 +237,7 @@ unicode_in_range(Line *self, index_type start, index_type limit, bool include_cc
         char_type ch = self->cpu_cells[i].ch;
         if (ch == 0) {
             if (previous_width == 2) { previous_width = 0; continue; };
+            if (skip_zero_cells) continue;
         }
         if (ch == '\t') {
             buf[n++] = '\t';
@@ -255,8 +255,8 @@ unicode_in_range(Line *self, index_type start, index_type limit, bool include_cc
 }
 
 PyObject *
-line_as_unicode(Line* self) {
-    return unicode_in_range(self, 0, xlimit_for_line(self), true, 0);
+line_as_unicode(Line* self, bool skip_zero_cells) {
+    return unicode_in_range(self, 0, xlimit_for_line(self), true, 0, skip_zero_cells);
 }
 
 static PyObject*
@@ -380,12 +380,18 @@ is_continued(Line* self, PyObject *a UNUSED) {
 
 static PyObject*
 __repr__(Line* self) {
-    PyObject *s = line_as_unicode(self);
+    PyObject *s = line_as_unicode(self, false);
     if (s == NULL) return NULL;
     PyObject *ans = PyObject_Repr(s);
     Py_CLEAR(s);
     return ans;
 }
+
+static PyObject*
+__str__(Line* self) {
+    return line_as_unicode(self, false);
+}
+
 
 static PyObject*
 width(Line *self, PyObject *val) {
@@ -729,8 +735,8 @@ apply_mark(Line *line, const attrs_type mark, index_type *cell_pos, unsigned int
 #define MARK { line->gpu_cells[x].attrs &= ATTRS_MASK_WITHOUT_MARK; line->gpu_cells[x].attrs |= mark; }
     index_type x = *cell_pos;
     MARK;
+    (*match_pos)++;
     if (line->cpu_cells[x].ch) {
-        (*match_pos)++;
         if (line->cpu_cells[x].ch == '\t') {
             unsigned num_cells_to_skip_for_tab = line->cpu_cells[x].cc_idx[0];
             while (num_cells_to_skip_for_tab && x + 1 < line->xnum && line->cpu_cells[x+1].ch == ' ') {
@@ -784,7 +790,7 @@ mark_text_in_line(PyObject *marker, Line *line) {
         for (index_type i = 0; i < line->xnum; i++)  line->gpu_cells[i].attrs &= ATTRS_MASK_WITHOUT_MARK;
         return;
     }
-    PyObject *text = line_as_unicode(line);
+    PyObject *text = line_as_unicode(line, false);
     if (PyUnicode_GET_LENGTH(text) > 0) {
         apply_marker(marker, line, text);
     } else {
@@ -827,7 +833,7 @@ as_text_generic(PyObject *args, void *container, get_line_func get_line, index_t
                 Py_CLEAR(ret);
             }
         } else {
-            t = line_as_unicode(line);
+            t = line_as_unicode(line, false);
         }
         if (t == NULL) goto end;
         ret = PyObject_CallFunctionObjArgs(callback, t, NULL);
@@ -906,7 +912,7 @@ PyTypeObject Line_Type = {
     .tp_basicsize = sizeof(Line),
     .tp_dealloc = (destructor)dealloc,
     .tp_repr = (reprfunc)__repr__,
-    .tp_str = (reprfunc)line_as_unicode,
+    .tp_str = (reprfunc)__str__,
     .tp_as_sequence = &sequence_methods,
     .tp_flags = Py_TPFLAGS_DEFAULT,
     .tp_richcompare = richcmp,

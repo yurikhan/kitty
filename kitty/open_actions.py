@@ -6,18 +6,18 @@
 import os
 import posixpath
 from contextlib import suppress
-from functools import lru_cache
 from typing import (
     Any, Generator, Iterable, List, NamedTuple, Optional, Tuple, cast
 )
 from urllib.parse import ParseResult, unquote, urlparse
 
-from .conf.utils import to_cmdline
-from .config import KeyAction, parse_key_action
+from .conf.utils import KeyAction, to_cmdline_implementation
 from .constants import config_dir
+from .guess_mime_type import guess_type
+from .options.utils import parse_key_action
+from .types import run_once
 from .typing import MatchType
 from .utils import expandvars, log_error
-from .guess_mime_type import guess_type
 
 
 class MatchCriteria(NamedTuple):
@@ -50,7 +50,7 @@ def parse(lines: Iterable[str]) -> Generator[OpenAction, None, None]:
         key, rest = parts
         key = key.lower()
         if key == 'action':
-            with to_cmdline.filter_env_vars('URL', 'FILE_PATH', 'FILE', 'FRAGMENT'):
+            with to_cmdline_implementation.filter_env_vars('URL', 'FILE_PATH', 'FILE', 'FRAGMENT'):
                 x = parse_key_action(rest)
             if x is not None:
                 actions.append(x)
@@ -175,7 +175,7 @@ def actions_for_url_from_list(url: str, actions: Iterable[OpenAction]) -> Genera
             return
 
 
-@lru_cache(maxsize=2)
+@run_once
 def load_open_actions() -> Tuple[OpenAction, ...]:
     try:
         f = open(os.path.join(config_dir, 'open-actions.conf'))

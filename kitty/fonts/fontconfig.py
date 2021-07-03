@@ -11,7 +11,7 @@ from kitty.fast_data_types import (
     FC_WEIGHT_REGULAR, FC_WIDTH_NORMAL, fc_list, fc_match as fc_match_impl,
     fc_match_postscript_name, parse_font_feature
 )
-from kitty.options_stub import Options
+from kitty.options.types import Options
 from kitty.typing import FontConfigPattern
 from kitty.utils import log_error
 
@@ -45,7 +45,9 @@ def all_fonts_map(monospaced: bool = True) -> FontMap:
     if monospaced:
         ans = fc_list(FC_DUAL) + fc_list(FC_MONO)
     else:
-        ans = fc_list()
+        # allow non-monospaced and bitmapped fonts as these are used for
+        # symbol_map
+        ans = fc_list(-1, True)
     return create_font_map(ans)
 
 
@@ -71,7 +73,7 @@ def fc_match(family: str, bold: bool, italic: bool, spacing: int = FC_MONO) -> F
     return fc_match_impl(family, bold, italic, spacing)
 
 
-def find_font_features(postscript_name: str) -> Tuple[str, ...]:
+def find_font_features(postscript_name: str) -> Tuple[FontFeature, ...]:
     pat = fc_match_postscript_name(postscript_name)
 
     if pat.get('postscript_name') != postscript_name or 'fontfeatures' not in pat:

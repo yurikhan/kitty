@@ -396,6 +396,13 @@ delete_lines(LineBuf *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+void
+linebuf_copy_line_to(LineBuf *self, Line *line, index_type where) {
+    init_line(self, self->line, self->line_map[where]);
+    copy_line(line, self->line);
+    self->line_attrs[where] = TEXT_DIRTY_MASK | (line->continued ? CONTINUED_MASK : 0);
+}
+
 static PyObject*
 as_ansi(LineBuf *self, PyObject *callback) {
 #define as_ansi_doc "as_ansi(callback) -> The contents of this buffer as ANSI escaped text. callback is called with each successive line."
@@ -454,7 +461,7 @@ __str__(LineBuf *self) {
     if (lines == NULL) return PyErr_NoMemory();
     for (index_type i = 0; i < self->ynum; i++) {
         init_line(self, self->line, self->line_map[i]);
-        PyObject *t = line_as_unicode(self->line);
+        PyObject *t = line_as_unicode(self->line, false);
         if (t == NULL) { Py_CLEAR(lines); return NULL; }
         PyTuple_SET_ITEM(lines, i, t);
     }
@@ -537,7 +544,7 @@ copy_old(LineBuf *self, PyObject *y) {
 #include "rewrap.h"
 
 void
-linebuf_rewrap(LineBuf *self, LineBuf *other, index_type *num_content_lines_before, index_type *num_content_lines_after, HistoryBuf *historybuf, index_type *track_x, index_type *track_y, ANSIBuf *as_ansi_buf) {
+linebuf_rewrap(LineBuf *self, LineBuf *other, index_type *num_content_lines_before, index_type *num_content_lines_after, HistoryBuf *historybuf, index_type *track_x, index_type *track_y, index_type *track_x2, index_type *track_y2, ANSIBuf *as_ansi_buf) {
     index_type first, i;
     bool is_empty = true;
 
@@ -567,7 +574,10 @@ linebuf_rewrap(LineBuf *self, LineBuf *other, index_type *num_content_lines_befo
         return;
     }
 
-    rewrap_inner(self, other, first + 1, historybuf, track_x, track_y, as_ansi_buf);
+    TrackCursor tcarr[3] = {{.x = *track_x, .y = *track_y }, {.x = *track_x2, .y = *track_y2}, {.is_sentinel = true}};
+    rewrap_inner(self, other, first + 1, historybuf, (TrackCursor*)tcarr, as_ansi_buf);
+    *track_x = tcarr[0].x; *track_y = tcarr[0].y;
+    *track_x2 = tcarr[1].x; *track_y2 = tcarr[1].y;
     *num_content_lines_after = other->line->ynum + 1;
     for (i = 0; i < *num_content_lines_after; i++) other->line_attrs[i] |= TEXT_DIRTY_MASK;
     *num_content_lines_before = first + 1;
@@ -580,9 +590,9 @@ rewrap(LineBuf *self, PyObject *args) {
     unsigned int nclb, ncla;
 
     if (!PyArg_ParseTuple(args, "O!O!", &LineBuf_Type, &other, &HistoryBuf_Type, &historybuf)) return NULL;
-    index_type x = 0, y = 0;
+    index_type x = 0, y = 0, x2 = 0, y2 = 0;
     ANSIBuf as_ansi_buf = {0};
-    linebuf_rewrap(self, other, &nclb, &ncla, historybuf, &x, &y, &as_ansi_buf);
+    linebuf_rewrap(self, other, &nclb, &ncla, historybuf, &x, &y, &x2, &y2, &as_ansi_buf);
     free(as_ansi_buf.buf);
 
     return Py_BuildValue("II", nclb, ncla);

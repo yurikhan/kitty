@@ -6,7 +6,7 @@ from typing import Tuple
 
 
 BossType = ChildType = TabType = WindowType = ScreenType = None
-BadLineType = KeySpec = SequenceMap = KeyActionType = None
+BadLineType = SequenceMap = KeyActionType = None
 AddressFamily = PopenType = Socket = StartupCtx = None
 SessionTab = SessionType = LayoutType = SpecialWindowInstance = None
 MarkType = RemoteCommandType = CoreTextFont = FontConfigPattern = None
@@ -18,5 +18,8 @@ TermManagerType = LoopType = Debug = GraphicsCommandType = None
 CompletedProcess = Tuple
 TypedDict = dict
 EdgeLiteral = str
+PowerlineStyle = str
 MatchType = str
 Protocol = object
+MouseEvent = dict
+OptionsProtocol = object

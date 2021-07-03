@@ -3,17 +3,17 @@
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 from functools import lru_cache
-from typing import Any, Dict, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from .config import build_ansi_color_table
-from .constants import WindowGeometry
 from .fast_data_types import (
-    DECAWM, Screen, cell_size_for_window, pt_to_px, set_tab_bar_render_data,
-    viewport_for_window
+    DECAWM, Screen, cell_size_for_window, get_options, pt_to_px,
+    set_tab_bar_render_data, viewport_for_window
 )
 from .layout.base import Rect
-from .options_stub import Options
 from .rgb import Color, alpha_blend, color_as_sgr, color_from_int, to_color
+from .types import WindowGeometry, run_once
+from .typing import PowerlineStyle
 from .utils import color_as_int, log_error
 from .window import calculate_gl_geometry
 
@@ -42,6 +42,7 @@ class DrawData(NamedTuple):
     title_template: str
     active_title_template: Optional[str]
     tab_activity_symbol: Optional[str]
+    powerline_style: PowerlineStyle
 
 
 def as_rgb(x: int) -> int:
@@ -90,6 +91,30 @@ class Formatter:
     noitalic = '\x1b[23m'
 
 
+@run_once
+def super_sub_maps() -> Tuple[dict, dict]:
+    import string
+    sup_table = str.maketrans(
+        string.ascii_lowercase + string.ascii_uppercase + string.digits + '+-=()',
+        'ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖqʳˢᵗᵘᵛʷˣʸᶻ' 'ᴬᴮᶜᴰᴱᶠᴳᴴᴵᴶᴷᴸᴹᴺᴼᴾQᴿˢᵀᵁⱽᵂˣʸᶻ' '⁰¹²³⁴⁵⁶⁷⁸⁹' '⁺⁻⁼⁽⁾')
+    sub_table = str.maketrans(
+        string.ascii_lowercase + string.ascii_uppercase + string.digits + '+-=()',
+        'ₐbcdₑfgₕᵢⱼₖₗₘₙₒₚqᵣₛₜᵤᵥwₓyz' 'ₐbcdₑfgₕᵢⱼₖₗₘₙₒₚqᵣₛₜᵤᵥwₓyz' '₀₁₂₃₄₅₆₇₈₉' '₊₋₌₍₎')
+    return sup_table, sub_table
+
+
+class SupSub:
+
+    def __init__(self, data: dict, is_subscript: bool = False):
+        self.__data = data
+        self.__is_subscript = is_subscript
+
+    def __getattr__(self, name: str) -> str:
+        name = str(self.__data.get(name, name))
+        table = super_sub_maps()[int(self.__is_subscript)]
+        return name.translate(table)
+
+
 def draw_title(draw_data: DrawData, screen: Screen, tab: TabBarData, index: int) -> None:
     if tab.needs_attention and draw_data.bell_on_tab:
         fg = screen.cursor.fg
@@ -106,12 +131,20 @@ def draw_title(draw_data: DrawData, screen: Screen, tab: TabBarData, index: int)
     if tab.is_active and draw_data.active_title_template is not None:
         template = draw_data.active_title_template
     try:
+        data = {
+            'index': index,
+            'layout_name': tab.layout_name,
+            'num_windows': tab.num_windows,
+            'title': tab.title,
+        }
         eval_locals = {
             'index': index,
             'layout_name': tab.layout_name,
             'num_windows': tab.num_windows,
             'title': tab.title,
             'fmt': Formatter,
+            'sup': SupSub(data),
+            'sub': SupSub(data, True),
         }
         title = eval(compile_template(template), {'__builtins__': {}}, eval_locals)
     except Exception as e:
@@ -180,19 +213,26 @@ def draw_tab_with_fade(draw_data: DrawData, screen: Screen, tab: TabBarData, bef
     return end
 
 
+powerline_symbols: Dict[PowerlineStyle, Tuple[str, str]] = {
+    'slanted': ('', '╱'),
+    'round': ('', '')
+}
+
+
 def draw_tab_with_powerline(draw_data: DrawData, screen: Screen, tab: TabBarData, before: int, max_title_length: int, index: int, is_last: bool) -> int:
     tab_bg = as_rgb(color_as_int(draw_data.active_bg if tab.is_active else draw_data.inactive_bg))
     tab_fg = as_rgb(color_as_int(draw_data.active_fg if tab.is_active else draw_data.inactive_fg))
     inactive_bg = as_rgb(color_as_int(draw_data.inactive_bg))
     default_bg = as_rgb(color_as_int(draw_data.default_bg))
 
+    separator_symbol, separator_alt_symbol = powerline_symbols.get(draw_data.powerline_style, ('', ''))
     min_title_length = 1 + 2
 
     if screen.cursor.x + min_title_length >= screen.columns:
         screen.cursor.x -= 2
         screen.cursor.bg = default_bg
         screen.cursor.fg = inactive_bg
-        screen.draw('   ')
+        screen.draw(f'{separator_symbol}   ')
         return screen.cursor.x
 
     start_draw = 2
@@ -200,7 +240,7 @@ def draw_tab_with_powerline(draw_data: DrawData, screen: Screen, tab: TabBarData
         screen.cursor.x -= 2
         screen.cursor.fg = inactive_bg
         screen.cursor.bg = tab_bg
-        screen.draw(' ')
+        screen.draw(f'{separator_symbol} ')
         screen.cursor.fg = tab_fg
     elif screen.cursor.x == 0:
         screen.cursor.bg = tab_bg
@@ -224,9 +264,18 @@ def draw_tab_with_powerline(draw_data: DrawData, screen: Screen, tab: TabBarData
             screen.cursor.bg = default_bg
         else:
             screen.cursor.bg = inactive_bg
-        screen.draw('')
+        screen.draw(separator_symbol)
     else:
-        screen.draw(' ')
+        prev_fg = screen.cursor.fg
+        if tab_bg == tab_fg:
+            screen.cursor.fg = default_bg
+        elif tab_bg != default_bg:
+            c1 = draw_data.inactive_bg.contrast(draw_data.default_bg)
+            c2 = draw_data.inactive_bg.contrast(draw_data.inactive_fg)
+            if c1 < c2:
+                screen.cursor.fg = default_bg
+        screen.draw(f' {separator_alt_symbol}')
+        screen.cursor.fg = prev_fg
 
     end = screen.cursor.x
     if end < screen.columns:
@@ -236,22 +285,28 @@ def draw_tab_with_powerline(draw_data: DrawData, screen: Screen, tab: TabBarData
 
 class TabBar:
 
-    def __init__(self, os_window_id: int, opts: Options):
+    def __init__(self, os_window_id: int):
         self.os_window_id = os_window_id
-        self.opts = opts
         self.num_tabs = 1
-        self.margin_width = pt_to_px(self.opts.tab_bar_margin_width, self.os_window_id)
-        self.cell_width, cell_height = cell_size_for_window(self.os_window_id)
         self.data_buffer_size = 0
+        self.blank_rects: Tuple[Rect, ...] = ()
         self.laid_out_once = False
+        self.apply_options()
+
+    def apply_options(self) -> None:
+        opts = get_options()
         self.dirty = True
-        self.screen = s = Screen(None, 1, 10, 0, self.cell_width, cell_height)
+        self.margin_width = pt_to_px(opts.tab_bar_margin_width, self.os_window_id)
+        self.cell_width, cell_height = cell_size_for_window(self.os_window_id)
+        if not hasattr(self, 'screen'):
+            self.screen = s = Screen(None, 1, 10, 0, self.cell_width, cell_height)
+        else:
+            s = self.screen
         s.color_profile.update_ansi_color_table(build_ansi_color_table(opts))
         s.color_profile.set_configured_colors(
             color_as_int(opts.inactive_tab_foreground),
             color_as_int(opts.tab_bar_background or opts.background)
         )
-        self.blank_rects: Tuple[Rect, ...] = ()
         sep = opts.tab_separator
         self.trailing_spaces = self.leading_spaces = 0
         while sep and sep[0] == ' ':
@@ -268,16 +323,17 @@ class TabBar:
         self.active_fg = as_rgb(color_as_int(opts.active_tab_foreground))
         self.bell_fg = as_rgb(0xff0000)
         self.draw_data = DrawData(
-            self.leading_spaces, self.sep, self.trailing_spaces, self.opts.bell_on_tab, self.bell_fg,
-            self.opts.tab_fade, self.opts.active_tab_foreground, self.opts.active_tab_background,
-            self.opts.inactive_tab_foreground, self.opts.inactive_tab_background,
-            self.opts.tab_bar_background or self.opts.background, self.opts.tab_title_template,
-            self.opts.active_tab_title_template,
-            self.opts.tab_activity_symbol
+            self.leading_spaces, self.sep, self.trailing_spaces, opts.bell_on_tab, self.bell_fg,
+            opts.tab_fade, opts.active_tab_foreground, opts.active_tab_background,
+            opts.inactive_tab_foreground, opts.inactive_tab_background,
+            opts.tab_bar_background or opts.background, opts.tab_title_template,
+            opts.active_tab_title_template,
+            opts.tab_activity_symbol,
+            opts.tab_powerline_style
         )
-        if self.opts.tab_bar_style == 'separator':
+        if opts.tab_bar_style == 'separator':
             self.draw_func = draw_tab_with_separator
-        elif self.opts.tab_bar_style == 'powerline':
+        elif opts.tab_bar_style == 'powerline':
             self.draw_func = draw_tab_with_powerline
         else:
             self.draw_func = draw_tab_with_fade
@@ -285,6 +341,7 @@ class TabBar:
     def patch_colors(self, spec: Dict[str, Any]) -> None:
         if 'active_tab_foreground' in spec:
             self.active_fg = (spec['active_tab_foreground'] << 8) | 2
+            self.draw_data = self.draw_data._replace(active_fg=color_from_int(spec['active_tab_foreground']))
         if 'active_tab_background' in spec:
             self.active_bg = (spec['active_tab_background'] << 8) | 2
             self.draw_data = self.draw_data._replace(active_bg=color_from_int(spec['active_tab_background']))
@@ -292,20 +349,20 @@ class TabBar:
             self.draw_data = self.draw_data._replace(inactive_bg=color_from_int(spec['inactive_tab_background']))
         if 'tab_bar_background' in spec:
             self.draw_data = self.draw_data._replace(default_bg=color_from_int(spec['tab_bar_background']))
-        elif 'background' in spec and not self.opts.tab_bar_background:
-            self.draw_data = self.draw_data._replace(default_bg=color_from_int(spec['background']))
-        fg = spec.get('inactive_tab_foreground', color_as_int(self.opts.inactive_tab_foreground))
+        opts = get_options()
+        fg = spec.get('inactive_tab_foreground', color_as_int(opts.inactive_tab_foreground))
         bg = spec.get('tab_bar_background', False)
         if bg is None:
-            bg = color_as_int(self.opts.background)
+            bg = color_as_int(opts.background)
         elif bg is False:
-            bg = color_as_int(self.opts.tab_bar_background or self.opts.background)
+            bg = color_as_int(opts.tab_bar_background or opts.background)
         self.screen.color_profile.set_configured_colors(fg, bg)
 
     def layout(self) -> None:
         central, tab_bar, vw, vh, cell_width, cell_height = viewport_for_window(self.os_window_id)
         if tab_bar.width < 2:
             return
+        opts = get_options()
         self.cell_width = cell_width
         s = self.screen
         viewport_width = max(4 * cell_width, tab_bar.width - 2 * self.margin_width)
@@ -316,10 +373,23 @@ class TabBar:
         margin = (viewport_width - ncells * cell_width) // 2 + self.margin_width
         self.window_geometry = g = WindowGeometry(
             margin, tab_bar.top, viewport_width - margin, tab_bar.bottom, s.columns, s.lines)
+        blank_rects: List[Rect] = []
         if margin > 0:
-            self.blank_rects = (Rect(0, g.top, g.left, g.bottom + 1), Rect(g.right - 1, g.top, viewport_width, g.bottom + 1))
-        else:
-            self.blank_rects = ()
+            blank_rects.append(Rect(0, g.top, g.left, g.bottom + 1))
+            blank_rects.append(Rect(g.right - 1, g.top, viewport_width, g.bottom + 1))
+        if opts.tab_bar_margin_height:
+            if opts.tab_bar_edge == 3:  # bottom
+                if opts.tab_bar_margin_height.outer:
+                    blank_rects.append(Rect(0, tab_bar.bottom + 1, vw, vh))
+                if opts.tab_bar_margin_height.inner:
+                    blank_rects.append(Rect(0, central.bottom + 1, vw, vh))
+            else:  # top
+                if opts.tab_bar_margin_height.outer:
+                    blank_rects.append(Rect(0, 0, vw, tab_bar.top))
+                if opts.tab_bar_margin_height.inner:
+                    blank_rects.append(Rect(0, tab_bar.bottom + 1, vw, central.top))
+
+        self.blank_rects = tuple(blank_rects)
         self.screen_geometry = sg = calculate_gl_geometry(g, vw, vh, cell_width, cell_height)
         set_tab_bar_render_data(self.os_window_id, sg.xstart, sg.ystart, sg.dx, sg.dy, self.screen)
 

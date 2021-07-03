@@ -27,12 +27,10 @@ typedef struct {
     CursorShape cursor_shape;
     float cursor_beam_thickness;
     float cursor_underline_thickness;
-    unsigned int open_url_modifiers;
-    unsigned int rectangle_select_modifiers;
-    unsigned int terminal_select_modifiers;
     unsigned int url_style;
     unsigned int scrollback_pager_history_size;
-    char_type select_by_word_characters[256]; size_t select_by_word_characters_count;
+    bool scrollback_fill_enlarged_window;
+    char_type *select_by_word_characters;
     color_type url_color, background, foreground, active_border_color, inactive_border_color, bell_border_color;
     color_type mark1_foreground, mark1_background, mark2_foreground, mark2_background, mark3_foreground, mark3_background;
     monotonic_t repaint_delay, input_delay;
@@ -42,8 +40,8 @@ typedef struct {
     unsigned int macos_option_as_alt;
     float macos_thicken_font;
     WindowTitleIn macos_show_window_title_in;
-    int adjust_line_height_px, adjust_column_width_px;
-    float adjust_line_height_frac, adjust_column_width_frac;
+    int adjust_line_height_px, adjust_column_width_px, adjust_baseline_px;
+    float adjust_line_height_frac, adjust_column_width_frac, adjust_baseline_frac;
     float background_opacity, dim_opacity;
 
     char* background_image;
@@ -72,7 +70,13 @@ typedef struct {
         UrlPrefix *values;
         size_t num, max_prefix_len;
     } url_prefixes;
+    char_type *url_excluded_characters;
     bool detect_urls;
+    bool tab_bar_hidden;
+    double font_size;
+    struct {
+        double outer, inner;
+    } tab_bar_margin_height;
 } Options;
 
 typedef struct {
@@ -113,8 +117,9 @@ typedef struct {
         unsigned int left, top, right, bottom;
     } padding;
     WindowGeometry geometry;
-    ClickQueue click_queue;
+    ClickQueue click_queues[8];
     monotonic_t last_drag_scroll_at;
+    uint32_t last_special_key_pressed;
 } Window;
 
 typedef struct {
@@ -134,8 +139,6 @@ typedef struct {
     Window *windows;
     BorderRects border_rects;
 } Tab;
-
-#define MAX_KEY_COUNT 512
 
 typedef struct {
     int x, y, w, h;
@@ -173,7 +176,6 @@ typedef struct {
     double logical_dpi_x, logical_dpi_y, font_sz_in_pts;
     bool mouse_button_pressed[32];
     PyObject *window_title;
-    bool is_key_pressed[MAX_KEY_COUNT];
     bool viewport_size_dirty, viewport_updated_at_least_once;
     LiveResizeInfo live_resize;
     bool has_pending_resizes, is_semi_transparent, shown_once, is_damaged;
@@ -206,10 +208,10 @@ typedef struct {
     bool debug_rendering, debug_font_fallback;
     bool has_pending_resizes, has_pending_closes;
     bool in_sequence_mode;
-    bool tab_bar_hidden;
-    double font_sz_in_pts;
+    bool check_for_active_animated_images;
     struct { double x, y; } default_dpi;
     id_type active_drag_in_window;
+    int active_drag_button;
     CloseRequest quit_request;
 } GlobalState;
 
@@ -231,7 +233,7 @@ void update_os_window_viewport(OSWindow *window, bool);
 bool should_os_window_be_rendered(OSWindow* w);
 void wakeup_main_loop(void);
 void swap_window_buffers(OSWindow *w);
-void make_window_context_current(OSWindow *w);
+bool make_window_context_current(id_type);
 void hide_mouse(OSWindow *w);
 bool is_mouse_hidden(OSWindow *w);
 void destroy_os_window(OSWindow *w);
@@ -256,16 +258,29 @@ void send_image_to_gpu(uint32_t*, const void*, int32_t, int32_t, bool, bool, boo
 void send_sprite_to_gpu(FONTS_DATA_HANDLE fg, unsigned int, unsigned int, unsigned int, pixel*);
 void blank_canvas(float, color_type);
 void blank_os_window(OSWindow *);
-void set_titlebar_color(OSWindow *w, color_type color);
+void set_titlebar_color(OSWindow *w, color_type color, bool use_system_color);
 FONTS_DATA_HANDLE load_fonts_data(double, double, double);
 void send_prerendered_sprites_for_window(OSWindow *w);
 #ifdef __APPLE__
-void get_cocoa_key_equivalent(int, int, char *key, size_t key_sz, int*);
+void get_cocoa_key_equivalent(uint32_t, int, char *key, size_t key_sz, int*);
 typedef enum {
-    PREFERENCES_WINDOW = 1,
-    NEW_OS_WINDOW = 2,
-    NEW_OS_WINDOW_WITH_WD = 4,
-    NEW_TAB_WITH_WD = 8
+    PREFERENCES_WINDOW,
+    NEW_OS_WINDOW,
+    NEW_OS_WINDOW_WITH_WD,
+    NEW_TAB_WITH_WD,
+    CLOSE_OS_WINDOW,
+    CLOSE_TAB,
+    NEW_TAB,
+    NEXT_TAB,
+    PREVIOUS_TAB,
+    DETACH_TAB,
+    OPEN_FILE,
+    NEW_WINDOW,
+    CLOSE_WINDOW,
+    RESET_TERMINAL,
+    RELOAD_CONFIG,
+
+    NUM_COCOA_PENDING_ACTIONS
 } CocoaPendingAction;
 void set_cocoa_pending_action(CocoaPendingAction action, const char*);
 #endif
@@ -282,3 +297,10 @@ void os_window_update_size_increments(OSWindow *window);
 void set_os_window_title_from_window(Window *w, OSWindow *os_window);
 void update_os_window_title(OSWindow *os_window);
 void fake_scroll(Window *w, int amount, bool upwards);
+Window* window_for_window_id(id_type kitty_window_id);
+void mouse_open_url(Window *w);
+void mouse_selection(Window *w, int code, int button);
+const char* format_mods(unsigned mods);
+void send_pending_click_to_window_id(id_type, void*);
+void send_pending_click_to_window(Window*, void*);
+void get_platform_dependent_config_values(void *glfw_window);

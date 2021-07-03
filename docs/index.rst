@@ -49,33 +49,32 @@ kitty - the fast, featureful, GPU based terminal emulator
     Screenshot, showing vim, tig and git running in |kitty| with the 'Tall' layout
 
 
+
+.. contents::
+   :local:
+   :depth: 1
+
+
 .. _quickstart:
 
 Quickstart
 --------------
 
 Pre-built binaries of |kitty| are available for both macOS and Linux.
-See the :doc:`binary install instructions </binary>`. You can
+See the :doc:`binary install instructions </binary>`. You can also
 :doc:`build from source </build>`.
 
-You can also use your favorite package manager to install the |kitty| package.
-|kitty| packages are available for:
-`macOS with Homebrew (Cask) <https://formulae.brew.sh/cask/kitty>`_,
-`macOS and Linux with Nix <https://nixos.org/nixos/packages.html?channel=nixpkgs-unstable&query=kitty>`_,
-`Ubuntu <https://launchpad.net/ubuntu/+source/kitty>`_,
-`Debian <https://packages.debian.org/buster/kitty>`_,
-`openSUSE <https://build.opensuse.org/package/show/X11:terminals/kitty>`_,
-`Arch Linux <https://www.archlinux.org/packages/community/x86_64/kitty/>`_,
-`Gentoo <https://packages.gentoo.org/packages/x11-terms/kitty>`_,
-`Fedora <https://src.fedoraproject.org/rpms/kitty>`_,
-`Void Linux <https://github.com/void-linux/void-packages/blob/master/srcpkgs/kitty/template>`_,
-and `Solus <https://dev.getsol.us/source/kitty/>`_.
+Additionally, you can use your favorite package manager to install the |kitty|
+package, but note that some Linux distribution packages are woefully outdated.
+|kitty| is available in a vast number of package repositories for macOS
+and Linux.
+
+.. image:: https://repology.org/badge/tiny-repos/kitty.svg
+   :target: https://repology.org/project/kitty/versions
+   :alt: Number of repositories kitty is available in
 
 See :doc:`Configuring kitty <conf>` for help on configuring |kitty| and
 :doc:`Invocation <invocation>` for the command line arguments |kitty| supports.
-
-
-.. contents::
 
 
 Design philosophy
@@ -99,133 +98,7 @@ styled (curly) underlines. One of the design goals of |kitty| is to be
 easily extensible so that new features can be added in the future with
 relatively little effort.
 
-Tabs and Windows
--------------------
-
-|kitty| is capable of running multiple programs organized into tabs and
-windows. The top level of organization is the *Tab*. Each tab consists
-of one or more *windows*. The windows can be arranged in multiple
-different layouts, like windows are organized in a tiling window
-manager. The keyboard controls (which are all customizable) for tabs and
-windows are:
-
-Scrolling
-~~~~~~~~~~~~~~
-
-========================    =======================
-Action                      Shortcut
-========================    =======================
-Scroll line up              :sc:`scroll_line_up` (also :kbd:`⌥+⌘+⇞` and :kbd:`⌘+↑` on macOS)
-Scroll line down            :sc:`scroll_line_down` (also :kbd:`⌥+⌘+⇟` and :kbd:`⌘+↓` on macOS)
-Scroll page up              :sc:`scroll_page_up` (also :kbd:`⌘+⇞` on macOS)
-Scroll page down            :sc:`scroll_page_down` (also :kbd:`⌘+⇟` on macOS)
-Scroll to top               :sc:`scroll_home` (also :kbd:`⌘+↖` on macOS)
-Scroll to bottom            :sc:`scroll_end` (also :kbd:`⌘+↘` on macOS)
-========================    =======================
-
-Tabs
-~~~~~~~~~~~
-
-========================    =======================
-Action                      Shortcut
-========================    =======================
-New tab                     :sc:`new_tab` (also :kbd:`⌘+t` on macOS)
-Close tab                   :sc:`close_tab` (also :kbd:`⌘+w` on macOS)
-Next tab                    :sc:`next_tab` (also :kbd:`^+⇥` and :kbd:`⇧+⌘+]` on macOS)
-Previous tab                :sc:`previous_tab` (also :kbd:`⇧+^+⇥` and :kbd:`⇧+⌘+[` on macOS)
-Next layout                 :sc:`next_layout`
-Move tab forward            :sc:`move_tab_forward`
-Move tab backward           :sc:`move_tab_backward`
-Set tab title               :sc:`set_tab_title` (also :kbd:`⇧+⌘+i` on macOS)
-========================    =======================
-
-
-Windows
-~~~~~~~~~~~~~~~~~~
-
-========================    =======================
-Action                      Shortcut
-========================    =======================
-New window                  :sc:`new_window` (also :kbd:`⌘+↩` on macOS)
-New OS window               :sc:`new_os_window` (also :kbd:`⌘+n` on macOS)
-Close window                :sc:`close_window` (also :kbd:`⇧+⌘+d` on macOS)
-Next window                 :sc:`next_window`
-Previous window             :sc:`previous_window`
-Move window forward         :sc:`move_window_forward`
-Move window backward        :sc:`move_window_backward`
-Move window to top          :sc:`move_window_to_top`
-Focus specific window       :sc:`first_window`, :sc:`second_window` ... :sc:`tenth_window`
-                            (also :kbd:`⌘+1`, :kbd:`⌘+2` ... :kbd:`⌘+9` on macOS)
-                            (clockwise from the top-left)
-========================    =======================
-
-Additionally, you can define shortcuts in :file:`kitty.conf` to focus neighboring
-windows and move windows around (similar to window movement in vim)::
-
-   map ctrl+left neighboring_window left
-   map shift+left move_window right
-   map ctrl+down neighboring_window down
-   map shift+down move_window up
-   ...
-
-You can also define a shortcut to switch to the previously active window::
-
-   map ctrl+p nth_window -1
-
-``nth_window`` will focus the nth window for positive numbers and the
-previously active windows for negative numbers.
-
-.. _detach_window:
-
-You can define shortcuts to detach the current window and
-move it to another tab or another OS window::
-
-    # moves the window into a new OS window
-    map ctrl+f2 detach_window
-    # moves the window into a new Tab
-    map ctrl+f3 detach_window new-tab
-    # asks which tab to move the window into
-    map ctrl+f4 detach_window ask
-
-Similarly, you can detach the current tab, with::
-
-    # moves the tab into a new OS window
-    map ctrl+f2 detach_tab
-    # asks which OS Window to move the tab into
-    map ctrl+f4 detach_tab ask
-
-Finally, you can define a shortcut to close all windows in a tab other than
-the currently active window::
-
-    map f9 close_other_windows_in_tab
-
-
-Other keyboard shortcuts
-----------------------------------
-
-==================================  =======================
-Action                              Shortcut
-==================================  =======================
-Copy to clipboard                   :sc:`copy_to_clipboard` (also :kbd:`⌘+c` on macOS)
-Paste from clipboard                :sc:`paste_from_clipboard` (also :kbd:`⌘+v` on macOS)
-Paste from selection                :sc:`paste_from_selection`
-Increase font size                  :sc:`increase_font_size` (also :kbd:`⌘++` on macOS)
-Decrease font size                  :sc:`decrease_font_size` (also :kbd:`⌘+-` on macOS)
-Restore font size                   :sc:`reset_font_size` (also :kbd:`⌘+0` on macOS)
-Toggle fullscreen                   :sc:`toggle_fullscreen` (also :kbd:`^+⌘+f` on macOS)
-Toggle maximized                    :sc:`toggle_maximized`
-Input unicode character             :sc:`input_unicode_character`
-Click URL using the keyboard        :sc:`open_url`
-Reset the terminal                  :sc:`reset_terminal`
-Pass current selection to program   :sc:`pass_selection_to_program`
-Edit |kitty| config file            :sc:`edit_config_file`
-Open a |kitty| shell                :sc:`kitty_shell`
-Increase background opacity         :sc:`increase_background_opacity`
-Decrease background opacity         :sc:`decrease_background_opacity`
-Full background opacity             :sc:`full_background_opacity`
-Reset background opacity            :sc:`reset_background_opacity`
-==================================  =======================
-
+.. include:: basic.rst
 
 .. _layouts:
 
@@ -235,7 +108,7 @@ Layouts
 A layout is an arrangement of multiple kitty *windows* inside a top-level OS window. You can create a new window
 using the :sc:`new_window` key combination.
 
-Currently, there are six layouts available:
+Currently, there are seven layouts available:
 
 * **Fat** -- One (or optionally more) windows are shown full width on the top, the rest of the windows are shown side-by-side on the bottom
 * **Grid** -- All windows are shown in a grid
@@ -278,12 +151,29 @@ Some prominent kittens:
 
 :doc:`Hints <kittens/hints>`
     Select and open/paste/insert arbitrary text snippets such as URLs,
-    filenames, words, lines, etc from the terminal screen.
+    filenames, words, lines, etc. from the terminal screen.
+
+
+:doc:`Remote file <kittens/remote_file>`
+    Edit, open, or download remote files over SSH easily, by simply clicking on
+    the filename.
+
+
+:doc:`Hyperlinked grep <kittens/hyperlinked_grep>`
+    Search your files using `ripgrep <https://github.com/BurntSushi/ripgrep>`_
+    and open the results directly in your favorite editor in the terminal,
+    at the line containing the search result, simply by clicking on the result you want.
+
+
+:doc:`Broadcast <kittens/broadcast>`
+    Type in one kitty window and have it broadcast to all (or a subset) of
+    other kitty windows.
 
 
 :doc:`Panel <kittens/panel>`
     Draw a GPU accelerated dock panel on your desktop showing the output
     from an arbitrary terminal program.
+
 
 :doc:`Clipboard <kittens/clipboard>`
     Copy/paste to the clipboard from shell scripts, even over SSH.
@@ -295,8 +185,9 @@ Configuring kitty
 -------------------
 
 |kitty| is highly configurable, everything from keyboard shortcuts to
-painting frames-per-second. For details and a sample :file:`kitty.conf`,
-see the :doc:`configuration docs <conf>`.
+painting frames-per-second. Press :sc:`edit_config_file` in kitty
+to open its fully commented sample config file in your text editor.
+For details see the :doc:`configuration docs <conf>`.
 
 
 Remote control
@@ -328,10 +219,9 @@ For example:
     launch zsh
     # Create a window with some environment variables set and run
     # vim in it
-    launch env FOO=BAR vim
+    launch --env FOO=BAR vim
     # Set the title for the next window
-    title Chat with x
-    launch irssi --profile x
+    launch --title "Chat with x" irssi --profile x
 
     # Create a new tab (the part after new_tab is the optional tab
     # name which will be displayed in the tab bar, if omitted, the
@@ -355,30 +245,31 @@ For example:
     focus
     launch emacs
 
-    # Add a watcher that will be called with various events that occur
-    # on all subsequent windows. See the documentation of the launch command
-    # for details on watchers.
-    watcher /some/python/file.py
-    launch mpd
-    launch irssi
-    # Remove the watcher for further windows
-    watcher clear
+.. note::
+    The :doc:`launch <launch>` command when used in a session file
+    cannot create new OS windows, or tabs.
 
 
 Mouse features
 -------------------
 
-* You can hold down :kbd:`ctrl+shift` and click on a URL to open it in a browser.
+* You can click on a URL to open it in a browser.
 * You can double click to select a word and then drag to select more words.
 * You can triple click to select a line and then drag to select more lines.
+* You can triple click while holding :kbd:`ctrl+alt` to select from clicked
+  point to end of line.
 * You can right click to extend a previous selection.
 * You can hold down :kbd:`ctrl+alt` and drag with the mouse to select in
-  columns (see also :opt:`rectangle_select_modifiers`).
+  columns.
 * Selecting text automatically copies it to the primary clipboard (on
   platforms with a primary clipboard).
+* You can middle click to paste from the primary clipboard (on platforms
+  with a primary clipboard).
 * You can select text with kitty even when a terminal program has grabbed
-  the mouse by holding down the :kbd:`shift` key (see also
-  :opt:`terminal_select_modifiers`).
+  the mouse by holding down the :kbd:`shift` key.
+
+All these actions can be customized in :file:`kitty.conf` as described
+:ref:`here <conf-kitty-mouse.mousemap>`.
 
 
 Font control
@@ -416,6 +307,10 @@ arbitrary, command running in a new window, tab or overlay, for example::
 Would open the scrollback buffer in a new window when you press the :kbd:`F1`
 key. See :sc:`show_scrollback` for details.
 
+If you want to use it with an editor such as vim to get more powerful features,
+you can see tips for doing so, in
+`this thread <https://github.com/kovidgoyal/kitty/issues/719>`_.
+
 If you wish to store very large amounts of scrollback to view using the piping or
 :sc:`show_scrollback` features, you can use the :opt:`scrollback_pager_history_size`
 option.
@@ -450,8 +345,6 @@ Frequently Asked Questions
 
 The list of Frequently Asked Questions (*FAQ*) is :doc:`available here <faq>`.
 
-.. _completion:
-
 
 Cool integrations for kitty with other CLI tools
 --------------------------------------------------
@@ -460,6 +353,8 @@ kitty provides extremely powerful interfaces such as :doc:`remote-control` and
 :doc:`kittens/custom` and :doc:`kittens/icat`
 that allow it to be integrated with other tools seamlessly. For a list of such
 user created integrations, see: :doc:`integrations`.
+
+.. _completion:
 
 Completion for kitty
 ---------------------------------

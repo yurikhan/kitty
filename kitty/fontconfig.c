@@ -6,13 +6,34 @@
  */
 
 #include "state.h"
+#include "cleanup.h"
 #include "lineops.h"
 #include "fonts.h"
 #include <fontconfig/fontconfig.h>
 #include "emoji.h"
+#include "freetype_render_ui_text.h"
 #ifndef FC_COLOR
 #define FC_COLOR "color"
 #endif
+
+
+static bool initialized = false;
+
+static void
+ensure_initialized(void) {
+    if (!initialized) {
+        if (!FcInit()) fatal("Failed to initialize fontconfig library");
+        initialized = true;
+    }
+}
+
+static void
+finalize(void) {
+    if (initialized) {
+        FcFini();
+        initialized = false;
+    }
+}
 
 static inline PyObject*
 pybool(FcBool x) { PyObject *ans = x ? Py_True: Py_False; Py_INCREF(ans); return ans; }
@@ -107,6 +128,7 @@ font_set(FcFontSet *fs) {
 
 static PyObject*
 fc_list(PyObject UNUSED *self, PyObject *args) {
+    ensure_initialized();
     int allow_bitmapped_fonts = 0, spacing = -1;
     PyObject *ans = NULL;
     FcObjectSet *os = NULL;
@@ -148,7 +170,7 @@ end:
     return ans;
 }
 
-static Py_UCS4 char_buf[1024];
+static char_type char_buf[1024];
 
 static inline void
 add_charset(FcPattern *pat, size_t num) {
@@ -168,8 +190,52 @@ end:
     if (charset != NULL) FcCharSetDestroy(charset);
 }
 
+static inline bool
+_native_fc_match(FcPattern *pat, FontConfigFace *ans) {
+    bool ok = false;
+    FcPattern *match = NULL;
+    FcResult result;
+    FcConfigSubstitute(NULL, pat, FcMatchPattern);
+    FcDefaultSubstitute(pat);
+    /* printf("fc_match = %s\n", FcNameUnparse(pat)); */
+    match = FcFontMatch(NULL, pat, &result);
+    if (match == NULL) { PyErr_SetString(PyExc_KeyError, "FcFontMatch() failed"); goto end; }
+    FcChar8 *out;
+#define g(func, prop, output) if (func(match, prop, 0, &output) != FcResultMatch) { PyErr_SetString(PyExc_ValueError, "No " #prop " found in fontconfig match result"); goto end; }
+    g(FcPatternGetString, FC_FILE, out);
+    g(FcPatternGetInteger, FC_INDEX, ans->index);
+    g(FcPatternGetInteger, FC_HINT_STYLE, ans->hintstyle);
+    g(FcPatternGetBool, FC_HINTING, ans->hinting);
+#undef g
+    ans->path = strdup((char*)out);
+    if (!ans->path) { PyErr_NoMemory(); goto end; }
+    ok = true;
+end:
+    if (match != NULL) FcPatternDestroy(match);
+    return ok;
+}
+
+
+bool
+information_for_font_family(const char *family, bool bold, bool italic, FontConfigFace *ans) {
+    ensure_initialized();
+    memset(ans, 0, sizeof(FontConfigFace));
+    FcPattern *pat = FcPatternCreate();
+    bool ok = false;
+    if (pat == NULL) { PyErr_NoMemory(); return ok; }
+    if (family && strlen(family) > 0) AP(FcPatternAddString, FC_FAMILY, (const FcChar8*)family, "family");
+    if (bold) { AP(FcPatternAddInteger, FC_WEIGHT, FC_WEIGHT_BOLD, "weight"); }
+    if (italic) { AP(FcPatternAddInteger, FC_SLANT, FC_SLANT_ITALIC, "slant"); }
+    ok = _native_fc_match(pat, ans);
+end:
+    if (pat != NULL) FcPatternDestroy(pat);
+    return ok;
+}
+
+
 static PyObject*
 fc_match(PyObject UNUSED *self, PyObject *args) {
+    ensure_initialized();
     char *family = NULL;
     int bold = 0, italic = 0, allow_bitmapped_fonts = 0, spacing = FC_MONO;
     double size_in_pts = 0, dpi = 0;
@@ -204,6 +270,7 @@ end:
 
 static PyObject*
 fc_match_postscript_name(PyObject UNUSED *self, PyObject *args) {
+    ensure_initialized();
     const char *postscript_name = NULL;
     FcPattern *pat = NULL;
     PyObject *ans = NULL;
@@ -225,6 +292,7 @@ end:
 
 PyObject*
 specialize_font_descriptor(PyObject *base_descriptor, FONTS_DATA_HANDLE fg) {
+    ensure_initialized();
     PyObject *p = PyDict_GetItemString(base_descriptor, "path"), *ans = NULL;
     PyObject *idx = PyDict_GetItemString(base_descriptor, "index");
     if (p == NULL) { PyErr_SetString(PyExc_ValueError, "Base descriptor has no path"); return NULL; }
@@ -246,8 +314,28 @@ end:
     return ans;
 }
 
+bool
+fallback_font(char_type ch, const char *family, bool bold, bool italic, bool prefer_color, FontConfigFace *ans) {
+    ensure_initialized();
+    memset(ans, 0, sizeof(FontConfigFace));
+    bool ok = false;
+    FcPattern *pat = FcPatternCreate();
+    if (pat == NULL) { PyErr_NoMemory(); return ok; }
+    if (family) AP(FcPatternAddString, FC_FAMILY, (const FcChar8*)family, "family");
+    if (bold) { AP(FcPatternAddInteger, FC_WEIGHT, FC_WEIGHT_BOLD, "weight"); }
+    if (italic) { AP(FcPatternAddInteger, FC_SLANT, FC_SLANT_ITALIC, "slant"); }
+    if (prefer_color) { AP(FcPatternAddBool, FC_COLOR, true, "color"); }
+    char_buf[0] = ch;
+    add_charset(pat, 1);
+    ok = _native_fc_match(pat, ans);
+end:
+    if (pat != NULL) FcPatternDestroy(pat);
+    return ok;
+}
+
 PyObject*
 create_fallback_face(PyObject UNUSED *base_face, CPUCell* cell, bool bold, bool italic, bool emoji_presentation, FONTS_DATA_HANDLE fg) {
+    ensure_initialized();
     PyObject *ans = NULL;
     FcPattern *pat = FcPatternCreate();
     if (pat == NULL) return PyErr_NoMemory();
@@ -274,14 +362,7 @@ static PyMethodDef module_methods[] = {
 
 bool
 init_fontconfig_library(PyObject *module) {
-    if (!FcInit()) {
-        PyErr_SetString(PyExc_RuntimeError, "Failed to initialize the fontconfig library");
-        return false;
-    }
-    if (Py_AtExit(FcFini) != 0) {
-        PyErr_SetString(PyExc_RuntimeError, "Failed to register the fontconfig library at exit handler");
-        return false;
-    }
+    register_at_exit_cleanup_func(FONTCONFIG_CLEANUP_FUNC, finalize);
     if (PyModule_AddFunctions(module, module_methods) != 0) return false;
     PyModule_AddIntMacro(module, FC_WEIGHT_REGULAR);
     PyModule_AddIntMacro(module, FC_WEIGHT_MEDIUM);

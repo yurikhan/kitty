@@ -2,8 +2,8 @@
 # vim:fileencoding=utf-8
 # License: GPL v3 Copyright: 2015, Kovid Goyal <kovid at kovidgoyal.net>
 
-import sys
 import os
+import sys
 from typing import List
 
 
@@ -30,8 +30,14 @@ def runpy(args: List[str]) -> None:
 
 def hold(args: List[str]) -> None:
     import subprocess
+    import tty
+    from contextlib import suppress
     ret = subprocess.Popen(args[1:]).wait()
-    sys.stdin.read()
+    with suppress(BaseException):
+        print('\n\x1b[1;32mPress any key to exit', end='', flush=True)
+    with suppress(BaseException):
+        tty.setraw(sys.stdin.fileno())
+        sys.stdin.buffer.read(1)
     raise SystemExit(ret)
 
 
@@ -66,13 +72,22 @@ def run_kitten(args: List[str]) -> None:
 
 
 def edit_config_file(args: List[str]) -> None:
+    from kitty.cli import create_default_opts
+    from kitty.fast_data_types import set_options
     from kitty.utils import edit_config_file as f
+    set_options(create_default_opts())
     f()
 
 
 def namespaced(args: List[str]) -> None:
-    func = namespaced_entry_points[args[1]]
-    func(args[1:])
+    try:
+        func = namespaced_entry_points[args[1]]
+    except KeyError:
+        pass
+    else:
+        func(args[1:])
+        return
+    raise SystemExit(f'{args[1]} is not a known entry point. Choices are: ' + ', '.join(namespaced_entry_points))
 
 
 entry_points = {

@@ -151,7 +151,7 @@ class ControlMaster:
         cp = subprocess.run(self.batch_cmd_prefix + [self.conn_data.hostname, 'hostname', '-f'], stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
         if cp.returncode == 0:
-            q = cp.stdout.decode('utf-8').strip()
+            q = tuple(filter(None, cp.stdout.decode('utf-8').strip().splitlines()))[-1]
             if not hostname_matches(self.cli_opts.hostname or '', q):
                 print(reset_terminal(), end='')
                 print(f'The remote hostname {styled(q, fg="green")} does not match the')
@@ -317,7 +317,8 @@ def handle_action(action: str, cli_opts: RemoteFileCLIOptions) -> Result:
 @result_handler()
 def handle_result(args: List[str], data: Result, target_window_id: int, boss: BossType) -> None:
     if data:
-        cmd = command_for_open(boss.opts.open_url_with)
+        from kitty.fast_data_types import get_options
+        cmd = command_for_open(get_options().open_url_with)
         open_cmd(cmd, data)
 
 

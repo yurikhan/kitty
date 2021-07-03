@@ -7,6 +7,7 @@
 
 
 #include "state.h"
+#include "cleanup.h"
 #include "monotonic.h"
 #include <Cocoa/Cocoa.h>
 #ifndef KITTY_USE_DEPRECATED_MACOS_NOTIFICATION_API
@@ -75,23 +76,29 @@ find_app_name(void) {
 + (GlobalMenuTarget *) shared_instance;
 @end
 
+#define PENDING(selector, which) - (void)selector:(id)sender { (void)sender; set_cocoa_pending_action(which, NULL); }
+
 @implementation GlobalMenuTarget
 
-- (void)show_preferences:(id)sender {
-    (void)sender;
-    set_cocoa_pending_action(PREFERENCES_WINDOW, NULL);
-}
-
-- (void)new_os_window:(id)sender {
-    (void)sender;
-    set_cocoa_pending_action(NEW_OS_WINDOW, NULL);
-}
+PENDING(edit_config_file, PREFERENCES_WINDOW)
+PENDING(new_os_window, NEW_OS_WINDOW)
+PENDING(detach_tab, DETACH_TAB)
+PENDING(close_os_window, CLOSE_OS_WINDOW)
+PENDING(close_tab, CLOSE_TAB)
+PENDING(new_tab, NEW_TAB)
+PENDING(next_tab, NEXT_TAB)
+PENDING(previous_tab, PREVIOUS_TAB)
+PENDING(new_window, NEW_WINDOW)
+PENDING(close_window, CLOSE_WINDOW)
+PENDING(reset_terminal, RESET_TERMINAL)
+PENDING(reload_config, RELOAD_CONFIG)
 
 - (void)open_kitty_website_url:(id)sender {
     (void)sender;
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://sw.kovidgoyal.net/kitty/"]];
 }
 
+#undef PENDING
 
 + (GlobalMenuTarget *) shared_instance
 {
@@ -106,17 +113,33 @@ find_app_name(void) {
 
 @end
 
-static char new_window_key[32] = {0};
-static NSEventModifierFlags new_window_mods = 0;
+typedef struct {
+    char key[32];
+    NSEventModifierFlags mods;
+} GlobalShortcut;
+typedef struct {
+    GlobalShortcut new_os_window, close_os_window, close_tab, edit_config_file, reload_config;
+    GlobalShortcut previous_tab, next_tab, new_tab, new_window, close_window, reset_terminal;
+} GlobalShortcuts;
+static GlobalShortcuts global_shortcuts;
 
 static PyObject*
-cocoa_set_new_window_trigger(PyObject *self UNUSED, PyObject *args) {
-    int mods, key;
-    if (!PyArg_ParseTuple(args, "ii", &mods, &key)) return NULL;
-    int nwm;
-    get_cocoa_key_equivalent(key, mods, new_window_key, sizeof(new_window_key), &nwm);
-    new_window_mods = nwm;
-    if (new_window_key[0]) Py_RETURN_TRUE;
+cocoa_set_global_shortcut(PyObject *self UNUSED, PyObject *args) {
+    int mods;
+    unsigned int key;
+    const char *name;
+    if (!PyArg_ParseTuple(args, "siI", &name, &mods, &key)) return NULL;
+    GlobalShortcut *gs = NULL;
+#define Q(x) if (strcmp(name, #x) == 0) gs = &global_shortcuts.x
+    Q(new_os_window); else Q(close_os_window); else Q(close_tab); else Q(edit_config_file);
+    else Q(new_tab); else Q(next_tab); else Q(previous_tab);
+    else Q(new_window); else Q(close_window); else Q(reset_terminal); else Q(reload_config);
+#undef Q
+    if (gs == NULL) { PyErr_SetString(PyExc_KeyError, "Unknown shortcut name"); return NULL; }
+    int cocoa_mods;
+    get_cocoa_key_equivalent(key, mods, gs->key, 32, &cocoa_mods);
+    gs->mods = cocoa_mods;
+    if (gs->key[0]) Py_RETURN_TRUE;
     Py_RETURN_FALSE;
 }
 
@@ -127,7 +150,7 @@ get_dock_menu(id self UNUSED, SEL _cmd UNUSED, NSApplication *sender UNUSED) {
     if (!dockMenu) {
         GlobalMenuTarget *global_menu_target = [GlobalMenuTarget shared_instance];
         dockMenu = [[NSMenu alloc] init];
-        [[dockMenu addItemWithTitle:@"New OS window"
+        [[dockMenu addItemWithTitle:@"New OS Window"
                              action:@selector(new_os_window:)
                       keyEquivalent:@""]
                           setTarget:global_menu_target];
@@ -139,9 +162,11 @@ static PyObject *notification_activated_callback = NULL;
 
 static PyObject*
 set_notification_activated_callback(PyObject *self UNUSED, PyObject *callback) {
-    if (notification_activated_callback) Py_DECREF(notification_activated_callback);
-    notification_activated_callback = callback;
-    Py_INCREF(callback);
+    Py_CLEAR(notification_activated_callback);
+    if (callback != Py_None) {
+        notification_activated_callback = callback;
+        Py_INCREF(callback);
+    }
     Py_RETURN_NONE;
 }
 
@@ -338,6 +363,12 @@ cocoa_create_global_menu(void) {
     GlobalMenuTarget *global_menu_target = [GlobalMenuTarget shared_instance];
     [NSApp setMainMenu:bar];
 
+#define MENU_ITEM(menu, title, name) { \
+    NSMenuItem *__mi = [menu addItemWithTitle:title action:@selector(name:) keyEquivalent:@(global_shortcuts.name.key)]; \
+    [__mi setKeyEquivalentModifierMask:global_shortcuts.name.mods]; \
+    [__mi setTarget:global_menu_target]; \
+}
+
     NSMenuItem* appMenuItem =
         [bar addItemWithTitle:@""
                        action:NULL
@@ -349,18 +380,8 @@ cocoa_create_global_menu(void) {
                        action:@selector(orderFrontStandardAboutPanel:)
                 keyEquivalent:@""];
     [appMenu addItem:[NSMenuItem separatorItem]];
-    [[appMenu addItemWithTitle:@"Preferences..."
-                       action:@selector(show_preferences:)
-                keyEquivalent:@","]
-                    setTarget:global_menu_target];
-
-    NSMenuItem* new_os_window_menu_item =
-        [appMenu addItemWithTitle:@"New OS window"
-                           action:@selector(new_os_window:)
-                    keyEquivalent:@(new_window_key)];
-    [new_os_window_menu_item setKeyEquivalentModifierMask:new_window_mods];
-    [new_os_window_menu_item setTarget:global_menu_target];
-
+    MENU_ITEM(appMenu, @"Preferences…", edit_config_file);
+    MENU_ITEM(appMenu, @"Reload preferences", reload_config);
 
     [appMenu addItemWithTitle:[NSString stringWithFormat:@"Hide %@", app_name]
                        action:@selector(hide:)
@@ -383,10 +404,33 @@ cocoa_create_global_menu(void) {
 
     [appMenu addItem:[NSMenuItem separatorItem]];
 
+    [[appMenu addItemWithTitle:@"Secure Keyboard Entry"
+                        action:@selector(toggleSecureInput:)
+                 keyEquivalent:@"s"]
+        setKeyEquivalentModifierMask:NSEventModifierFlagOption | NSEventModifierFlagCommand];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+
     [appMenu addItemWithTitle:[NSString stringWithFormat:@"Quit %@", app_name]
                        action:@selector(terminate:)
                 keyEquivalent:@"q"];
     [appMenu release];
+
+    NSMenuItem* shellMenuItem =
+        [bar addItemWithTitle:@"Shell"
+                       action:NULL
+                keyEquivalent:@""];
+    NSMenu* shellMenu = [[NSMenu alloc] initWithTitle:@"Shell"];
+    [shellMenuItem setSubmenu:shellMenu];
+    MENU_ITEM(shellMenu, @"New OS Window", new_os_window);
+    MENU_ITEM(shellMenu, @"New Tab", new_tab);
+    MENU_ITEM(shellMenu, @"New Window", new_window);
+    [shellMenu addItem:[NSMenuItem separatorItem]];
+    MENU_ITEM(shellMenu, @"Close OS Window", close_os_window);
+    MENU_ITEM(shellMenu, @"Close Tab", close_tab);
+    MENU_ITEM(shellMenu, @"Close Window", close_window);
+    [shellMenu addItem:[NSMenuItem separatorItem]];
+    MENU_ITEM(shellMenu, @"Reset", reset_terminal);
+    [shellMenu release];
 
     NSMenuItem* windowMenuItem =
         [bar addItemWithTitle:@""
@@ -407,6 +451,13 @@ cocoa_create_global_menu(void) {
                    keyEquivalent:@""];
 
     [windowMenu addItem:[NSMenuItem separatorItem]];
+    MENU_ITEM(windowMenu, @"Show Previous Tab", previous_tab);
+    MENU_ITEM(windowMenu, @"Show Next Tab", next_tab);
+    [[windowMenu addItemWithTitle:@"Move Tab to New Window"
+                           action:@selector(detach_tab:)
+                    keyEquivalent:@""] setTarget:global_menu_target];
+
+    [windowMenu addItem:[NSMenuItem separatorItem]];
     [[windowMenu addItemWithTitle:@"Enter Full Screen"
                            action:@selector(toggleFullScreen:)
                     keyEquivalent:@"f"]
@@ -424,6 +475,7 @@ cocoa_create_global_menu(void) {
                          action:@selector(open_kitty_website_url:)
                   keyEquivalent:@"?"]
                       setTarget:global_menu_target];
+    [NSApp setHelpMenu:helpMenu];
     [helpMenu release];
 
     [bar release];
@@ -436,6 +488,7 @@ cocoa_create_global_menu(void) {
 
 
     [NSApp setServicesProvider:[[[ServiceProvider alloc] init] autorelease]];
+#undef MENU_ITEM
 }
 
 void
@@ -592,7 +645,6 @@ cleanup() {
 
     if (dockMenu) [dockMenu release];
     dockMenu = nil;
-    Py_CLEAR(notification_activated_callback);
 
 #ifndef KITTY_USE_DEPRECATED_MACOS_NOTIFICATION_API
     drain_pending_notifications(NO);
@@ -622,7 +674,7 @@ cocoa_system_beep(void) {
 
 static PyMethodDef module_methods[] = {
     {"cocoa_get_lang", (PyCFunction)cocoa_get_lang, METH_NOARGS, ""},
-    {"cocoa_set_new_window_trigger", (PyCFunction)cocoa_set_new_window_trigger, METH_VARARGS, ""},
+    {"cocoa_set_global_shortcut", (PyCFunction)cocoa_set_global_shortcut, METH_VARARGS, ""},
     {"cocoa_send_notification", (PyCFunction)cocoa_send_notification, METH_VARARGS, ""},
     {"cocoa_set_notification_activated_callback", (PyCFunction)set_notification_activated_callback, METH_O, ""},
     {NULL, NULL, 0, NULL}        /* Sentinel */
@@ -630,10 +682,8 @@ static PyMethodDef module_methods[] = {
 
 bool
 init_cocoa(PyObject *module) {
+    memset(&global_shortcuts, 0, sizeof(global_shortcuts));
     if (PyModule_AddFunctions(module, module_methods) != 0) return false;
-    if (Py_AtExit(cleanup) != 0) {
-        PyErr_SetString(PyExc_RuntimeError, "Failed to register the cocoa_window at exit handler");
-        return false;
-    }
+    register_at_exit_cleanup_func(COCOA_CLEANUP_FUNC, cleanup);
     return true;
 }
